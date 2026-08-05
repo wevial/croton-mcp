@@ -4,7 +4,7 @@ Croton is a privacy-first, local stdio [Model Context Protocol](https://modelcon
 
 ## Status
 
-Early bootstrap. This layer establishes repository, package, and security boundaries only. MCP runtime behavior, mail access, authentication, and message operations are intentionally not present yet.
+Early bootstrap. The executable supports MCP `2026-07-28` by default and the legacy `2025-11-25` initialization flow for older clients. Mail access, authentication, and message operations are not implemented yet.
 
 ## Requirements
 
@@ -15,11 +15,14 @@ Early bootstrap. This layer establishes repository, package, and security bounda
 ```sh
 /usr/local/go/bin/go test ./...
 /usr/local/go/bin/go vet ./...
+/usr/local/go/bin/go run ./cmd/croton-mcp
 ```
+
+The server speaks JSON-RPC over standard input/output. Diagnostics must go to standard error; standard output is protocol-only.
 
 ## Layout
 
-- `cmd/croton-mcp`: future stdio executable
+- `cmd/croton-mcp`: stdio executable
 - `internal/config`: future configuration boundary
 - `internal/imap`: future narrow IMAP adapter boundary
 - `internal/mcpserver`: MCP server construction

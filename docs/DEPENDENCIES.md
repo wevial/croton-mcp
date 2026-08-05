@@ -4,7 +4,9 @@ Reviewed: 2026-08-05.
 
 ## Model Context Protocol SDK
 
-Croton uses the official [`github.com/modelcontextprotocol/go-sdk`](https://github.com/modelcontextprotocol/go-sdk), pinned in `go.mod` when the first MCP implementation is added. The official repository describes this as the Go SDK for MCP servers and clients; release `v1.7.0` is the current stable release reviewed for this bootstrap. It retains backwards compatibility with the legacy `initialize` lifecycle while adding newer protocol support, which lets this project verify a conventional stdio initialize exchange without implementing a transport itself.
+Croton uses the official [`github.com/modelcontextprotocol/go-sdk`](https://github.com/modelcontextprotocol/go-sdk) at `v1.7.0`. That release implements MCP `2026-07-28` while preserving compatibility with `2025-11-25` and earlier clients. Croton therefore uses one server implementation—not parallel hand-written protocol stacks—and pins tests for both the current stateless discovery path and the legacy `initialize` fallback.
+
+For `2026-07-28`, Croton relies on the SDK's per-request protocol metadata and required `server/discover` implementation. New Croton features will not adopt roots, sampling, or protocol logging because those capabilities are deprecated in this revision. The stdio transport remains persistent at the process level, but protocol requests do not depend on hidden session state.
 
 ## `github.com/emersion/go-imap/v2`
 

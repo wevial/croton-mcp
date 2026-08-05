@@ -2,6 +2,8 @@
 *.test
 *.out
 coverage.html
+.tmp/
+.gocache/
 
 # Local configuration and editor files
 .env
