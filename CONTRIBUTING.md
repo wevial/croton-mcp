@@ -24,6 +24,8 @@ go mod verify
 "$GOBIN/govulncheck" ./...
 ```
 
+Pinned local-install commands and CI details are in [docs/QUALITY.md](docs/QUALITY.md).
+
 ## Privacy
 
 Use synthetic data only. Do not use live Proton accounts, account identifiers, mailbox content, credentials, or unredacted logs in development, tests, issues, commits, or CI.

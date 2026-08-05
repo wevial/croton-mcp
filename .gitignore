@@ -4,6 +4,7 @@
 coverage.html
 .tmp/
 .gocache/
+.bin/
 
 # Local configuration and editor files
 .env

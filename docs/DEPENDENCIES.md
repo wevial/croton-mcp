@@ -19,6 +19,10 @@ This package is **not adopted in the bootstrap layer**. Due diligence on 2026-08
 
 The pre-release status is material. A later mail-transport work package may adopt a pinned v2 release only after re-running `govulncheck`, reviewing upstream release notes/advisories, and adding integration tests with redacted fixture data. No live mailbox data, credentials, or account identifiers are permitted in tests or logs.
 
+## Transitive vulnerability remediation
+
+The initial `govulncheck -show verbose ./...` scan identified `GO-2026-5024` in transitive `golang.org/x/sys@v0.41.0` (a Windows-only integer overflow fixed in `v0.44.0`). The bootstrap has no reachable calls, but Croton explicitly upgrades the indirect requirement to `golang.org/x/sys@v0.44.0` so cross-platform consumers do not inherit the known vulnerable version.
+
 ## Reproducibility
 
 Use `go mod tidy -diff`, `go mod verify`, and `govulncheck ./...` before accepting a dependency update. CI records the corresponding commands.
