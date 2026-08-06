@@ -12,6 +12,7 @@ Croton is a local, read-only MCP server for Proton Mail Bridge.
 ## Workflow
 
 - Use Go 1.26.5.
+- Use blank lines to separate validation, setup, state transitions, I/O, and return paths inside functions.
 - Run `go build ./...`, `go vet ./...`, and `go test -race ./...` before submitting.
 - Follow Conventional Commits and `.github/PULL_REQUEST_TEMPLATE.md`.
 - Do not merge without explicit maintainer approval.

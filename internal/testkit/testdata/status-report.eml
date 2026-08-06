@@ -1,0 +1,17 @@
+From: Service Robot <robot@fixture.test>
+To: Archive Reader <archive@fixture.test>
+Message-ID: <status-002@fixture.test>
+Subject: Synthetic status report
+Date: Thu, 06 Aug 2026 12:05:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="fixture-boundary"
+
+--fixture-boundary
+Content-Type: text/plain; charset=UTF-8
+
+All systems are imaginary and operating normally.
+--fixture-boundary
+Content-Type: text/html; charset=UTF-8
+
+<p>All systems are imaginary and operating normally.</p>
+--fixture-boundary--
