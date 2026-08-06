@@ -1,0 +1,9 @@
+From: Croton Test Sender <sender@fixture.test>
+To: Croton Test Recipient <recipient@fixture.test>
+Message-ID: <welcome-001@fixture.test>
+Subject: Welcome to the synthetic mailbox
+Date: Thu, 06 Aug 2026 12:00:00 +0000
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+
+This invented fixture is safe to use in deterministic tests.
