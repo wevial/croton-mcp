@@ -454,27 +454,33 @@ type imapClient struct {
 
 func dialTCP(t *testing.T, address string) net.Conn {
 	t.Helper()
+
 	connection, err := net.DialTimeout("tcp", address, testNetworkTimeout)
 	if err != nil {
 		t.Fatalf("dial server: %v", err)
 	}
+
 	if err := connection.SetDeadline(time.Now().Add(testNetworkTimeout)); err != nil {
 		_ = connection.Close()
 		t.Fatalf("set connection deadline: %v", err)
 	}
+
 	return connection
 }
 
 func dialTLS(t *testing.T, address string, config *tls.Config) *tls.Conn {
 	t.Helper()
+
 	connection, err := tls.DialWithDialer(&net.Dialer{Timeout: testNetworkTimeout}, "tcp", address, config)
 	if err != nil {
 		t.Fatalf("dial TLS server: %v", err)
 	}
+
 	if err := connection.SetDeadline(time.Now().Add(testNetworkTimeout)); err != nil {
 		_ = connection.Close()
 		t.Fatalf("set TLS connection deadline: %v", err)
 	}
+
 	return connection
 }
 
@@ -484,6 +490,7 @@ func connectClient(t *testing.T, server *Server, mode TLSMode) *imapClient {
 	if mode == ImplicitTLS {
 		connection := dialTLS(t, server.Addr(), server.ClientTLSConfig())
 		client := &imapClient{connection: connection, reader: bufio.NewReader(connection)}
+
 		if line := client.readLine(t); line != "* OK fake IMAP server ready" {
 			t.Fatalf("greeting = %q", line)
 		}
@@ -492,6 +499,7 @@ func connectClient(t *testing.T, server *Server, mode TLSMode) *imapClient {
 
 	connection := dialTCP(t, server.Addr())
 	client := &imapClient{connection: connection, reader: bufio.NewReader(connection)}
+
 	if line := client.readLine(t); line != "* OK fake IMAP server ready" {
 		t.Fatalf("greeting = %q", line)
 	}
@@ -503,14 +511,17 @@ func connectClient(t *testing.T, server *Server, mode TLSMode) *imapClient {
 	}
 	client.connection = tlsConnection
 	client.reader = bufio.NewReader(tlsConnection)
+
 	return client
 }
 
 func (client *imapClient) command(t *testing.T, command, want string) {
 	t.Helper()
+
 	if _, err := fmt.Fprint(client.connection, command+"\r\n"); err != nil {
 		t.Fatalf("write %q: %v", command, err)
 	}
+
 	if line := client.readLine(t); line != want {
 		t.Fatalf("response to %q = %q, want %q", command, line, want)
 	}
@@ -518,10 +529,12 @@ func (client *imapClient) command(t *testing.T, command, want string) {
 
 func (client *imapClient) readLine(t *testing.T) string {
 	t.Helper()
+
 	line, err := client.reader.ReadString('\n')
 	if err != nil {
 		t.Fatalf("read server response: %v", err)
 	}
+
 	return strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
 }
 
