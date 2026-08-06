@@ -16,7 +16,9 @@ const (
 	maxOperationTimeout   = time.Minute
 )
 
-// Config is the untrusted, in-memory configuration supplied to bridge.
+// Config is the untrusted, in-memory connection configuration supplied to bridge.
+// CredentialCommand is an exception: it is an operator-controlled privileged
+// capability that executes the configured absolute argv verbatim.
 type Config struct {
 	IMAP   IMAPConfig  `json:"imap"`
 	Bounds BoundsPatch `json:"bounds"`
@@ -36,7 +38,11 @@ type IMAPConfig struct {
 
 // TLSConfig supplies explicit trust material for the Bridge certificate.
 type TLSConfig struct {
-	TrustAnchorFile   string `json:"trustAnchorFile,omitempty"`
+	// TrustAnchorFile names one regular file containing the exact Bridge leaf
+	// certificate PEM. Certificate-authority bundles are intentionally rejected.
+	TrustAnchorFile string `json:"trustAnchorFile,omitempty"`
+	// CertificateSHA256 is the lowercase hexadecimal SHA-256 pin of the
+	// certificate's SubjectPublicKeyInfo, not of the complete certificate.
 	CertificateSHA256 string `json:"certificateSha256,omitempty"`
 	MinVersion        string `json:"minVersion,omitempty"`
 }
@@ -102,7 +108,7 @@ func timeoutMilliseconds(value int, fallback time.Duration) (int, error) {
 	if value == 0 {
 		return int(fallback / time.Millisecond), nil
 	}
-	if value < 0 || time.Duration(value)*time.Millisecond > maxOperationTimeout {
+	if value < 0 || value > int(maxOperationTimeout/time.Millisecond) {
 		return 0, errorCode(CodeInvalidConfig)
 	}
 	return value, nil

@@ -6,13 +6,18 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/pem"
+	"io"
 	"os"
 	"strings"
+	"time"
 )
+
+const trustAnchorMaxBytes = 16 * 1024
 
 // NewTLSConfig constructs the only TLS configuration used by bridge connections.
 // Its verifier is installed atomically with InsecureSkipVerify so callers cannot
-// accidentally pair IP-literal transport with omitted identity verification.
+// accidentally pair IP-literal transport with omitted certificate verification.
 func NewTLSConfig(input TLSConfig) (*tls.Config, error) {
 	verifier, minimumVersion, err := newTLSVerifier(input)
 	if err != nil {
@@ -27,8 +32,8 @@ func NewTLSConfig(input TLSConfig) (*tls.Config, error) {
 }
 
 type tlsVerifier struct {
-	roots *x509.CertPool
-	pin   []byte
+	anchor *x509.Certificate
+	pin    []byte
 }
 
 func newTLSVerifier(input TLSConfig) (*tlsVerifier, uint16, error) {
@@ -43,15 +48,11 @@ func newTLSVerifier(input TLSConfig) (*tlsVerifier, uint16, error) {
 
 	verifier := &tlsVerifier{}
 	if input.TrustAnchorFile != "" {
-		pemBytes, err := os.ReadFile(input.TrustAnchorFile)
+		anchor, err := loadTrustAnchor(input.TrustAnchorFile)
 		if err != nil {
 			return nil, 0, errorCode(CodeInvalidConfig)
 		}
-		roots := x509.NewCertPool()
-		if !roots.AppendCertsFromPEM(pemBytes) {
-			return nil, 0, errorCode(CodeInvalidConfig)
-		}
-		verifier.roots = roots
+		verifier.anchor = anchor
 	}
 
 	if input.CertificateSHA256 != "" {
@@ -63,6 +64,41 @@ func newTLSVerifier(input TLSConfig) (*tlsVerifier, uint16, error) {
 	}
 
 	return verifier, minimumVersion, nil
+}
+
+func loadTrustAnchor(path string) (*x509.Certificate, error) {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, errorCode(CodeInvalidConfig)
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	info, err = file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, errorCode(CodeInvalidConfig)
+	}
+
+	pemBytes, err := io.ReadAll(io.LimitReader(file, trustAnchorMaxBytes+1))
+	if err != nil || len(pemBytes) > trustAnchorMaxBytes {
+		return nil, errorCode(CodeInvalidConfig)
+	}
+
+	block, rest := pem.Decode(pemBytes)
+	if block == nil || block.Type != "CERTIFICATE" || len(rest) != 0 {
+		return nil, errorCode(CodeInvalidConfig)
+	}
+
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil || certificate.IsCA {
+		return nil, errorCode(CodeInvalidConfig)
+	}
+
+	return certificate, nil
 }
 
 func validateTLSConfig(input TLSConfig) (uint16, error) {
@@ -109,12 +145,11 @@ func (verifier *tlsVerifier) verify(state tls.ConnectionState) error {
 	}
 
 	leaf := state.PeerCertificates[0]
-	if verifier.roots != nil {
-		intermediates := x509.NewCertPool()
-		for _, certificate := range state.PeerCertificates[1:] {
-			intermediates.AddCert(certificate)
+	if verifier.anchor != nil {
+		if subtle.ConstantTimeCompare(leaf.Raw, verifier.anchor.Raw) != 1 {
+			return errorCode(CodeTLSMismatch)
 		}
-		if _, err := leaf.Verify(x509.VerifyOptions{Roots: verifier.roots, Intermediates: intermediates, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}); err != nil {
+		if err := verifyLeafCertificate(leaf, time.Now()); err != nil {
 			return errorCode(CodeTLSMismatch)
 		}
 	}
@@ -127,4 +162,18 @@ func (verifier *tlsVerifier) verify(state tls.ConnectionState) error {
 	}
 
 	return nil
+}
+
+func verifyLeafCertificate(certificate *x509.Certificate, now time.Time) error {
+	if now.Before(certificate.NotBefore) || now.After(certificate.NotAfter) {
+		return errorCode(CodeTLSMismatch)
+	}
+
+	for _, usage := range certificate.ExtKeyUsage {
+		if usage == x509.ExtKeyUsageServerAuth || usage == x509.ExtKeyUsageAny {
+			return nil
+		}
+	}
+
+	return errorCode(CodeTLSMismatch)
 }

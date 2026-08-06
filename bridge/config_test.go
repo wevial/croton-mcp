@@ -90,14 +90,7 @@ func TestValidateConfigRejectsMissingTrustRelativeCommandsAndUnboundedTimeouts(t
 			}},
 			code: bridge.CodeInvalidConfig,
 		},
-		{
-			name: "shell executable",
-			config: bridge.Config{IMAP: bridge.IMAPConfig{
-				CredentialCommand: []string{"/bin/sh", "-c", "echo credential"},
-				TLS:               bridge.TLSConfig{CertificateSHA256: strings.Repeat("a", 64)},
-			}},
-			code: bridge.CodeInvalidConfig,
-		},
+
 		{
 			name: "unbounded connect timeout",
 			config: bridge.Config{IMAP: bridge.IMAPConfig{

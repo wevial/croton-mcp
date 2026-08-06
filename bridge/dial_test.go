@@ -31,7 +31,7 @@ func TestDialTrustVerifiedFakeServerInBothTLSModes(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = server.Close() })
 
-			trustFile := writeTrustAnchor(t, server.CAPEM())
+			trustFile := writeTrustAnchor(t, server.LeafPEM())
 			config := fakeServerConfig(t, server.Addr(), mode.mode, bridge.TLSConfig{TrustAnchorFile: trustFile, CertificateSHA256: server.SPKISHA256()})
 			connection, err := bridge.Dial(context.Background(), config)
 			if err != nil {
@@ -71,10 +71,35 @@ func TestDialRejectsMismatchedTrust(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = unrelatedServer.Close() })
 
-	config = fakeServerConfig(t, server.Addr(), bridge.TLSModeImplicit, bridge.TLSConfig{TrustAnchorFile: writeTrustAnchor(t, unrelatedServer.CAPEM())})
+	config = fakeServerConfig(t, server.Addr(), bridge.TLSModeImplicit, bridge.TLSConfig{TrustAnchorFile: writeTrustAnchor(t, unrelatedServer.LeafPEM())})
 	if _, err := bridge.Dial(context.Background(), config); bridge.CodeOf(err) != bridge.CodeTLSMismatch {
 		t.Fatalf("Dial mismatched trust-anchor error = %v, want %q", err, bridge.CodeTLSMismatch)
 	}
+
+	config = fakeServerConfig(t, server.Addr(), bridge.TLSModeImplicit, bridge.TLSConfig{
+		TrustAnchorFile:   writeTrustAnchor(t, server.LeafPEM()),
+		CertificateSHA256: strings.Repeat("a", 64),
+	})
+	if _, err := bridge.Dial(context.Background(), config); bridge.CodeOf(err) != bridge.CodeTLSMismatch {
+		t.Fatalf("Dial mismatched trust-anchor and pin error = %v, want %q", err, bridge.CodeTLSMismatch)
+	}
+}
+
+func TestDialAcceptsExactTrustAnchorWithoutSPKIPin(t *testing.T) {
+	t.Parallel()
+
+	server, err := testkit.Start(testkit.Options{Mode: testkit.ImplicitTLS})
+	if err != nil {
+		t.Fatalf("start fake server: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	config := fakeServerConfig(t, server.Addr(), bridge.TLSModeImplicit, bridge.TLSConfig{TrustAnchorFile: writeTrustAnchor(t, server.LeafPEM())})
+	connection, err := bridge.Dial(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Dial exact trust anchor: %v", err)
+	}
+	t.Cleanup(func() { _ = connection.Close() })
 }
 
 func TestDialFailsClosedWhenStartTLSIsUnavailable(t *testing.T) {

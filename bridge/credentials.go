@@ -9,11 +9,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
-const credentialOutputLimit = 64 * 1024
+const (
+	credentialOutputLimit = 64 * 1024
+	credentialWaitDelay   = 100 * time.Millisecond
+)
 
 // Credentials holds Bridge-generated IMAP credentials as mutable bytes.
 type Credentials struct {
@@ -22,12 +24,15 @@ type Credentials struct {
 }
 
 // Zero overwrites credential bytes when the caller has finished using them.
+// Go's immutable strings and runtime-managed copies cannot be reliably erased.
 func (credentials *Credentials) Zero() {
 	zeroBytes(credentials.Username)
 	zeroBytes(credentials.Password)
 }
 
-// LoadCredentials executes an absolute argv-only command and parses one credential JSON object.
+// LoadCredentials executes an operator-configured absolute argv without an implicit shell
+// and parses one credential JSON object. The command is a privileged configuration
+// capability: callers must not source it or its arguments from untrusted input.
 func LoadCredentials(parent context.Context, command []string, timeout time.Duration) (Credentials, error) {
 	if !isSafeCredentialCommand(command) || timeout <= 0 {
 		return Credentials{}, errorCode(CodeInvalidConfig)
@@ -38,10 +43,14 @@ func LoadCredentials(parent context.Context, command []string, timeout time.Dura
 
 	output := &limitedBuffer{limit: credentialOutputLimit}
 	process := exec.CommandContext(contextWithTimeout, command[0], command[1:]...)
+	configureCredentialProcess(process)
 	process.Stdin = bytes.NewReader(nil)
 	process.Stdout = output
 	process.Stderr = io.Discard
 	process.Env = credentialEnvironment()
+	// WaitDelay bounds inherited stdout pipes after direct-child cancellation,
+	// including on platforms without process-group termination.
+	process.WaitDelay = credentialWaitDelay
 
 	err := process.Run()
 	if output.overflow {
@@ -87,37 +96,52 @@ func credentialEnvironment() []string {
 }
 
 func isSafeCredentialCommand(command []string) bool {
-	if len(command) == 0 || !filepath.IsAbs(command[0]) {
-		return false
-	}
-
-	switch strings.ToLower(filepath.Base(command[0])) {
-	case "sh", "bash", "dash", "zsh", "ksh", "mksh", "fish", "csh", "tcsh", "pwsh", "powershell", "cmd", "cmd.exe":
-		return false
-	default:
-		return true
-	}
+	return len(command) > 0 && filepath.IsAbs(command[0])
 }
 
 func parseCredentials(output []byte) (Credentials, error) {
-	var value struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-	}
-
 	decoder := json.NewDecoder(bytes.NewReader(output))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&value); err != nil {
+	start, err := decoder.Token()
+	if err != nil {
 		return Credentials{}, errorCode(CodeCredentialOutput)
 	}
-	if value.Username == "" || value.Password == "" {
+	if delimiter, ok := start.(json.Delim); !ok || delimiter != '{' {
+		return Credentials{}, errorCode(CodeCredentialOutput)
+	}
+
+	values := make(map[string]string, 2)
+	for decoder.More() {
+		token, err := decoder.Token()
+		name, ok := token.(string)
+		if err != nil || !ok || (name != "username" && name != "password") {
+			return Credentials{}, errorCode(CodeCredentialOutput)
+		}
+		if _, exists := values[name]; exists {
+			return Credentials{}, errorCode(CodeCredentialOutput)
+		}
+
+		var value string
+		if err := decoder.Decode(&value); err != nil {
+			return Credentials{}, errorCode(CodeCredentialOutput)
+		}
+		values[name] = value
+	}
+
+	end, err := decoder.Token()
+	if err != nil {
+		return Credentials{}, errorCode(CodeCredentialOutput)
+	}
+	if delimiter, ok := end.(json.Delim); !ok || delimiter != '}' {
+		return Credentials{}, errorCode(CodeCredentialOutput)
+	}
+	if values["username"] == "" || values["password"] == "" {
 		return Credentials{}, errorCode(CodeCredentialOutput)
 	}
 	if err := ensureOnlyWhitespace(decoder); err != nil {
 		return Credentials{}, errorCode(CodeCredentialOutput)
 	}
 
-	return Credentials{Username: []byte(value.Username), Password: []byte(value.Password)}, nil
+	return Credentials{Username: []byte(values["username"]), Password: []byte(values["password"])}, nil
 }
 
 func ensureOnlyWhitespace(decoder *json.Decoder) error {

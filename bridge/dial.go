@@ -11,6 +11,15 @@ import (
 	"time"
 )
 
+const (
+	maxStartTLSGreetingBytes = 4 * 1024
+	maxStartTLSResponseBytes = 16 * 1024
+	maxStartTLSResponseCount = 32
+	maxStartTLSLineBytes     = 4 * 1024
+)
+
+var errStartTLSInputLimit = errors.New("STARTTLS input limit exceeded")
+
 // Connection is a TLS-established connection to the configured local Bridge endpoint.
 type Connection struct{ connection net.Conn }
 
@@ -68,22 +77,35 @@ func establishStartTLS(ctx context.Context, rawConnection net.Conn, tlsConfig *t
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = rawConnection.SetDeadline(deadline)
 	}
+	stopCancelWatcher := closeOnContext(ctx, rawConnection)
+	defer stopCancelWatcher()
 
-	reader := bufio.NewReader(rawConnection)
+	reader := bufio.NewReaderSize(rawConnection, maxStartTLSLineBytes+1)
 	writer := bufio.NewWriter(rawConnection)
-	if _, err := reader.ReadString('\n'); err != nil {
+	budget := &startTLSResponseBudget{}
+	if _, err := readStartTLSLine(reader, maxStartTLSGreetingBytes); err != nil {
 		_ = rawConnection.Close()
 		return nil, connectionError(ctx, err)
 	}
 
-	capabilities, err := imapCommand(reader, writer, "a001", "CAPABILITY")
-	if err != nil || !strings.Contains(strings.ToUpper(capabilities), "STARTTLS") {
+	hasStartTLS, err := imapCommand(reader, writer, budget, "a001", "CAPABILITY")
+	if err != nil {
+		_ = rawConnection.Close()
+		if ctx.Err() != nil {
+			return nil, connectionError(ctx, err)
+		}
+		return nil, errorCode(CodeTLSNegotiation)
+	}
+	if !hasStartTLS {
 		_ = rawConnection.Close()
 		return nil, errorCode(CodeTLSNegotiation)
 	}
 
-	if _, err := imapCommand(reader, writer, "a002", "STARTTLS"); err != nil {
+	if _, err := imapCommand(reader, writer, budget, "a002", "STARTTLS"); err != nil {
 		_ = rawConnection.Close()
+		if ctx.Err() != nil {
+			return nil, connectionError(ctx, err)
+		}
 		return nil, errorCode(CodeTLSNegotiation)
 	}
 
@@ -97,35 +119,96 @@ func establishStartTLS(ctx context.Context, rawConnection net.Conn, tlsConfig *t
 	return &Connection{connection: tlsConnection}, nil
 }
 
-func imapCommand(reader *bufio.Reader, writer *bufio.Writer, tag, command string) (string, error) {
+func imapCommand(reader *bufio.Reader, writer *bufio.Writer, budget *startTLSResponseBudget, tag, command string) (bool, error) {
 	if _, err := writer.WriteString(tag + " " + command + "\r\n"); err != nil {
-		return "", err
+		return false, err
 	}
 	if err := writer.Flush(); err != nil {
-		return "", err
+		return false, err
 	}
 
-	var responses strings.Builder
+	hasStartTLS := false
 	for {
-		line, err := reader.ReadString('\n')
+		line, err := readStartTLSLine(reader, maxStartTLSLineBytes)
 		if err != nil {
-			return "", err
+			return false, err
 		}
-		line = strings.TrimRight(line, "\r\n")
-		responses.WriteString(line)
-		responses.WriteByte('\n')
+		if err := budget.add(line); err != nil {
+			return false, err
+		}
+		if capabilityHasStartTLS(line) {
+			hasStartTLS = true
+		}
 
 		if !strings.HasPrefix(line, tag+" ") {
 			continue
 		}
 		if !strings.HasPrefix(line, tag+" OK ") && line != tag+" OK" {
-			return "", fmt.Errorf("IMAP command rejected")
+			return false, fmt.Errorf("IMAP command rejected")
 		}
-		return responses.String(), nil
+		return hasStartTLS, nil
 	}
 }
 
+type startTLSResponseBudget struct {
+	bytes int
+	count int
+}
+
+func (budget *startTLSResponseBudget) add(line string) error {
+	budget.count++
+	budget.bytes += len(line) + 2 // IMAP responses are CRLF-terminated.
+	if budget.count > maxStartTLSResponseCount || budget.bytes > maxStartTLSResponseBytes {
+		return errStartTLSInputLimit
+	}
+
+	return nil
+}
+
+func readStartTLSLine(reader *bufio.Reader, limit int) (string, error) {
+	line, err := reader.ReadSlice('\n')
+	if err != nil {
+		return "", err
+	}
+	if len(line) > limit {
+		return "", errStartTLSInputLimit
+	}
+
+	return strings.TrimRight(string(line), "\r\n"), nil
+}
+
+func capabilityHasStartTLS(line string) bool {
+	fields := strings.Fields(line)
+	if len(fields) < 3 || fields[0] != "*" || !strings.EqualFold(fields[1], "CAPABILITY") {
+		return false
+	}
+
+	for _, capability := range fields[2:] {
+		if strings.EqualFold(capability, "STARTTLS") {
+			return true
+		}
+	}
+
+	return false
+}
+
+func closeOnContext(ctx context.Context, connection net.Conn) func() {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = connection.Close()
+		case <-done:
+		}
+	}()
+
+	return func() { close(done) }
+}
+
 func connectionError(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return errorCode(CodeBridgeUnreachable)
+	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return errorCode(CodeBridgeUnreachable)
 	}
