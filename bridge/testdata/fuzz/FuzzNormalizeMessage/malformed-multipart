@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("Content-Type: multipart/mixed; boundary=x\\r\\n\\r\\n--x\\r\\nContent-Type: text/plain\\r\\n\\r\\nsynthetic")

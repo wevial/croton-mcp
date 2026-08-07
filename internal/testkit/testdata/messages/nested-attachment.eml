@@ -1,0 +1,21 @@
+From: Archive Robot <archive@fixture.test>
+To: Fixture Reader <reader@fixture.test>
+Message-ID: <nested-attachment@fixture.test>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="outer-fixture"
+
+--outer-fixture
+Content-Type: multipart/alternative; boundary="inner-fixture"
+
+--inner-fixture
+Content-Type: text/plain; charset=UTF-8
+
+This body is entirely invented.
+--inner-fixture--
+--outer-fixture
+Content-Type: application/octet-stream; name="fixture.txt"
+Content-Disposition: attachment; filename="fixture.txt"; size=17
+Content-Transfer-Encoding: base64
+
+c3ludGhldGljIGJ5dGVz
+--outer-fixture--
