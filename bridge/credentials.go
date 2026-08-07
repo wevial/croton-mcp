@@ -97,7 +97,7 @@ func credentialEnvironment() []string {
 }
 
 func isSafeCredentialCommand(command []string) bool {
-	return len(command) > 0 && filepath.IsAbs(command[0])
+	return credentialProcessTreeKillSupported && len(command) > 0 && filepath.IsAbs(command[0])
 }
 
 func parseCredentials(output []byte) (Credentials, error) {

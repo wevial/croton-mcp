@@ -146,11 +146,12 @@ func (verifier *tlsVerifier) verify(state tls.ConnectionState) error {
 	}
 
 	leaf := state.PeerCertificates[0]
+	if err := verifyLeafCertificate(leaf, time.Now()); err != nil {
+		return errorCode(CodeTLSMismatch)
+	}
+
 	if verifier.anchor != nil {
 		if subtle.ConstantTimeCompare(leaf.Raw, verifier.anchor.Raw) != 1 {
-			return errorCode(CodeTLSMismatch)
-		}
-		if err := verifyLeafCertificate(leaf, time.Now()); err != nil {
 			return errorCode(CodeTLSMismatch)
 		}
 	}
