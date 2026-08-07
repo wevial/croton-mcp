@@ -80,6 +80,9 @@ type Scenario struct {
 	UIDNext uint32
 	// ListResponseCount controls the number of synthetic folders in a LIST response.
 	ListResponseCount int
+	// ListMailboxLiteralBytes replaces the first LIST mailbox name with a literal
+	// of this size. Zero preserves the normal quoted mailbox name.
+	ListMailboxLiteralBytes int
 	// SearchResponse replaces the untagged response to UID SEARCH. It must be a
 	// complete untagged SEARCH or ESEARCH response without a trailing CRLF.
 	SearchResponse string
@@ -98,6 +101,12 @@ type Scenario struct {
 	FetchLiteralDeclaredBytes int
 	// BodyFetchLiteralDeclaredBytes replaces only whole-body FETCH declarations.
 	BodyFetchLiteralDeclaredBytes int
+	// UnexpectedFetchBinaryLiteralBytes appends an unrequested BINARY[] literal
+	// to every FETCH response. Zero preserves the requested response shape.
+	UnexpectedFetchBinaryLiteralBytes int
+	// UnexpectedBodyFetchBinaryLiteralBytes appends an unrequested BINARY[]
+	// literal only to whole-body FETCH responses.
+	UnexpectedBodyFetchBinaryLiteralBytes int
 }
 
 // Options configures a fake server. The zero value uses STARTTLS without faults.
@@ -163,12 +172,24 @@ func Start(options Options) (*Server, error) {
 		return nil, errors.New("testkit: list response count must not be negative")
 	}
 
+	if options.Scenario.ListMailboxLiteralBytes < 0 {
+		return nil, errors.New("testkit: list mailbox literal size must not be negative")
+	}
+
 	if options.Scenario.FetchLiteralDeclaredBytes < 0 {
 		return nil, errors.New("testkit: fetch literal declaration must not be negative")
 	}
 
 	if options.Scenario.BodyFetchLiteralDeclaredBytes < 0 {
 		return nil, errors.New("testkit: body fetch literal declaration must not be negative")
+	}
+
+	if options.Scenario.UnexpectedFetchBinaryLiteralBytes < 0 {
+		return nil, errors.New("testkit: unexpected FETCH binary literal size must not be negative")
+	}
+
+	if options.Scenario.UnexpectedBodyFetchBinaryLiteralBytes < 0 {
+		return nil, errors.New("testkit: unexpected body FETCH binary literal size must not be negative")
 	}
 
 	certificate, caDER, err := generateCertificate()
@@ -594,7 +615,11 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 				if !header && server.options.Scenario.DuplicateBodyFetchSection {
 					duplicate = true
 				}
-				if !server.writeFetch(writer, tag, fetchResponseUID(raw), literal, section, declaredBytes, duplicate) {
+				unexpectedBinaryLiteralBytes := server.options.Scenario.UnexpectedFetchBinaryLiteralBytes
+				if !header && server.options.Scenario.UnexpectedBodyFetchBinaryLiteralBytes > 0 {
+					unexpectedBinaryLiteralBytes = server.options.Scenario.UnexpectedBodyFetchBinaryLiteralBytes
+				}
+				if !server.writeFetch(writer, tag, fetchResponseUID(raw), literal, section, declaredBytes, duplicate, unexpectedBinaryLiteralBytes) {
 					return
 				}
 			default:
@@ -675,6 +700,16 @@ func (server *Server) writeList(writer *bufio.Writer, tag string) bool {
 	if count == 0 {
 		count = 1
 	}
+	if server.options.Scenario.ListMailboxLiteralBytes > 0 {
+		literal := strings.Repeat("x", server.options.Scenario.ListMailboxLiteralBytes)
+		response := fmt.Sprintf("* LIST (\\HasNoChildren) \"/\" {%d}\r\n%s\r\n%s OK LIST completed\r\n", len(literal), literal, tag)
+		if _, err := writer.WriteString(response); err != nil {
+			return false
+		}
+
+		return writer.Flush() == nil
+	}
+
 	lines := make([]string, 0, count+1)
 	for index := range count {
 		mailbox := "INBOX"
@@ -708,7 +743,7 @@ func (server *Server) writeLine(writer *bufio.Writer, line string) error {
 	return writer.Flush()
 }
 
-func (server *Server) writeFetch(writer *bufio.Writer, tag string, uid uint32, literal, section string, declaredBytes int, duplicate bool) bool {
+func (server *Server) writeFetch(writer *bufio.Writer, tag string, uid uint32, literal, section string, declaredBytes int, duplicate bool, unexpectedBinaryLiteralBytes int) bool {
 	if delay := server.options.Scenario.ResponseDelay; delay > 0 {
 		timer := time.NewTimer(delay)
 		defer timer.Stop()
@@ -726,6 +761,10 @@ func (server *Server) writeFetch(writer *bufio.Writer, tag string, uid uint32, l
 	items := fmt.Sprintf("BODY%s {%d}\r\n%s", section, declaredBytes, literal)
 	if duplicate {
 		items += fmt.Sprintf(" BODY%s {%d}\r\n%s", section, declaredBytes, literal)
+	}
+	if unexpectedBinaryLiteralBytes > 0 {
+		unexpectedLiteral := strings.Repeat("x", unexpectedBinaryLiteralBytes)
+		items += fmt.Sprintf(" BINARY[] {%d}\r\n%s", len(unexpectedLiteral), unexpectedLiteral)
 	}
 
 	response := fmt.Sprintf("* 1 FETCH (UID %d FLAGS () INTERNALDATE \"01-Jan-2026 00:00:00 +0000\" RFC822.SIZE %d %s)\r\n%s OK FETCH completed\r\n", uid, len(syntheticMessageBody), items, tag)

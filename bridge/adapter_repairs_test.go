@@ -66,6 +66,58 @@ func TestAdapterRejectsMismatchedAndDuplicateFetchSections(t *testing.T) {
 	}
 }
 
+func TestAdapterRejectsUnexpectedBinaryFetchLiteral(t *testing.T) {
+	server, err := testkit.Start(testkit.Options{
+		Mode:     testkit.ImplicitTLS,
+		Scenario: testkit.Scenario{UnexpectedFetchBinaryLiteralBytes: 128 << 10},
+	})
+	if err != nil {
+		t.Fatalf("start fake server: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	adapter, err := bridge.NewAdapter(fakeServerConfig(t, server.Addr(), bridge.TLSModeImplicit, bridge.TLSConfig{SPKISHA256: server.SPKISHA256()}))
+	if err != nil {
+		t.Fatalf("NewAdapter: %v", err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+
+	if _, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"}); bridge.CodeOf(err) != bridge.CodeBoundsExceeded {
+		t.Fatalf("SearchMail unexpected binary literal error = %v, want %q", err, bridge.CodeBoundsExceeded)
+	}
+}
+
+func TestAdapterRejectsUnexpectedBinaryBodyFetchLiteral(t *testing.T) {
+	server, err := testkit.Start(testkit.Options{
+		Mode:     testkit.ImplicitTLS,
+		Scenario: testkit.Scenario{UnexpectedBodyFetchBinaryLiteralBytes: 128 << 10},
+	})
+	if err != nil {
+		t.Fatalf("start fake server: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	config := fakeServerConfig(t, server.Addr(), bridge.TLSModeImplicit, bridge.TLSConfig{SPKISHA256: server.SPKISHA256()})
+	config.Bounds.MaxBodyBytes = bridge.Int(512)
+	adapter, err := bridge.NewAdapter(config)
+	if err != nil {
+		t.Fatalf("NewAdapter: %v", err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+
+	results, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+	if err != nil || len(results) != 1 {
+		t.Fatalf("SearchMail = %#v, %v", results, err)
+	}
+
+	if _, err := adapter.GetMessageBody(context.Background(), results[0].ID); bridge.CodeOf(err) != bridge.CodeBoundsExceeded {
+		t.Fatalf("GetMessageBody unexpected binary literal error = %v, want %q", err, bridge.CodeBoundsExceeded)
+	}
+	if _, err := adapter.Status(context.Background(), "INBOX"); err != nil {
+		t.Fatalf("Status after unexpected binary literal abort: %v", err)
+	}
+}
+
 func TestAdapterRejectsLiteralDeclarationPayloadMismatch(t *testing.T) {
 	const maxBodyBytes = 32
 

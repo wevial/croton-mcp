@@ -52,22 +52,24 @@ func (adapter *Adapter) SearchMail(ctx context.Context, query SearchQuery) ([]Me
 
 	var results []MessageMetadata
 	err := adapter.execute(ctx, func(operationContext context.Context, session readSession) error {
+		var attemptResults []MessageMetadata
+
 		snapshot, err := session.Examine(operationContext, query.Mailbox)
 		if err != nil {
 			return err
 		}
 
-		for remaining, windows := snapshot.UIDNext, 0; remaining > 1 && windows < maxSearchWindows && len(results) < adapter.config.Bounds.MaxSearchResults; windows++ {
+		for remaining, windows := snapshot.UIDNext, 0; remaining > 1 && windows < maxSearchWindows && len(attemptResults) < adapter.config.Bounds.MaxSearchResults; windows++ {
 			start := uint32(1)
 			if remaining > searchWindowWidth {
 				start = remaining - searchWindowWidth
 			}
 			end := remaining - 1
-			uids, err := session.UIDSearchWindow(operationContext, query, uidWindow{Start: start, End: end}, adapter.config.Bounds.MaxSearchResults-len(results))
+			uids, err := session.UIDSearchWindow(operationContext, query, uidWindow{Start: start, End: end}, adapter.config.Bounds.MaxSearchResults-len(attemptResults))
 			if err != nil {
 				return err
 			}
-			if len(uids) > adapter.config.Bounds.MaxSearchResults-len(results) {
+			if len(uids) > adapter.config.Bounds.MaxSearchResults-len(attemptResults) {
 				return errorCode(CodeBoundsExceeded)
 			}
 			metadata, err := session.UIDFetchMetadata(operationContext, query.Mailbox, uids, adapter.config.Bounds.MaxHeaderBytes)
@@ -80,11 +82,12 @@ func (adapter *Adapter) SearchMail(ctx context.Context, query SearchQuery) ([]Me
 					return err
 				}
 				item.Mailbox = query.Mailbox
-				results = append(results, item)
+				attemptResults = append(attemptResults, item)
 			}
 			remaining = start
 		}
 
+		results = attemptResults
 		return nil
 	})
 	if err != nil {

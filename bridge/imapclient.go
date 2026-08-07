@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/mail"
 	"sync"
+	"syscall"
 	"time"
 
 	imap "github.com/emersion/go-imap/v2"
@@ -14,13 +15,15 @@ import (
 )
 
 const (
-	syntheticStartTLSGreeting        = "* OK Croton local TLS handoff\r\n"
-	maxSearchWindows                 = 8
-	searchWindowWidth         uint32 = 100
-	maxSearchResponseBytes           = 4 << 10
+	syntheticStartTLSGreeting         = "* OK Croton local TLS handoff\r\n"
+	maxSearchWindows                  = 8
+	searchWindowWidth          uint32 = 100
+	maxSearchResponseBytes            = 4 << 10
+	maxListResponseBytes              = 64 << 10
+	fetchResponseOverheadBytes        = 4 << 10
 )
 
-var errSearchInputLimit = errors.New("IMAP SEARCH response exceeds input budget")
+var errIMAPInputLimit = errors.New("IMAP response exceeds input budget")
 
 // readSession intentionally exposes only Croton-owned read operations. The
 // concrete go-imap client never escapes this file.
@@ -103,19 +106,25 @@ func (session *imapSession) Authenticate(ctx context.Context, credentials Creden
 func (session *imapSession) List(ctx context.Context, limit int) ([]Folder, error) {
 	var folders []Folder
 	err := session.withContext(ctx, func() error {
-		command := session.client.List("", "*", nil)
-		for {
-			data := command.Next()
-			if data == nil {
-				break
+		exceeded, listErr := session.withInputBudget(maxListResponseBytes, func() error {
+			command := session.client.List("", "*", nil)
+			for {
+				data := command.Next()
+				if data == nil {
+					break
+				}
+				if len(folders) == limit {
+					_ = session.conn.Close()
+					return errorCode(CodeBoundsExceeded)
+				}
+				folders = append(folders, Folder{Name: data.Mailbox, Delimiter: string(data.Delim)})
 			}
-			if len(folders) == limit {
-				_ = session.client.Close()
-				return errorCode(CodeBoundsExceeded)
-			}
-			folders = append(folders, Folder{Name: data.Mailbox, Delimiter: string(data.Delim)})
+			return command.Close()
+		})
+		if exceeded {
+			return errorCode(CodeBoundsExceeded)
 		}
-		return command.Close()
+		return listErr
 	})
 	if err != nil {
 		return nil, err
@@ -220,6 +229,15 @@ func (session *imapSession) UIDFetchMetadata(ctx context.Context, _ string, uids
 	options := &imap.FetchOptions{UID: true, RFC822Size: true, BodySection: []*imap.FetchItemBodySection{section}}
 	var results []MessageMetadata
 	err := session.withContext(ctx, func() (err error) {
+		if session.budget != nil {
+			session.budget.begin(fetchInputBudget(headerLimit, len(uids)))
+			defer func() {
+				if session.budget.end() {
+					err = errorCode(CodeBoundsExceeded)
+				}
+			}()
+		}
+
 		command := session.client.Fetch(set, options)
 		defer func() {
 			if err != nil {
@@ -276,6 +294,15 @@ func (session *imapSession) UIDFetchBody(ctx context.Context, uid uint32, limit 
 	options := &imap.FetchOptions{UID: true, BodySection: []*imap.FetchItemBodySection{section}}
 	var body []byte
 	err := session.withContext(ctx, func() (err error) {
+		if session.budget != nil {
+			session.budget.begin(fetchInputBudget(limit, 1))
+			defer func() {
+				if session.budget.end() {
+					err = errorCode(CodeBoundsExceeded)
+				}
+			}()
+		}
+
 		command := session.client.Fetch(imap.UIDSetNum(imap.UID(uid)), options)
 		defer func() {
 			if err != nil {
@@ -358,13 +385,21 @@ func (session *imapSession) withContext(ctx context.Context, operation func() er
 }
 
 func (session *imapSession) withSearchInputBudget(operation func() error) (bool, error) {
+	return session.withInputBudget(maxSearchResponseBytes, operation)
+}
+
+func (session *imapSession) withInputBudget(limit int, operation func() error) (bool, error) {
 	if session.budget == nil {
 		return false, operation()
 	}
 
-	session.budget.begin(maxSearchResponseBytes)
+	session.budget.begin(limit)
 	err := operation()
 	return session.budget.end(), err
+}
+
+func fetchInputBudget(literalLimit, messageCount int) int {
+	return messageCount * (literalLimit + fetchResponseOverheadBytes)
 }
 
 func boundedSearchUIDs(data *imap.SearchData, window uidWindow, limit int) ([]uint32, error) {
@@ -455,7 +490,11 @@ func mapIMAPError(ctx context.Context, err error) error {
 	if errors.As(err, &authenticationError) {
 		return errorCode(CodeAuthentication)
 	}
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
+		return errorCode(CodeBridgeUnreachable)
+	}
+	var netOperationError *net.OpError
+	if errors.As(err, &netOperationError) {
 		return errorCode(CodeBridgeUnreachable)
 	}
 	var imapError *imap.Error
@@ -518,7 +557,7 @@ func (connection *readBudgetConn) Read(buffer []byte) (int, error) {
 	if connection.remaining == 0 {
 		connection.exceeded = true
 		connection.mu.Unlock()
-		return 0, errSearchInputLimit
+		return 0, errIMAPInputLimit
 	}
 	if len(buffer) > connection.remaining {
 		buffer = buffer[:connection.remaining]
