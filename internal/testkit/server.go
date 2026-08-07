@@ -17,12 +17,17 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 const serverName = "fake-imap.test"
+
+const syntheticMessageHeader = "From: Croton Fixture <fixture@croton.test>\r\nTo: Reader <reader@croton.test>\r\nSubject: Welcome to Croton\r\nDate: Thu, 01 Jan 2026 00:00:00 +0000\r\nMessage-ID: <welcome@croton.test>\r\n\r\n"
+
+const syntheticMessageBody = syntheticMessageHeader + "Welcome to Croton. This synthetic message exists only for adapter tests.\r\n"
 
 // TLSMode selects how a fake IMAP server negotiates TLS.
 type TLSMode uint8
@@ -59,6 +64,18 @@ type Scenario struct {
 	MalformedResponse string
 	// OversizedResponseBytes emits an untagged response of this size before normal responses.
 	OversizedResponseBytes int
+	// IgnoreBodyPartial makes UID FETCH return the complete body even when the
+	// client requested a BODY.PEEK partial range.
+	IgnoreBodyPartial bool
+	// OversizedLiteralBytes replaces a normal FETCH literal with a deterministic
+	// payload of this size.
+	OversizedLiteralBytes int
+	// OversizedBodyLiteralBytes replaces a body FETCH literal without changing
+	// metadata FETCH literals used to obtain an opaque message ID.
+	OversizedBodyLiteralBytes int
+	// UIDValidityAfterExamine changes the mailbox generation after the first
+	// EXAMINE, simulating a mailbox rebuild between opaque-ID operations.
+	UIDValidityAfterExamine uint32
 }
 
 // Options configures a fake server. The zero value uses STARTTLS without faults.
@@ -89,6 +106,7 @@ type Server struct {
 	mu               sync.Mutex
 	closed           bool
 	disconnectUsed   bool
+	examineCount     int
 	nextConnectionID int
 	commands         []Command
 	connections      map[net.Conn]struct{}
@@ -109,6 +127,14 @@ func Start(options Options) (*Server, error) {
 
 	if options.Scenario.OversizedResponseBytes < 0 {
 		return nil, errors.New("testkit: oversized response size must not be negative")
+	}
+
+	if options.Scenario.OversizedLiteralBytes < 0 {
+		return nil, errors.New("testkit: oversized literal size must not be negative")
+	}
+
+	if options.Scenario.OversizedBodyLiteralBytes < 0 {
+		return nil, errors.New("testkit: oversized body literal size must not be negative")
 	}
 
 	certificate, caDER, err := generateCertificate()
@@ -447,6 +473,77 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 			if !server.writeLines(writer, "* LIST (\\HasNoChildren) \"/\" \"INBOX\"", tagged(tag, "OK LIST completed")) {
 				return
 			}
+		case "STATUS":
+			if !authenticated {
+				if err := server.writeLine(writer, tagged(tag, "NO authenticate first")); err != nil {
+					return
+				}
+				continue
+			}
+
+			if !server.writeLines(writer, "* STATUS \"INBOX\" (MESSAGES 2 UIDNEXT 103 UIDVALIDITY 9001 UNSEEN 1)", tagged(tag, "OK STATUS completed")) {
+				return
+			}
+		case "EXAMINE":
+			if !authenticated {
+				if err := server.writeLine(writer, tagged(tag, "NO authenticate first")); err != nil {
+					return
+				}
+				continue
+			}
+
+			uidValidity := server.nextUIDValidity()
+			if !server.writeLines(writer, "* 2 EXISTS", fmt.Sprintf("* OK [UIDVALIDITY %d] fixture generation", uidValidity), "* OK [UIDNEXT 103] fixture next UID", tagged(tag, "OK [READ-ONLY] EXAMINE completed")) {
+				return
+			}
+		case "UID":
+			if !authenticated {
+				if err := server.writeLine(writer, tagged(tag, "NO authenticate first")); err != nil {
+					return
+				}
+				continue
+			}
+
+			fields := strings.Fields(raw)
+			if len(fields) < 3 {
+				if err := server.writeLine(writer, tagged(tag, "BAD incomplete UID command")); err != nil {
+					return
+				}
+				continue
+			}
+
+			switch strings.ToUpper(fields[2]) {
+			case "SEARCH":
+				searchResponse := "* SEARCH"
+				if strings.Contains(raw, "UID 3:102") {
+					searchResponse = "* SEARCH 101"
+				}
+				if !server.writeLines(writer, searchResponse, tagged(tag, "OK SEARCH completed")) {
+					return
+				}
+			case "FETCH":
+				literal := syntheticMessageBody
+				header := strings.Contains(strings.ToUpper(raw), "HEADER")
+				if header {
+					literal = syntheticMessageHeader
+				}
+				if server.options.Scenario.OversizedLiteralBytes > 0 {
+					literal = strings.Repeat("x", server.options.Scenario.OversizedLiteralBytes)
+				}
+				if !header && server.options.Scenario.OversizedBodyLiteralBytes > 0 {
+					literal = strings.Repeat("x", server.options.Scenario.OversizedBodyLiteralBytes)
+				}
+				if !header && !server.options.Scenario.IgnoreBodyPartial {
+					literal = partialBodyLiteral(raw, literal)
+				}
+				if !server.writeFetch(writer, tag, literal) {
+					return
+				}
+			default:
+				if err := server.writeLine(writer, tagged(tag, "BAD unsupported UID command")); err != nil {
+					return
+				}
+			}
 		case "LOGOUT":
 			server.writeLines(writer, "* BYE fake IMAP server logging out", tagged(tag, "OK LOGOUT completed"))
 			return
@@ -493,6 +590,18 @@ func (server *Server) shouldDisconnect(connectionSequence int) bool {
 	return true
 }
 
+func (server *Server) nextUIDValidity() uint32 {
+	server.mu.Lock()
+	defer server.mu.Unlock()
+
+	server.examineCount++
+	if server.examineCount > 1 && server.options.Scenario.UIDValidityAfterExamine != 0 {
+		return server.options.Scenario.UIDValidityAfterExamine
+	}
+
+	return 9001
+}
+
 func (server *Server) writeLines(writer *bufio.Writer, lines ...string) bool {
 	for _, line := range lines {
 		if err := server.writeLine(writer, line); err != nil {
@@ -521,6 +630,44 @@ func (server *Server) writeLine(writer *bufio.Writer, line string) error {
 	}
 
 	return writer.Flush()
+}
+
+func (server *Server) writeFetch(writer *bufio.Writer, tag, literal string) bool {
+	if delay := server.options.Scenario.ResponseDelay; delay > 0 {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-server.done:
+			return false
+		}
+	}
+
+	response := fmt.Sprintf("* 1 FETCH (UID 101 FLAGS () INTERNALDATE \"01-Jan-2026 00:00:00 +0000\" RFC822.SIZE %d BODY[HEADER] {%d}\r\n%s)\r\n%s OK FETCH completed\r\n", len(syntheticMessageBody), len(literal), literal, tag)
+	if _, err := writer.WriteString(response); err != nil {
+		return false
+	}
+
+	return writer.Flush() == nil
+}
+
+func partialBodyLiteral(raw, literal string) string {
+	const marker = "BODY.PEEK[]<0."
+
+	start := strings.Index(strings.ToUpper(raw), marker)
+	if start < 0 {
+		return literal
+	}
+	end := strings.IndexByte(raw[start+len(marker):], '>')
+	if end < 0 {
+		return literal
+	}
+	size, err := strconv.Atoi(raw[start+len(marker) : start+len(marker)+end])
+	if err != nil || size < 0 || size >= len(literal) {
+		return literal
+	}
+
+	return literal[:size]
 }
 
 func generateCertificate() (tls.Certificate, []byte, error) {

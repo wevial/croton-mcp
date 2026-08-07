@@ -22,7 +22,10 @@ const (
 var errStartTLSInputLimit = errors.New("STARTTLS input limit exceeded")
 
 // Connection is a TLS-established connection to the configured local Bridge endpoint.
-type Connection struct{ connection net.Conn }
+type Connection struct {
+	connection net.Conn
+	startTLS   bool
+}
 
 // Close releases the underlying network connection.
 func (connection *Connection) Close() error {
@@ -30,6 +33,21 @@ func (connection *Connection) Close() error {
 		return nil
 	}
 	return connection.connection.Close()
+}
+
+// takeConn transfers exclusive ownership to the package-local IMAP facade.
+// The prior Connection becomes inert, so its Close method cannot interrupt a
+// session after ownership has moved.
+func (connection *Connection) takeConn() (net.Conn, bool, error) {
+	if connection == nil || connection.connection == nil {
+		return nil, false, errorCode(CodeAdapterClosed)
+	}
+
+	transport := connection.connection
+	startTLS := connection.startTLS
+	connection.connection = nil
+
+	return transport, startTLS, nil
 }
 
 // Dial validates the local endpoint and establishes its configured verified TLS transport.
@@ -122,7 +140,7 @@ func establishStartTLS(ctx context.Context, rawConnection net.Conn, tlsConfig *t
 		return nil, connectionError(ctx, ctx.Err())
 	}
 
-	return &Connection{connection: tlsConnection}, nil
+	return &Connection{connection: tlsConnection, startTLS: true}, nil
 }
 
 func imapCommand(reader *bufio.Reader, writer *bufio.Writer, budget *startTLSResponseBudget, tag, command string) (bool, error) {

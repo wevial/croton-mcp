@@ -5,12 +5,15 @@ go 1.26.0
 toolchain go1.26.5
 
 require (
+	github.com/emersion/go-imap/v2 v2.0.0-beta.8
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	golang.org/x/net v0.57.0
 	golang.org/x/sys v0.47.0
 )
 
 require (
+	github.com/emersion/go-message v0.18.2 // indirect
+	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect

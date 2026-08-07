@@ -15,6 +15,14 @@ const (
 	CodeCredentialOverflow = "credential_command_output_too_large"
 	CodeBridgeUnreachable  = "bridge_unreachable"
 	CodeBoundsExceeded     = "bounds_exceeded"
+	CodeOperationCanceled  = "operation_canceled"
+	CodeCommandTimedOut    = "command_timed_out"
+	CodeAuthentication     = "authentication_failed"
+	CodeMailboxNotFound    = "mailbox_not_found"
+	CodeStaleMessageID     = "stale_message_id"
+	CodeIMAPCommand        = "imap_command_failed"
+	CodeIMAPProtocol       = "imap_protocol_error"
+	CodeAdapterClosed      = "adapter_closed"
 )
 
 // Error is a stable, secret-safe error exposed across the bridge boundary.
