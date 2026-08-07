@@ -89,8 +89,10 @@ func TestAdapterRejectsMismatchedAndDuplicateFetchSections(t *testing.T) {
 	}{
 		{name: "metadata mismatched section", scenario: testkit.Scenario{FetchResponseSection: "[TEXT]"}},
 		{name: "metadata duplicate section", scenario: testkit.Scenario{DuplicateFetchSection: true}},
+		{name: "metadata unrequested UID", scenario: testkit.Scenario{FetchResponseUID: 102}},
 		{name: "body mismatched section", scenario: testkit.Scenario{BodyFetchResponseSection: "[HEADER]"}, body: true},
 		{name: "body duplicate section", scenario: testkit.Scenario{DuplicateBodyFetchSection: true}, body: true},
+		{name: "body unrequested UID", scenario: testkit.Scenario{BodyFetchResponseUID: 102}, body: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server, err := testkit.Start(testkit.Options{Mode: testkit.ImplicitTLS, Scenario: test.scenario})

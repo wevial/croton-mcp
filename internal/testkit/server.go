@@ -95,6 +95,12 @@ type Scenario struct {
 	FetchResponseSection string
 	// BodyFetchResponseSection replaces only whole-body FETCH response labels.
 	BodyFetchResponseSection string
+	// FetchResponseUID replaces the UID in every metadata FETCH response.
+	// Zero preserves the requested UID.
+	FetchResponseUID uint32
+	// BodyFetchResponseUID replaces only whole-body FETCH response UIDs.
+	// Zero preserves the requested UID.
+	BodyFetchResponseUID uint32
 	// DuplicateFetchSection emits the requested FETCH body section twice.
 	DuplicateFetchSection bool
 	// DuplicateBodyFetchSection emits only whole-body FETCH sections twice.
@@ -622,7 +628,14 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 				if !header && server.options.Scenario.UnexpectedBodyFetchBinaryLiteralBytes > 0 {
 					unexpectedBinaryLiteralBytes = server.options.Scenario.UnexpectedBodyFetchBinaryLiteralBytes
 				}
-				if !server.writeFetch(writer, tag, fetchResponseUID(raw), literal, section, declaredBytes, duplicate, unexpectedBinaryLiteralBytes) {
+				responseUID := fetchResponseUID(raw)
+				if server.options.Scenario.FetchResponseUID != 0 {
+					responseUID = server.options.Scenario.FetchResponseUID
+				}
+				if !header && server.options.Scenario.BodyFetchResponseUID != 0 {
+					responseUID = server.options.Scenario.BodyFetchResponseUID
+				}
+				if !server.writeFetch(writer, tag, responseUID, literal, section, declaredBytes, duplicate, unexpectedBinaryLiteralBytes) {
 					return
 				}
 			default:

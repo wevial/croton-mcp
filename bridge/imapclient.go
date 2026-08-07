@@ -313,11 +313,22 @@ func (session *imapSession) UIDFetchBody(ctx context.Context, uid uint32, limit 
 
 		message := command.Next()
 		if message == nil {
-			return command.Close()
+			if err := command.Close(); err != nil {
+				return err
+			}
+
+			return errorCode(CodeIMAPProtocol)
 		}
 		bodySections := 0
+		uidItems := 0
 		for data := message.Next(); data != nil; data = message.Next() {
-			if value, ok := data.(imapclient.FetchItemDataBodySection); ok {
+			switch value := data.(type) {
+			case imapclient.FetchItemDataUID:
+				if uidItems != 0 || uint32(value.UID) != uid {
+					return errorCode(CodeIMAPProtocol)
+				}
+				uidItems++
+			case imapclient.FetchItemDataBodySection:
 				if value.Literal == nil || value.Section == nil || !value.MatchCommand(section) || bodySections != 0 {
 					return errorCode(CodeIMAPProtocol)
 				}
@@ -329,7 +340,7 @@ func (session *imapSession) UIDFetchBody(ctx context.Context, uid uint32, limit 
 				body = result
 			}
 		}
-		if command.Next() != nil || body == nil || bodySections != 1 {
+		if command.Next() != nil || body == nil || bodySections != 1 || uidItems != 1 {
 			return errorCode(CodeIMAPProtocol)
 		}
 		return command.Close()
