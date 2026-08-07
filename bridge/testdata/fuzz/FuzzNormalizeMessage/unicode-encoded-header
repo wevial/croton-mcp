@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("Subject: =?UTF-8?B?4pyT?=\\r\\nContent-Type: text/plain; charset=UTF-8\\r\\n\\r\\nπ")

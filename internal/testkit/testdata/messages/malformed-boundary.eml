@@ -1,0 +1,7 @@
+From: Malformed Fixture <malformed@fixture.test>
+Content-Type: multipart/mixed; boundary="unterminated"
+
+--unterminated
+Content-Type: text/plain
+
+Synthetic incomplete MIME fixture.

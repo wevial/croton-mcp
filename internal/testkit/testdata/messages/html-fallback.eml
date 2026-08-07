@@ -1,0 +1,8 @@
+From: HTML Sender <html@fixture.test>
+To: HTML Reader <reader@fixture.test>
+Message-ID: <html-fallback@fixture.test>
+Subject: Synthetic HTML fallback
+MIME-Version: 1.0
+Content-Type: text/html; charset=UTF-8
+
+<html><head><script>ignored()</script></head><body><p>Safe synthetic HTML text.</p><img src="https://tracker.invalid/pixel"></body></html>
