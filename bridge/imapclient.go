@@ -19,7 +19,8 @@ const (
 	maxSearchWindows                  = 8
 	searchWindowWidth          uint32 = 100
 	maxSearchResponseBytes            = 4 << 10
-	maxListResponseBytes              = 64 << 10
+	maxControlResponseBytes           = 64 << 10
+	maxListResponseBytes              = maxControlResponseBytes
 	fetchResponseOverheadBytes        = 4 << 10
 )
 
@@ -62,7 +63,7 @@ func newIMAPSession(ctx context.Context, connection *Connection) (*imapSession, 
 	}
 
 	wrapped := &deadlineConn{Conn: transport}
-	budget := &readBudgetConn{Conn: wrapped}
+	budget := newReadBudgetConn(wrapped, maxControlResponseBytes)
 	clientTransport := net.Conn(budget)
 	if startTLS {
 		clientTransport = &syntheticGreetingConn{Conn: budget, greeting: []byte(syntheticStartTLSGreeting)}
@@ -70,7 +71,7 @@ func newIMAPSession(ctx context.Context, connection *Connection) (*imapSession, 
 
 	client := imapclient.New(clientTransport, nil)
 	session := &imapSession{client: client, conn: wrapped, budget: budget}
-	if err := session.withContext(ctx, func() error {
+	if err := session.withBoundedInput(ctx, maxControlResponseBytes, func() error {
 		if err := client.WaitGreeting(); err != nil {
 			return err
 		}
@@ -86,7 +87,7 @@ func newIMAPSession(ctx context.Context, connection *Connection) (*imapSession, 
 }
 
 func (session *imapSession) Authenticate(ctx context.Context, credentials Credentials) error {
-	return session.withContext(ctx, func() error {
+	return session.withBoundedInput(ctx, maxControlResponseBytes, func() error {
 		username := string(credentials.Username)
 		password := string(credentials.Password)
 		defer credentials.Zero()
@@ -135,7 +136,7 @@ func (session *imapSession) List(ctx context.Context, limit int) ([]Folder, erro
 
 func (session *imapSession) Status(ctx context.Context, mailbox string) (MailboxStatus, error) {
 	var result MailboxStatus
-	err := session.withContext(ctx, func() error {
+	err := session.withBoundedInput(ctx, maxControlResponseBytes, func() error {
 		data, err := session.client.Status(mailbox, &imap.StatusOptions{NumMessages: true, UIDNext: true, UIDValidity: true, NumUnseen: true}).Wait()
 		if err != nil {
 			return err
@@ -155,7 +156,7 @@ func (session *imapSession) Status(ctx context.Context, mailbox string) (Mailbox
 
 func (session *imapSession) Examine(ctx context.Context, mailbox string) (mailboxSnapshot, error) {
 	var snapshot mailboxSnapshot
-	err := session.withContext(ctx, func() error {
+	err := session.withBoundedInput(ctx, maxControlResponseBytes, func() error {
 		data, err := session.client.Select(mailbox, &imap.SelectOptions{ReadOnly: true}).Wait()
 		if err != nil {
 			return err
@@ -384,6 +385,17 @@ func (session *imapSession) withContext(ctx context.Context, operation func() er
 	return mapIMAPError(ctx, operation())
 }
 
+func (session *imapSession) withBoundedInput(ctx context.Context, limit int, operation func() error) error {
+	return session.withContext(ctx, func() error {
+		exceeded, err := session.withInputBudget(limit, operation)
+		if exceeded {
+			return errorCode(CodeBoundsExceeded)
+		}
+
+		return err
+	})
+}
+
 func (session *imapSession) withSearchInputBudget(operation func() error) (bool, error) {
 	return session.withInputBudget(maxSearchResponseBytes, operation)
 }
@@ -525,8 +537,18 @@ type readBudgetConn struct {
 	net.Conn
 	mu        sync.Mutex
 	active    bool
+	idleLimit int
 	remaining int
 	exceeded  bool
+}
+
+func newReadBudgetConn(connection net.Conn, idleLimit int) *readBudgetConn {
+	return &readBudgetConn{
+		Conn:      connection,
+		active:    true,
+		idleLimit: idleLimit,
+		remaining: idleLimit,
+	}
 }
 
 func (connection *readBudgetConn) begin(limit int) {
@@ -543,8 +565,9 @@ func (connection *readBudgetConn) end() bool {
 	defer connection.mu.Unlock()
 
 	exceeded := connection.exceeded
-	connection.active = false
-	connection.remaining = 0
+	connection.active = true
+	connection.remaining = connection.idleLimit
+	connection.exceeded = false
 	return exceeded
 }
 

@@ -64,6 +64,9 @@ type Scenario struct {
 	MalformedResponse string
 	// OversizedResponseBytes emits an untagged response of this size before normal responses.
 	OversizedResponseBytes int
+	// OversizedResponseCommand limits an oversized response to a command name.
+	// An empty value emits it before every command.
+	OversizedResponseCommand string
 	// IgnoreBodyPartial makes UID FETCH return the complete body even when the
 	// client requested a BODY.PEEK partial range.
 	IgnoreBodyPartial bool
@@ -399,9 +402,9 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 			continue
 		}
 
-		if server.options.Scenario.OversizedResponseBytes > 0 {
+		if server.options.Scenario.OversizedResponseBytes > 0 && (server.options.Scenario.OversizedResponseCommand == "" || strings.EqualFold(server.options.Scenario.OversizedResponseCommand, name)) {
 			size := server.options.Scenario.OversizedResponseBytes
-			if err := server.writeLine(writer, "*"+strings.Repeat("X", size-1)); err != nil {
+			if err := server.writeLine(writer, "* OK "+strings.Repeat("X", size-5)); err != nil {
 				return
 			}
 		}

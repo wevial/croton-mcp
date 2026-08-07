@@ -25,6 +25,62 @@ func TestAdapterRejectsZeroMaxHeaderBytes(t *testing.T) {
 	}
 }
 
+func TestAdapterRejectsOversizedControlResponses(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		command   string
+		operation func(*bridge.Adapter) error
+	}{
+		{
+			name: "session setup",
+			operation: func(adapter *bridge.Adapter) error {
+				_, err := adapter.ListFolders(context.Background())
+				return err
+			},
+		},
+		{
+			name:    "status",
+			command: "STATUS",
+			operation: func(adapter *bridge.Adapter) error {
+				_, err := adapter.Status(context.Background(), "INBOX")
+				return err
+			},
+		},
+		{
+			name:    "examine",
+			command: "EXAMINE",
+			operation: func(adapter *bridge.Adapter) error {
+				_, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+				return err
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server, err := testkit.Start(testkit.Options{
+				Mode: testkit.ImplicitTLS,
+				Scenario: testkit.Scenario{
+					OversizedResponseBytes:   128 << 10,
+					OversizedResponseCommand: test.command,
+				},
+			})
+			if err != nil {
+				t.Fatalf("start fake server: %v", err)
+			}
+			t.Cleanup(func() { _ = server.Close() })
+
+			adapter, err := bridge.NewAdapter(fakeServerConfig(t, server.Addr(), bridge.TLSModeImplicit, bridge.TLSConfig{SPKISHA256: server.SPKISHA256()}))
+			if err != nil {
+				t.Fatalf("NewAdapter: %v", err)
+			}
+			t.Cleanup(func() { _ = adapter.Close() })
+
+			if err := test.operation(adapter); bridge.CodeOf(err) != bridge.CodeBoundsExceeded {
+				t.Fatalf("oversized %s response error = %v, want %q", test.name, err, bridge.CodeBoundsExceeded)
+			}
+		})
+	}
+}
+
 func TestAdapterRejectsMismatchedAndDuplicateFetchSections(t *testing.T) {
 	for _, test := range []struct {
 		name     string
