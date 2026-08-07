@@ -52,7 +52,7 @@ type imapSession struct {
 	budget *readBudgetConn
 }
 
-func newIMAPSession(connection *Connection) (*imapSession, error) {
+func newIMAPSession(ctx context.Context, connection *Connection) (*imapSession, error) {
 	transport, startTLS, err := connection.takeConn()
 	if err != nil {
 		return nil, err
@@ -66,16 +66,20 @@ func newIMAPSession(connection *Connection) (*imapSession, error) {
 	}
 
 	client := imapclient.New(clientTransport, nil)
-	if err := client.WaitGreeting(); err != nil {
+	session := &imapSession{client: client, conn: wrapped, budget: budget}
+	if err := session.withContext(ctx, func() error {
+		if err := client.WaitGreeting(); err != nil {
+			return err
+		}
+
+		_, err := client.Capability().Wait()
+		return err
+	}); err != nil {
 		_ = client.Close()
-		return nil, mapIMAPError(context.Background(), err)
-	}
-	if _, err := client.Capability().Wait(); err != nil {
-		_ = client.Close()
-		return nil, mapIMAPError(context.Background(), err)
+		return nil, err
 	}
 
-	return &imapSession{client: client, conn: wrapped, budget: budget}, nil
+	return session, nil
 }
 
 func (session *imapSession) Authenticate(ctx context.Context, credentials Credentials) error {

@@ -180,7 +180,7 @@ func TestAdapterMapsLoginRejectionToAuthentication(t *testing.T) {
 	}
 }
 
-func TestAdapterMapsLoginDisconnectToBridgeUnreachable(t *testing.T) {
+func TestAdapterReplaysLoginDisconnectOnce(t *testing.T) {
 	server, err := testkit.Start(testkit.Options{
 		Mode:     testkit.ImplicitTLS,
 		Scenario: testkit.Scenario{DisconnectAfterCommand: 3},
@@ -196,12 +196,23 @@ func TestAdapterMapsLoginDisconnectToBridgeUnreachable(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = adapter.Close() })
 
-	_, err = adapter.ListFolders(context.Background())
-	if transcript := strings.Join(commandStrings(server.Commands()), "\n"); !strings.Contains(transcript, "LOGIN") {
-		t.Fatalf("login disconnect transcript = %q, want LOGIN", transcript)
+	folders, err := adapter.ListFolders(context.Background())
+	if err != nil || len(folders) != 1 {
+		t.Fatalf("ListFolders after login disconnect = %#v, %v", folders, err)
 	}
-	if bridge.CodeOf(err) != bridge.CodeBridgeUnreachable {
-		t.Fatalf("ListFolders login disconnect error = %v, want %q", err, bridge.CodeBridgeUnreachable)
+
+	logins := 0
+	connections := make(map[int]struct{})
+	for _, command := range server.Commands() {
+		if command.Name != "LOGIN" {
+			continue
+		}
+
+		logins++
+		connections[command.ConnectionID] = struct{}{}
+	}
+	if logins != 2 || len(connections) != 2 {
+		t.Fatalf("LOGIN replay transcript = %+v, want two LOGIN commands on distinct connections", server.Commands())
 	}
 }
 

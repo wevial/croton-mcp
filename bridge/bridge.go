@@ -50,7 +50,7 @@ func (adapter *Adapter) openSession(ctx context.Context) (readSession, error) {
 		return nil, err
 	}
 
-	session, err := newIMAPSession(connection)
+	session, err := newIMAPSession(ctx, connection)
 	if err != nil {
 		_ = connection.Close()
 		return nil, err
@@ -78,30 +78,67 @@ func (adapter *Adapter) execute(ctx context.Context, operation func(context.Cont
 	operationContext, cancel := adapter.operationContext(ctx)
 	defer cancel()
 
-	adapter.mu.Lock()
-	if adapter.closed {
-		adapter.mu.Unlock()
-		return errorCode(CodeAdapterClosed)
-	}
-	if adapter.session == nil {
-		session, err := adapter.factory(operationContext)
+	for attempt := 0; attempt < 2; attempt++ {
+		session, err := adapter.sessionForOperation(operationContext)
 		if err != nil {
-			adapter.mu.Unlock()
+			err = mapIMAPError(operationContext, err)
+			if attempt == 0 && adapter.canReplay(operationContext, err) {
+				continue
+			}
+
 			return err
 		}
-		adapter.session = session
-	}
-	session := adapter.session
-	adapter.mu.Unlock()
 
-	if err := operation(operationContext, session); err != nil {
-		if CodeOf(err) == CodeBridgeUnreachable || CodeOf(err) == CodeCommandTimedOut || CodeOf(err) == CodeOperationCanceled || CodeOf(err) == CodeBoundsExceeded || CodeOf(err) == CodeIMAPProtocol {
+		err = operation(operationContext, session)
+		if err == nil {
+			return nil
+		}
+
+		if attempt == 0 && adapter.canReplay(operationContext, err) {
+			adapter.invalidate(session)
+			continue
+		}
+
+		if adapter.invalidatesSession(err) {
 			adapter.invalidate(session)
 		}
+
 		return err
 	}
 
-	return nil
+	return errorCode(CodeBridgeUnreachable)
+}
+
+func (adapter *Adapter) sessionForOperation(ctx context.Context) (readSession, error) {
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+
+	if adapter.closed {
+		return nil, errorCode(CodeAdapterClosed)
+	}
+	if adapter.session == nil {
+		session, err := adapter.factory(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		adapter.session = session
+	}
+
+	return adapter.session, nil
+}
+
+func (adapter *Adapter) canReplay(ctx context.Context, err error) bool {
+	return ctx.Err() == nil && CodeOf(err) == CodeBridgeUnreachable
+}
+
+func (adapter *Adapter) invalidatesSession(err error) bool {
+	switch CodeOf(err) {
+	case CodeBridgeUnreachable, CodeCommandTimedOut, CodeOperationCanceled, CodeBoundsExceeded, CodeIMAPProtocol:
+		return true
+	default:
+		return false
+	}
 }
 
 func (adapter *Adapter) acquire(ctx context.Context) error {
