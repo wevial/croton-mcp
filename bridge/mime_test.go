@@ -221,6 +221,48 @@ func TestNormalizeMessageDoesNotTruncateAtExactHeaderCountLimit(t *testing.T) {
 	}
 }
 
+func TestNormalizeMessageHonorsHeaderCountLimitForEOFHeaderBlock(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name          string
+		raw           string
+		wantTo        string
+		wantTruncated bool
+	}{
+		{
+			name:   "exact boundary",
+			raw:    "Subject: Exact EOF boundary\r\nFrom: sender@fixture.test",
+			wantTo: "",
+		},
+		{
+			name:          "above boundary",
+			raw:           "Subject: Exact EOF boundary\r\nFrom: sender@fixture.test\r\nTo: omitted@fixture.test",
+			wantTo:        "",
+			wantTruncated: true,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			message, err := bridge.NormalizeMessage(strings.NewReader(testCase.raw), bridge.NormalizeOptions{
+				Limits: bridge.NormalizeLimits{MaxHeaderCount: 2},
+			})
+			if err != nil {
+				t.Fatalf("normalize EOF-terminated header block: %v", err)
+			}
+
+			if message.Truncation.HeaderCount != testCase.wantTruncated {
+				t.Errorf("header-count truncation = %t, want %t", message.Truncation.HeaderCount, testCase.wantTruncated)
+			}
+
+			if message.Headers.Subject != "Exact EOF boundary" || message.Headers.From != "sender@fixture.test" || message.Headers.To != testCase.wantTo {
+				t.Errorf("EOF-terminated header result = %+v", message)
+			}
+		})
+	}
+}
+
 func TestNormalizeMessageRejectsHeaderBlockPastByteLimit(t *testing.T) {
 	t.Parallel()
 

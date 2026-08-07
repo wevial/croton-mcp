@@ -120,11 +120,13 @@ func boundedHeaderCount(header []byte, limit int) ([]byte, bool) {
 	fieldCount := 0
 	for lineStart := 0; lineStart < len(header); {
 		lineLength := bytes.IndexByte(header[lineStart:], '\n')
-		if lineLength < 0 {
-			return header, false
+		lineEnd := len(header)
+		nextLineStart := len(header)
+		if lineLength >= 0 {
+			lineEnd = lineStart + lineLength
+			nextLineStart = lineEnd + 1
 		}
 
-		lineEnd := lineStart + lineLength
 		line := bytes.TrimSuffix(header[lineStart:lineEnd], []byte{'\r'})
 		if len(line) == 0 {
 			return header, false
@@ -146,7 +148,7 @@ func boundedHeaderCount(header []byte, limit int) ([]byte, bool) {
 			}
 		}
 
-		lineStart = lineEnd + 1
+		lineStart = nextLineStart
 	}
 
 	return header, false
