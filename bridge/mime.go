@@ -26,6 +26,8 @@ const (
 	errorCodeMalformedEncoding  = "malformed_encoding"
 )
 
+var errMIMEPartsLimit = errors.New("MIME part limit reached")
+
 // NormalizeError is a stable, content-free normalization failure.
 type NormalizeError struct {
 	Code string
@@ -57,7 +59,10 @@ func normalizeMessage(reader io.Reader, limits NormalizeLimits) (NormalizedMessa
 		return NormalizedMessage{}, err
 	}
 
-	message, err := mail.ReadMessage(bytes.NewReader(raw))
+	bodyOffset := len(headerBytes)
+	headerBytes, headerCountTruncated := boundedHeaderCount(headerBytes, limits.MaxHeaderCount)
+
+	message, err := mail.ReadMessage(io.MultiReader(bytes.NewReader(headerBytes), bytes.NewReader(raw[bodyOffset:])))
 	if err != nil {
 		return NormalizedMessage{}, &NormalizeError{Code: errorCodeMalformedHeader}
 	}
@@ -70,9 +75,10 @@ func normalizeMessage(reader io.Reader, limits NormalizeLimits) (NormalizedMessa
 
 	normalized.Headers = headers
 	normalized.Truncation = truncation
+	normalized.Truncation.HeaderCount = headerCountTruncated
 
 	collector := mimeCollector{limits: limits, result: &normalized}
-	if err := collector.parseEntity(textproto.MIMEHeader(message.Header), message.Body, 0); err != nil {
+	if err := collector.parseEntity(textproto.MIMEHeader(message.Header), message.Body, 0); err != nil && !errors.Is(err, errMIMEPartsLimit) {
 		return NormalizedMessage{}, err
 	}
 
@@ -107,22 +113,43 @@ func boundedHeaderBlock(raw []byte, limits NormalizeLimits) ([]byte, error) {
 		return nil, &NormalizeError{Code: errorCodeMalformedHeader}
 	}
 
-	lineCount := 0
-	for _, line := range strings.Split(string(raw[:headerEnd]), "\n") {
-		if line == "" || line == "\r" {
-			break
-		}
-
-		if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
-			lineCount++
-		}
-	}
-
-	if lineCount > limits.MaxHeaderCount {
-		return nil, &NormalizeError{Code: errorCodeMalformedHeader}
-	}
-
 	return raw[:headerEnd], nil
+}
+
+func boundedHeaderCount(header []byte, limit int) ([]byte, bool) {
+	fieldCount := 0
+	for lineStart := 0; lineStart < len(header); {
+		lineLength := bytes.IndexByte(header[lineStart:], '\n')
+		if lineLength < 0 {
+			return header, false
+		}
+
+		lineEnd := lineStart + lineLength
+		line := bytes.TrimSuffix(header[lineStart:lineEnd], []byte{'\r'})
+		if len(line) == 0 {
+			return header, false
+		}
+
+		if line[0] != ' ' && line[0] != '	' {
+			fieldCount++
+			if fieldCount > limit {
+				separator := []byte{'\n'}
+				if lineStart >= 2 && bytes.Equal(header[lineStart-2:lineStart], []byte("\r\n")) {
+					separator = []byte("\r\n")
+				}
+
+				bounded := make([]byte, 0, lineStart+len(separator))
+				bounded = append(bounded, header[:lineStart]...)
+				bounded = append(bounded, separator...)
+
+				return bounded, true
+			}
+		}
+
+		lineStart = lineEnd + 1
+	}
+
+	return header, false
 }
 
 func canonicalHeaders(header mail.Header, headerBytes []byte, limits NormalizeLimits) (CanonicalHeaders, Truncation, error) {
@@ -294,11 +321,12 @@ func (collector *mimeCollector) parseEntity(header textproto.MIMEHeader, body io
 		return nil
 	}
 
-	collector.parts++
-	if collector.parts > collector.limits.MaxMIMEParts {
+	if collector.parts >= collector.limits.MaxMIMEParts {
 		collector.result.Truncation.MIMEParts = true
-		return nil
+
+		return errMIMEPartsLimit
 	}
+	collector.parts++
 
 	contentType := "text/plain"
 	parameters := map[string]string{}
@@ -342,6 +370,12 @@ func (collector *mimeCollector) parseEntity(header textproto.MIMEHeader, body io
 
 		reader := multipart.NewReader(body, boundary)
 		for {
+			if collector.parts >= collector.limits.MaxMIMEParts {
+				collector.result.Truncation.MIMEParts = true
+
+				return errMIMEPartsLimit
+			}
+
 			part, err := reader.NextPart()
 			if errors.Is(err, io.EOF) {
 				return nil

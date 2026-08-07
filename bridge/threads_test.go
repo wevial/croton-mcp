@@ -1,6 +1,7 @@
 package bridge_test
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -97,6 +98,32 @@ func TestBuildThreadCapsDepthAndMessageCount(t *testing.T) {
 
 	if !countCapped.Truncation.ThreadMessages || len(countCapped.Nodes) != 2 || countCapped.Nodes[0].Key != "a" || countCapped.Nodes[1].Key != "m" {
 		t.Errorf("count cap result = %+v, truncation = %+v", countCapped.Nodes, countCapped.Truncation)
+	}
+}
+
+func TestBuildThreadBoundsAllocationBeforeSelectingGloballyEarliestMessages(t *testing.T) {
+	const messageCount = 50_000
+	messages := make([]bridge.ThreadMessage, messageCount)
+	for index := range messages {
+		messages[index] = bridge.ThreadMessage{
+			Key:        fmt.Sprintf("message-%05d", index),
+			ReceivedAt: time.Unix(int64(messageCount-index), 0),
+		}
+	}
+
+	var thread bridge.Thread
+	benchmark := testing.Benchmark(func(benchmark *testing.B) {
+		for benchmark.Loop() {
+			thread = bridge.BuildThread(messages, bridge.ThreadOptions{Limits: bridge.NormalizeLimits{MaxThreadMessages: 10}})
+		}
+	})
+
+	if allocated := benchmark.AllocedBytesPerOp(); allocated > 1<<20 {
+		t.Errorf("BuildThread allocated %d bytes for a 10-message cap, want at most 1 MiB", allocated)
+	}
+
+	if len(thread.Nodes) != 10 || thread.Nodes[0].Key != "message-49999" || thread.Nodes[9].Key != "message-49990" {
+		t.Errorf("globally earliest selection = %+v", thread.Nodes)
 	}
 }
 

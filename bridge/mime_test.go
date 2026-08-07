@@ -183,6 +183,57 @@ func TestNormalizeMessageKeepsNearestReferencesWhenCapped(t *testing.T) {
 	}
 }
 
+func TestNormalizeMessageTruncatesHeadersAtHeaderCountLimit(t *testing.T) {
+	t.Parallel()
+
+	message, err := bridge.NormalizeMessage(strings.NewReader(strings.Join([]string{
+		"Subject: Bounded headers",
+		"Content-Type: text/plain",
+		"From: Ignored Sender <ignored@fixture.test>",
+		"",
+		"synthetic body",
+	}, "\r\n")), bridge.NormalizeOptions{Limits: bridge.NormalizeLimits{MaxHeaderCount: 2}})
+	if err != nil {
+		t.Fatalf("normalize header-count bounded message: %v", err)
+	}
+
+	if !message.Truncation.HeaderCount {
+		t.Errorf("truncation = %+v, want header-count metadata", message.Truncation)
+	}
+
+	if message.Headers.Subject != "Bounded headers" || message.Headers.From != "" || message.Text != "synthetic body" {
+		t.Errorf("bounded header result = %+v", message)
+	}
+}
+
+func TestNormalizeMessageDoesNotTruncateAtExactHeaderCountLimit(t *testing.T) {
+	t.Parallel()
+
+	message, err := bridge.NormalizeMessage(strings.NewReader("Subject: Exact boundary\r\nContent-Type: text/plain\r\n\r\nsynthetic body"), bridge.NormalizeOptions{
+		Limits: bridge.NormalizeLimits{MaxHeaderCount: 2},
+	})
+	if err != nil {
+		t.Fatalf("normalize exact header-count boundary: %v", err)
+	}
+
+	if message.Truncation.HeaderCount || message.Headers.Subject != "Exact boundary" || message.Text != "synthetic body" {
+		t.Errorf("exact header-count result = %+v", message)
+	}
+}
+
+func TestNormalizeMessageRejectsHeaderBlockPastByteLimit(t *testing.T) {
+	t.Parallel()
+
+	_, err := bridge.NormalizeMessage(strings.NewReader("Subject: header block crosses its byte limit\r\n\r\nsynthetic body"), bridge.NormalizeOptions{
+		Limits: bridge.NormalizeLimits{MaxHeaderBytes: 32},
+	})
+
+	var normalizeError *bridge.NormalizeError
+	if !errors.As(err, &normalizeError) || normalizeError.Code != "malformed_header" {
+		t.Fatalf("error = %#v, want safe malformed_header", err)
+	}
+}
+
 func TestNormalizeMessageReturnsNestedAttachmentMetadataOnly(t *testing.T) {
 	t.Parallel()
 
@@ -292,6 +343,36 @@ func TestNormalizeMessageMarksMIMEDepthTruncation(t *testing.T) {
 
 	if !message.Truncation.MIMEDepth {
 		t.Errorf("truncation = %+v, want MIME depth", message.Truncation)
+	}
+}
+
+func TestNormalizeMessageStopsMultipartTraversalAtPartCap(t *testing.T) {
+	t.Parallel()
+
+	var input strings.Builder
+	input.WriteString("Content-Type: multipart/mixed; boundary=bounded\r\n\r\n")
+	for part := range 20 {
+		input.WriteString("--bounded\r\n")
+		if part == 19 {
+			input.WriteString("malformed header after cap\r\n\r\nignored\r\n")
+
+			continue
+		}
+
+		input.WriteString("Content-Type: text/plain\r\n\r\n")
+		input.WriteString("tiny synthetic part\r\n")
+	}
+	input.WriteString("--bounded--\r\n")
+
+	message, err := bridge.NormalizeMessage(strings.NewReader(input.String()), bridge.NormalizeOptions{
+		Limits: bridge.NormalizeLimits{MaxMIMEParts: 5},
+	})
+	if err != nil {
+		t.Fatalf("normalize bounded multipart: %v", err)
+	}
+
+	if !message.Truncation.MIMEParts || message.Text != "tiny synthetic part" {
+		t.Errorf("bounded multipart result = text %q, truncation %+v", message.Text, message.Truncation)
 	}
 }
 
