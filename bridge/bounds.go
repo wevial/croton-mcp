@@ -1,26 +1,20 @@
 package bridge
 
 const (
-	defaultMaxSearchResults   = 50
-	hardMaxSearchResults      = 250
-	defaultMaxFolderResults   = 200
-	hardMaxFolderResults      = 1000
-	defaultMaxBodyBytes       = 256 * 1024
-	hardMaxBodyBytes          = 1024 * 1024
-	defaultMaxHeaderBytes     = 16 * 1024
-	hardMaxHeaderBytes        = 64 * 1024
-	defaultMaxMIMEParts       = 50
-	hardMaxMIMEParts          = 200
-	defaultMaxAttachmentCount = 20
-	hardMaxAttachmentCount    = 100
-	defaultMaxThreadMessages  = 20
-	hardMaxThreadMessages     = 100
-	defaultMaxThreadFetches   = 30
-	hardMaxThreadFetches      = 100
-	defaultMaxPreviewChars    = 200
-	hardMaxPreviewChars       = 1000
-	defaultMaxOutputBytes     = 100000
-	hardMaxOutputBytes        = 400000
+	defaultMaxSearchResults  = 50
+	hardMaxSearchResults     = 250
+	defaultMaxFolderResults  = 200
+	hardMaxFolderResults     = 1000
+	defaultMaxBodyBytes      = 256 * 1024
+	hardMaxBodyBytes         = 1024 * 1024
+	defaultMaxThreadMessages = 20
+	hardMaxThreadMessages    = 100
+	defaultMaxThreadFetches  = 30
+	hardMaxThreadFetches     = 100
+	defaultMaxPreviewChars   = 200
+	hardMaxPreviewChars      = 1000
+	defaultMaxOutputBytes    = 100000
+	hardMaxOutputBytes       = 400000
 )
 
 // Bounds contains the effective finite limits used by bridge operations.
@@ -84,13 +78,13 @@ func mergeBounds(patch BoundsPatch) (Bounds, error) {
 	if bounds.MaxBodyBytes, err = clampBound(patch.MaxBodyBytes, bounds.MaxBodyBytes, hardMaxBodyBytes); err != nil {
 		return Bounds{}, err
 	}
-	if bounds.MaxHeaderBytes, err = clampBound(patch.MaxHeaderBytes, bounds.MaxHeaderBytes, hardMaxHeaderBytes); err != nil {
+	if bounds.MaxHeaderBytes, err = clampBound(patch.MaxHeaderBytes, bounds.MaxHeaderBytes, maximumMaxHeaderBytes); err != nil {
 		return Bounds{}, err
 	}
-	if bounds.MaxMimeParts, err = clampBound(patch.MaxMimeParts, bounds.MaxMimeParts, hardMaxMIMEParts); err != nil {
+	if bounds.MaxMimeParts, err = clampBound(patch.MaxMimeParts, bounds.MaxMimeParts, maximumMaxMIMEParts); err != nil {
 		return Bounds{}, err
 	}
-	if bounds.MaxAttachmentCount, err = clampBound(patch.MaxAttachmentCount, bounds.MaxAttachmentCount, hardMaxAttachmentCount); err != nil {
+	if bounds.MaxAttachmentCount, err = clampBound(patch.MaxAttachmentCount, bounds.MaxAttachmentCount, maximumMaxAttachmentCount); err != nil {
 		return Bounds{}, err
 	}
 	if bounds.MaxThreadMessages, err = clampBound(patch.MaxThreadMessages, bounds.MaxThreadMessages, hardMaxThreadMessages); err != nil {
