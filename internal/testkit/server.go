@@ -76,6 +76,8 @@ type Scenario struct {
 	// UIDValidityAfterExamine changes the mailbox generation after the first
 	// EXAMINE, simulating a mailbox rebuild between opaque-ID operations.
 	UIDValidityAfterExamine uint32
+	// ListResponseCount controls the number of synthetic folders in a LIST response.
+	ListResponseCount int
 }
 
 // Options configures a fake server. The zero value uses STARTTLS without faults.
@@ -135,6 +137,10 @@ func Start(options Options) (*Server, error) {
 
 	if options.Scenario.OversizedBodyLiteralBytes < 0 {
 		return nil, errors.New("testkit: oversized body literal size must not be negative")
+	}
+
+	if options.Scenario.ListResponseCount < 0 {
+		return nil, errors.New("testkit: list response count must not be negative")
 	}
 
 	certificate, caDER, err := generateCertificate()
@@ -470,7 +476,7 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 				continue
 			}
 
-			if !server.writeLines(writer, "* LIST (\\HasNoChildren) \"/\" \"INBOX\"", tagged(tag, "OK LIST completed")) {
+			if !server.writeList(writer, tag) {
 				return
 			}
 		case "STATUS":
@@ -610,6 +616,24 @@ func (server *Server) writeLines(writer *bufio.Writer, lines ...string) bool {
 	}
 
 	return true
+}
+
+func (server *Server) writeList(writer *bufio.Writer, tag string) bool {
+	count := server.options.Scenario.ListResponseCount
+	if count == 0 {
+		count = 1
+	}
+	lines := make([]string, 0, count+1)
+	for index := range count {
+		mailbox := "INBOX"
+		if index > 0 {
+			mailbox = fmt.Sprintf("Archive-%d", index)
+		}
+		lines = append(lines, fmt.Sprintf("* LIST (\\HasNoChildren) \"/\" \"%s\"", mailbox))
+	}
+	lines = append(lines, tagged(tag, "OK LIST completed"))
+
+	return server.writeLines(writer, lines...)
 }
 
 func (server *Server) writeLine(writer *bufio.Writer, line string) error {
