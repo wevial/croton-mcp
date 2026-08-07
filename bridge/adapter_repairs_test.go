@@ -180,6 +180,31 @@ func TestAdapterMapsLoginRejectionToAuthentication(t *testing.T) {
 	}
 }
 
+func TestAdapterMapsLoginDisconnectToBridgeUnreachable(t *testing.T) {
+	server, err := testkit.Start(testkit.Options{
+		Mode:     testkit.ImplicitTLS,
+		Scenario: testkit.Scenario{DisconnectAfterCommand: 3},
+	})
+	if err != nil {
+		t.Fatalf("start fake server: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	adapter, err := bridge.NewAdapter(fakeServerConfig(t, server.Addr(), bridge.TLSModeImplicit, bridge.TLSConfig{SPKISHA256: server.SPKISHA256()}))
+	if err != nil {
+		t.Fatalf("NewAdapter: %v", err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+
+	_, err = adapter.ListFolders(context.Background())
+	if transcript := strings.Join(commandStrings(server.Commands()), "\n"); !strings.Contains(transcript, "LOGIN") {
+		t.Fatalf("login disconnect transcript = %q, want LOGIN", transcript)
+	}
+	if bridge.CodeOf(err) != bridge.CodeBridgeUnreachable {
+		t.Fatalf("ListFolders login disconnect error = %v, want %q", err, bridge.CodeBridgeUnreachable)
+	}
+}
+
 func TestAdapterRejectsOversizedSearchResponseBudget(t *testing.T) {
 	server, err := testkit.Start(testkit.Options{
 		Mode:     testkit.ImplicitTLS,

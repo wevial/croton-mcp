@@ -85,7 +85,11 @@ func (session *imapSession) Authenticate(ctx context.Context, credentials Creden
 		defer credentials.Zero()
 
 		if err := session.client.Login(username, password).Wait(); err != nil {
-			return authenticationFailure{err: err}
+			var imapError *imap.Error
+			if errors.As(err, &imapError) && imapError.Type == imap.StatusResponseTypeNo {
+				return authenticationFailure{err: err}
+			}
+			return err
 		}
 		_, err := session.client.Capability().Wait()
 		return err
@@ -428,7 +432,7 @@ func mapIMAPError(ctx context.Context, err error) error {
 	if errors.As(err, &authenticationError) {
 		return errorCode(CodeAuthentication)
 	}
-	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) {
 		return errorCode(CodeBridgeUnreachable)
 	}
 	var imapError *imap.Error
