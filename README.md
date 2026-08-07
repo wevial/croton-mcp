@@ -4,7 +4,7 @@ Croton is a privacy-first, local stdio [Model Context Protocol](https://modelcon
 
 ## Status
 
-Early bootstrap. The executable supports MCP `2026-07-28` by default and the legacy `2025-11-25` initialization flow for older clients. Mail access, authentication, and message operations are not implemented yet.
+Early read-only implementation. The executable supports MCP `2026-07-28` by default and the legacy `2025-11-25` initialization flow for older clients. Its local Bridge adapter supports bounded folder, status, search, metadata, and body reads over verified loopback TLS; it does not expose mail mutation operations.
 
 ## Requirements
 
@@ -24,7 +24,7 @@ The server speaks JSON-RPC over standard input/output. Diagnostics must go to st
 
 - `cmd/croton-mcp`: stdio executable
 - `internal/config`: future configuration boundary
-- `internal/imap`: future narrow IMAP adapter boundary
+- `bridge`: narrow, bounded read-only IMAP adapter boundary
 - `internal/mcpserver`: MCP server construction
 - `docs/DEPENDENCIES.md`: reviewed dependency choices and adoption constraints
 

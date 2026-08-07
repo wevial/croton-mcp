@@ -10,7 +10,10 @@ import (
 	"time"
 )
 
-const maxMessageIDBytes = 1024
+const (
+	maxMessageIDBytes        = 1024
+	maxMessageIDEncodedBytes = 1366
+)
 
 type messageIDPayload struct {
 	Mailbox     string `json:"m"`
@@ -102,6 +105,10 @@ func (adapter *Adapter) encodeMessageID(payload messageIDPayload) (string, error
 }
 
 func (adapter *Adapter) decodeMessageID(value string) (messageIDPayload, error) {
+	if len(value) > maxMessageIDEncodedBytes {
+		return messageIDPayload{}, errorCode(CodeStaleMessageID)
+	}
+
 	decoded, err := base64.RawURLEncoding.DecodeString(value)
 	if err != nil || len(decoded) <= sha256.Size || len(decoded) > maxMessageIDBytes {
 		return messageIDPayload{}, errorCode(CodeStaleMessageID)

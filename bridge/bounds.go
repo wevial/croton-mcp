@@ -78,6 +78,9 @@ func mergeBounds(patch BoundsPatch) (Bounds, error) {
 	if bounds.MaxBodyBytes, err = clampBound(patch.MaxBodyBytes, bounds.MaxBodyBytes, hardMaxBodyBytes); err != nil {
 		return Bounds{}, err
 	}
+	if patch.MaxHeaderBytes != nil && *patch.MaxHeaderBytes == 0 {
+		return Bounds{}, errorCode(CodeBoundsExceeded)
+	}
 	if bounds.MaxHeaderBytes, err = clampBound(patch.MaxHeaderBytes, bounds.MaxHeaderBytes, maximumMaxHeaderBytes); err != nil {
 		return Bounds{}, err
 	}

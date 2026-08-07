@@ -95,7 +95,7 @@ func (adapter *Adapter) execute(ctx context.Context, operation func(context.Cont
 	adapter.mu.Unlock()
 
 	if err := operation(operationContext, session); err != nil {
-		if CodeOf(err) == CodeBridgeUnreachable || CodeOf(err) == CodeCommandTimedOut || CodeOf(err) == CodeOperationCanceled || CodeOf(err) == CodeBoundsExceeded {
+		if CodeOf(err) == CodeBridgeUnreachable || CodeOf(err) == CodeCommandTimedOut || CodeOf(err) == CodeOperationCanceled || CodeOf(err) == CodeBoundsExceeded || CodeOf(err) == CodeIMAPProtocol {
 			adapter.invalidate(session)
 		}
 		return err

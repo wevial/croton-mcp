@@ -17,7 +17,10 @@ const (
 	syntheticStartTLSGreeting        = "* OK Croton local TLS handoff\r\n"
 	maxSearchWindows                 = 8
 	searchWindowWidth         uint32 = 100
+	maxSearchResponseBytes           = 4 << 10
 )
+
+var errSearchInputLimit = errors.New("IMAP SEARCH response exceeds input budget")
 
 // readSession intentionally exposes only Croton-owned read operations. The
 // concrete go-imap client never escapes this file.
@@ -46,6 +49,7 @@ type uidWindow struct {
 type imapSession struct {
 	client *imapclient.Client
 	conn   *deadlineConn
+	budget *readBudgetConn
 }
 
 func newIMAPSession(connection *Connection) (*imapSession, error) {
@@ -55,9 +59,10 @@ func newIMAPSession(connection *Connection) (*imapSession, error) {
 	}
 
 	wrapped := &deadlineConn{Conn: transport}
-	clientTransport := net.Conn(wrapped)
+	budget := &readBudgetConn{Conn: wrapped}
+	clientTransport := net.Conn(budget)
 	if startTLS {
-		clientTransport = &syntheticGreetingConn{Conn: wrapped, greeting: []byte(syntheticStartTLSGreeting)}
+		clientTransport = &syntheticGreetingConn{Conn: budget, greeting: []byte(syntheticStartTLSGreeting)}
 	}
 
 	client := imapclient.New(clientTransport, nil)
@@ -70,7 +75,7 @@ func newIMAPSession(connection *Connection) (*imapSession, error) {
 		return nil, mapIMAPError(context.Background(), err)
 	}
 
-	return &imapSession{client: client, conn: wrapped}, nil
+	return &imapSession{client: client, conn: wrapped, budget: budget}, nil
 }
 
 func (session *imapSession) Authenticate(ctx context.Context, credentials Credentials) error {
@@ -80,7 +85,7 @@ func (session *imapSession) Authenticate(ctx context.Context, credentials Creden
 		defer credentials.Zero()
 
 		if err := session.client.Login(username, password).Wait(); err != nil {
-			return err
+			return authenticationFailure{err: err}
 		}
 		_, err := session.client.Capability().Wait()
 		return err
@@ -167,17 +172,23 @@ func (session *imapSession) UIDSearchWindow(ctx context.Context, query SearchQue
 		if query.Unread {
 			criteria.NotFlag = append(criteria.NotFlag, imap.FlagSeen)
 		}
-		data, err := session.client.UIDSearch(criteria, nil).Wait()
-		if err != nil {
-			return err
+		var data *imap.SearchData
+		var searchErr error
+		exceeded := false
+		exceeded, searchErr = session.withSearchInputBudget(func() error {
+			data, searchErr = session.client.UIDSearch(criteria, nil).Wait()
+			return searchErr
+		})
+		if exceeded {
+			return errorCode(CodeBoundsExceeded)
 		}
-		for _, uid := range data.AllUIDs() {
-			if uint32(uid) < window.Start || uint32(uid) > window.End || len(results) == limit {
-				return errorCode(CodeBoundsExceeded)
-			}
-			results = append(results, uint32(uid))
+		if searchErr != nil {
+			return searchErr
 		}
-		return nil
+
+		var rangeErr error
+		results, rangeErr = boundedSearchUIDs(data, window, limit)
+		return rangeErr
 	})
 	return results, err
 }
@@ -187,7 +198,7 @@ func (session *imapSession) UIDFetchMetadata(ctx context.Context, _ string, uids
 		return nil, nil
 	}
 	if headerLimit < 1 {
-		panic(headerLimit)
+		return nil, errorCode(CodeBoundsExceeded)
 	}
 
 	set := imap.UIDSet{}
@@ -204,6 +215,7 @@ func (session *imapSession) UIDFetchMetadata(ctx context.Context, _ string, uids
 		command := session.client.Fetch(set, options)
 		for message := command.Next(); message != nil; message = command.Next() {
 			var item MessageMetadata
+			bodySections := 0
 			for data := message.Next(); data != nil; data = message.Next() {
 				switch value := data.(type) {
 				case imapclient.FetchItemDataUID:
@@ -211,9 +223,10 @@ func (session *imapSession) UIDFetchMetadata(ctx context.Context, _ string, uids
 				case imapclient.FetchItemDataRFC822Size:
 					item.Size = value.Size
 				case imapclient.FetchItemDataBodySection:
-					if value.Literal == nil {
+					if value.Literal == nil || value.Section == nil || !value.MatchCommand(section) || bodySections != 0 {
 						return errorCode(CodeIMAPProtocol)
 					}
+					bodySections++
 					header, err := readBoundedLiteral(value.Literal, headerLimit)
 					if err != nil {
 						return err
@@ -225,7 +238,7 @@ func (session *imapSession) UIDFetchMetadata(ctx context.Context, _ string, uids
 					item.Subject = parsed.Header.Get("Subject")
 				}
 			}
-			if item.uid == 0 {
+			if item.uid == 0 || bodySections != 1 {
 				return errorCode(CodeIMAPProtocol)
 			}
 			results = append(results, item)
@@ -254,11 +267,13 @@ func (session *imapSession) UIDFetchBody(ctx context.Context, uid uint32, limit 
 		if message == nil {
 			return command.Close()
 		}
+		bodySections := 0
 		for data := message.Next(); data != nil; data = message.Next() {
 			if value, ok := data.(imapclient.FetchItemDataBodySection); ok {
-				if value.Literal == nil {
+				if value.Literal == nil || value.Section == nil || !value.MatchCommand(section) || bodySections != 0 {
 					return errorCode(CodeIMAPProtocol)
 				}
+				bodySections++
 				result, err := readBoundedLiteral(value.Literal, limit)
 				if err != nil {
 					return err
@@ -266,7 +281,7 @@ func (session *imapSession) UIDFetchBody(ctx context.Context, uid uint32, limit 
 				body = result
 			}
 		}
-		if command.Next() != nil || body == nil {
+		if command.Next() != nil || body == nil || bodySections != 1 {
 			return errorCode(CodeIMAPProtocol)
 		}
 		return command.Close()
@@ -315,6 +330,46 @@ func (session *imapSession) withContext(ctx context.Context, operation func() er
 	return mapIMAPError(ctx, operation())
 }
 
+func (session *imapSession) withSearchInputBudget(operation func() error) (bool, error) {
+	if session.budget == nil {
+		return false, operation()
+	}
+
+	session.budget.begin(maxSearchResponseBytes)
+	err := operation()
+	return session.budget.end(), err
+}
+
+func boundedSearchUIDs(data *imap.SearchData, window uidWindow, limit int) ([]uint32, error) {
+	uidSet, ok := data.All.(imap.UIDSet)
+	if !ok {
+		return nil, errorCode(CodeIMAPProtocol)
+	}
+
+	results := make([]uint32, 0, limit)
+	for _, item := range uidSet {
+		if item.Start == 0 || item.Stop == 0 {
+			return nil, errorCode(CodeIMAPProtocol)
+		}
+		if uint32(item.Start) < window.Start || uint32(item.Stop) > window.End {
+			return nil, errorCode(CodeBoundsExceeded)
+		}
+
+		count := uint64(item.Stop) - uint64(item.Start) + 1
+		if count > uint64(limit-len(results)) {
+			return nil, errorCode(CodeBoundsExceeded)
+		}
+		for uid := item.Start; ; uid++ {
+			results = append(results, uint32(uid))
+			if uid == item.Stop {
+				break
+			}
+		}
+	}
+
+	return results, nil
+}
+
 func readBoundedLiteral(literal imap.LiteralReader, limit int) ([]byte, error) {
 	if literal.Size() > int64(limit) {
 		return nil, errorCode(CodeBoundsExceeded)
@@ -343,6 +398,18 @@ func (reader *byteReader) Read(buffer []byte) (int, error) {
 	return count, nil
 }
 
+type authenticationFailure struct {
+	err error
+}
+
+func (failure authenticationFailure) Error() string {
+	return failure.err.Error()
+}
+
+func (failure authenticationFailure) Unwrap() error {
+	return failure.err
+}
+
 func mapIMAPError(ctx context.Context, err error) error {
 	if err == nil {
 		return nil
@@ -356,6 +423,10 @@ func mapIMAPError(ctx context.Context, err error) error {
 	var bridgeError *Error
 	if errors.As(err, &bridgeError) {
 		return bridgeError
+	}
+	var authenticationError authenticationFailure
+	if errors.As(err, &authenticationError) {
+		return errorCode(CodeAuthentication)
 	}
 	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
 		return errorCode(CodeBridgeUnreachable)
@@ -382,6 +453,58 @@ func (connection *syntheticGreetingConn) Read(buffer []byte) (int, error) {
 		return count, nil
 	}
 	return connection.Conn.Read(buffer)
+}
+
+type readBudgetConn struct {
+	net.Conn
+	mu        sync.Mutex
+	active    bool
+	remaining int
+	exceeded  bool
+}
+
+func (connection *readBudgetConn) begin(limit int) {
+	connection.mu.Lock()
+	defer connection.mu.Unlock()
+
+	connection.active = true
+	connection.remaining = limit
+	connection.exceeded = false
+}
+
+func (connection *readBudgetConn) end() bool {
+	connection.mu.Lock()
+	defer connection.mu.Unlock()
+
+	exceeded := connection.exceeded
+	connection.active = false
+	connection.remaining = 0
+	return exceeded
+}
+
+func (connection *readBudgetConn) Read(buffer []byte) (int, error) {
+	connection.mu.Lock()
+	if !connection.active {
+		connection.mu.Unlock()
+		return connection.Conn.Read(buffer)
+	}
+	if connection.remaining == 0 {
+		connection.exceeded = true
+		connection.mu.Unlock()
+		return 0, errSearchInputLimit
+	}
+	if len(buffer) > connection.remaining {
+		buffer = buffer[:connection.remaining]
+	}
+	connection.mu.Unlock()
+
+	count, err := connection.Conn.Read(buffer)
+	connection.mu.Lock()
+	if connection.active {
+		connection.remaining -= count
+	}
+	connection.mu.Unlock()
+	return count, err
 }
 
 type deadlineConn struct {

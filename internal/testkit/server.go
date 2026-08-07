@@ -76,8 +76,28 @@ type Scenario struct {
 	// UIDValidityAfterExamine changes the mailbox generation after the first
 	// EXAMINE, simulating a mailbox rebuild between opaque-ID operations.
 	UIDValidityAfterExamine uint32
+	// UIDNext replaces the mailbox UIDNEXT returned by EXAMINE when non-zero.
+	UIDNext uint32
 	// ListResponseCount controls the number of synthetic folders in a LIST response.
 	ListResponseCount int
+	// SearchResponse replaces the untagged response to UID SEARCH. It must be a
+	// complete untagged SEARCH or ESEARCH response without a trailing CRLF.
+	SearchResponse string
+	// SearchWindowResult returns the highest requested UID from every search window.
+	SearchWindowResult bool
+	// FetchResponseSection replaces the BODY section label returned by UID FETCH.
+	FetchResponseSection string
+	// BodyFetchResponseSection replaces only whole-body FETCH response labels.
+	BodyFetchResponseSection string
+	// DuplicateFetchSection emits the requested FETCH body section twice.
+	DuplicateFetchSection bool
+	// DuplicateBodyFetchSection emits only whole-body FETCH sections twice.
+	DuplicateBodyFetchSection bool
+	// FetchLiteralDeclaredBytes replaces a FETCH literal declaration without
+	// changing its payload. Zero preserves the payload length declaration.
+	FetchLiteralDeclaredBytes int
+	// BodyFetchLiteralDeclaredBytes replaces only whole-body FETCH declarations.
+	BodyFetchLiteralDeclaredBytes int
 }
 
 // Options configures a fake server. The zero value uses STARTTLS without faults.
@@ -141,6 +161,14 @@ func Start(options Options) (*Server, error) {
 
 	if options.Scenario.ListResponseCount < 0 {
 		return nil, errors.New("testkit: list response count must not be negative")
+	}
+
+	if options.Scenario.FetchLiteralDeclaredBytes < 0 {
+		return nil, errors.New("testkit: fetch literal declaration must not be negative")
+	}
+
+	if options.Scenario.BodyFetchLiteralDeclaredBytes < 0 {
+		return nil, errors.New("testkit: body fetch literal declaration must not be negative")
 	}
 
 	certificate, caDER, err := generateCertificate()
@@ -499,7 +527,11 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 			}
 
 			uidValidity := server.nextUIDValidity()
-			if !server.writeLines(writer, "* 2 EXISTS", fmt.Sprintf("* OK [UIDVALIDITY %d] fixture generation", uidValidity), "* OK [UIDNEXT 103] fixture next UID", tagged(tag, "OK [READ-ONLY] EXAMINE completed")) {
+			uidNext := server.options.Scenario.UIDNext
+			if uidNext == 0 {
+				uidNext = 103
+			}
+			if !server.writeLines(writer, "* 2 EXISTS", fmt.Sprintf("* OK [UIDVALIDITY %d] fixture generation", uidValidity), fmt.Sprintf("* OK [UIDNEXT %d] fixture next UID", uidNext), tagged(tag, "OK [READ-ONLY] EXAMINE completed")) {
 				return
 			}
 		case "UID":
@@ -524,6 +556,11 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 				if strings.Contains(raw, "UID 3:102") {
 					searchResponse = "* SEARCH 101"
 				}
+				if server.options.Scenario.SearchResponse != "" {
+					searchResponse = strings.ReplaceAll(server.options.Scenario.SearchResponse, "{TAG}", tag)
+				} else if server.options.Scenario.SearchWindowResult {
+					searchResponse = fmt.Sprintf("* SEARCH %d", searchWindowEnd(raw))
+				}
 				if !server.writeLines(writer, searchResponse, tagged(tag, "OK SEARCH completed")) {
 					return
 				}
@@ -542,7 +579,22 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 				if !header && !server.options.Scenario.IgnoreBodyPartial {
 					literal = partialBodyLiteral(raw, literal)
 				}
-				if !server.writeFetch(writer, tag, literal) {
+				section := fetchResponseSection(raw, header)
+				if server.options.Scenario.FetchResponseSection != "" {
+					section = server.options.Scenario.FetchResponseSection
+				}
+				if !header && server.options.Scenario.BodyFetchResponseSection != "" {
+					section = server.options.Scenario.BodyFetchResponseSection
+				}
+				declaredBytes := server.options.Scenario.FetchLiteralDeclaredBytes
+				if !header && server.options.Scenario.BodyFetchLiteralDeclaredBytes != 0 {
+					declaredBytes = server.options.Scenario.BodyFetchLiteralDeclaredBytes
+				}
+				duplicate := server.options.Scenario.DuplicateFetchSection
+				if !header && server.options.Scenario.DuplicateBodyFetchSection {
+					duplicate = true
+				}
+				if !server.writeFetch(writer, tag, fetchResponseUID(raw), literal, section, declaredBytes, duplicate) {
 					return
 				}
 			default:
@@ -656,7 +708,7 @@ func (server *Server) writeLine(writer *bufio.Writer, line string) error {
 	return writer.Flush()
 }
 
-func (server *Server) writeFetch(writer *bufio.Writer, tag, literal string) bool {
+func (server *Server) writeFetch(writer *bufio.Writer, tag string, uid uint32, literal, section string, declaredBytes int, duplicate bool) bool {
 	if delay := server.options.Scenario.ResponseDelay; delay > 0 {
 		timer := time.NewTimer(delay)
 		defer timer.Stop()
@@ -667,12 +719,73 @@ func (server *Server) writeFetch(writer *bufio.Writer, tag, literal string) bool
 		}
 	}
 
-	response := fmt.Sprintf("* 1 FETCH (UID 101 FLAGS () INTERNALDATE \"01-Jan-2026 00:00:00 +0000\" RFC822.SIZE %d BODY[HEADER] {%d}\r\n%s)\r\n%s OK FETCH completed\r\n", len(syntheticMessageBody), len(literal), literal, tag)
+	if declaredBytes == 0 {
+		declaredBytes = len(literal)
+	}
+
+	items := fmt.Sprintf("BODY%s {%d}\r\n%s", section, declaredBytes, literal)
+	if duplicate {
+		items += fmt.Sprintf(" BODY%s {%d}\r\n%s", section, declaredBytes, literal)
+	}
+
+	response := fmt.Sprintf("* 1 FETCH (UID %d FLAGS () INTERNALDATE \"01-Jan-2026 00:00:00 +0000\" RFC822.SIZE %d %s)\r\n%s OK FETCH completed\r\n", uid, len(syntheticMessageBody), items, tag)
 	if _, err := writer.WriteString(response); err != nil {
 		return false
 	}
 
 	return writer.Flush() == nil
+}
+
+func fetchResponseSection(raw string, header bool) string {
+	if header {
+		return "[HEADER]"
+	}
+
+	upper := strings.ToUpper(raw)
+	const marker = "BODY.PEEK[]<"
+	start := strings.Index(upper, marker)
+	if start < 0 {
+		return "[]"
+	}
+	start += len(marker)
+	end := strings.IndexByte(upper[start:], '.')
+	if end < 0 {
+		return "[]"
+	}
+
+	return "[]<" + upper[start:start+end] + ">"
+}
+
+func searchWindowEnd(raw string) uint32 {
+	for _, field := range strings.Fields(raw) {
+		start, end, ok := strings.Cut(field, ":")
+		if !ok || start == "" || end == "" {
+			continue
+		}
+
+		value, err := strconv.ParseUint(end, 10, 32)
+		if err == nil && value > 0 {
+			return uint32(value)
+		}
+	}
+
+	return 1
+}
+
+func fetchResponseUID(raw string) uint32 {
+	fields := strings.Fields(raw)
+	for index := range fields {
+		if !strings.EqualFold(fields[index], "FETCH") || index+1 >= len(fields) {
+			continue
+		}
+
+		value, err := strconv.ParseUint(strings.Trim(fields[index+1], "(),"), 10, 32)
+		if err == nil && value > 0 {
+			return uint32(value)
+		}
+	}
+
+	return 101
 }
 
 func partialBodyLiteral(raw, literal string) string {
