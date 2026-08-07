@@ -219,8 +219,14 @@ func (session *imapSession) UIDFetchMetadata(ctx context.Context, _ string, uids
 	section := &imap.FetchItemBodySection{Specifier: imap.PartSpecifierHeader, Peek: true}
 	options := &imap.FetchOptions{UID: true, RFC822Size: true, BodySection: []*imap.FetchItemBodySection{section}}
 	var results []MessageMetadata
-	err := session.withContext(ctx, func() error {
+	err := session.withContext(ctx, func() (err error) {
 		command := session.client.Fetch(set, options)
+		defer func() {
+			if err != nil {
+				session.abortFetch(command)
+			}
+		}()
+
 		for message := command.Next(); message != nil; message = command.Next() {
 			var item MessageMetadata
 			bodySections := 0
@@ -269,8 +275,14 @@ func (session *imapSession) UIDFetchBody(ctx context.Context, uid uint32, limit 
 	section := &imap.FetchItemBodySection{Peek: true, Partial: &imap.SectionPartial{Offset: 0, Size: int64(limit) + 1}}
 	options := &imap.FetchOptions{UID: true, BodySection: []*imap.FetchItemBodySection{section}}
 	var body []byte
-	err := session.withContext(ctx, func() error {
+	err := session.withContext(ctx, func() (err error) {
 		command := session.client.Fetch(imap.UIDSetNum(imap.UID(uid)), options)
+		defer func() {
+			if err != nil {
+				session.abortFetch(command)
+			}
+		}()
+
 		message := command.Next()
 		if message == nil {
 			return command.Close()
@@ -295,6 +307,13 @@ func (session *imapSession) UIDFetchBody(ctx context.Context, uid uint32, limit 
 		return command.Close()
 	})
 	return body, err
+}
+
+func (session *imapSession) abortFetch(command *imapclient.FetchCommand) {
+	if session.conn != nil {
+		_ = session.conn.Close()
+	}
+	_ = command.Close()
 }
 
 func (session *imapSession) Logout(ctx context.Context) error {

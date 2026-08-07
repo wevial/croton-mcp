@@ -2,8 +2,10 @@ package bridge_test
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wevial/croton-mcp/bridge"
 	"github.com/wevial/croton-mcp/internal/testkit"
@@ -55,6 +57,56 @@ func TestAdapterRejectsOversizedBodyLiteralsDespitePartialFetch(t *testing.T) {
 				t.Fatalf("read-only transcript: %v", err)
 			}
 		})
+	}
+}
+
+func TestAdapterBoundedLiteralAbortReleasesFetchReader(t *testing.T) {
+	before := runtime.NumGoroutine()
+
+	for attempt := 0; attempt < 8; attempt++ {
+		server, err := testkit.Start(testkit.Options{
+			Mode:     testkit.ImplicitTLS,
+			Scenario: testkit.Scenario{OversizedBodyLiteralBytes: 33},
+		})
+		if err != nil {
+			t.Fatalf("start fake server: %v", err)
+		}
+
+		config := fakeServerConfig(t, server.Addr(), bridge.TLSModeImplicit, bridge.TLSConfig{SPKISHA256: server.SPKISHA256()})
+		config.Bounds.MaxBodyBytes = bridge.Int(32)
+		adapter, err := bridge.NewAdapter(config)
+		if err != nil {
+			_ = server.Close()
+			t.Fatalf("NewAdapter: %v", err)
+		}
+
+		results, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+		if err != nil || len(results) != 1 {
+			_ = adapter.Close()
+			_ = server.Close()
+			t.Fatalf("SearchMail = %#v, %v", results, err)
+		}
+		if _, err := adapter.GetMessageBody(context.Background(), results[0].ID); bridge.CodeOf(err) != bridge.CodeBoundsExceeded {
+			_ = adapter.Close()
+			_ = server.Close()
+			t.Fatalf("GetMessageBody error = %v, want %q", err, bridge.CodeBoundsExceeded)
+		}
+		if err := adapter.Close(); err != nil {
+			_ = server.Close()
+			t.Fatalf("Close: %v", err)
+		}
+		if err := server.Close(); err != nil {
+			t.Fatalf("close fake server: %v", err)
+		}
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for runtime.NumGoroutine() > before+3 && time.Now().Before(deadline) {
+		runtime.GC()
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := runtime.NumGoroutine(); got > before+3 {
+		t.Fatalf("goroutines after bounded literal abort = %d, want at most %d", got, before+3)
 	}
 }
 
