@@ -144,6 +144,24 @@ func TestNormalizeMessagePreservesLiteralEncodedWordMarker(t *testing.T) {
 	}
 }
 
+func TestNormalizeMessagePreservesTerminatedLiteralEncodedWordMarker(t *testing.T) {
+	t.Parallel()
+
+	message, err := bridge.NormalizeMessage(strings.NewReader(strings.Join([]string{
+		"Subject: =? literal ?=",
+		"Content-Type: text/plain; charset=UTF-8",
+		"",
+		"synthetic body",
+	}, "\r\n")), bridge.NormalizeOptions{})
+	if err != nil {
+		t.Fatalf("normalize terminated literal encoded-word marker: %v", err)
+	}
+
+	if message.Headers.Subject != "=? literal ?=" {
+		t.Errorf("subject = %q, want literal marker", message.Headers.Subject)
+	}
+}
+
 func TestNormalizeMessagePrefersAnEmptyPlainAlternative(t *testing.T) {
 	t.Parallel()
 

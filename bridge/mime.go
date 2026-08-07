@@ -255,11 +255,13 @@ func validEncodedWords(value string) bool {
 		}
 
 		parts := strings.Split(value[:end], "?")
-		if len(parts) != 3 || parts[0] == "" || parts[2] == "" {
-			return false
+		if len(parts) != 3 || parts[0] == "" || (!strings.EqualFold(parts[1], "b") && !strings.EqualFold(parts[1], "q")) {
+			value = value[end+2:]
+
+			continue
 		}
 
-		if !strings.EqualFold(parts[1], "b") && !strings.EqualFold(parts[1], "q") {
+		if parts[2] == "" {
 			return false
 		}
 
