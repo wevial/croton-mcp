@@ -251,7 +251,7 @@ func validEncodedWords(value string) bool {
 		value = value[start+2:]
 		end := strings.Index(value, "?=")
 		if end < 0 {
-			return false
+			return true
 		}
 
 		parts := strings.Split(value[:end], "?")
