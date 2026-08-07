@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -83,7 +84,7 @@ func establishStartTLS(ctx context.Context, rawConnection net.Conn, tlsConfig *t
 	reader := bufio.NewReaderSize(rawConnection, maxStartTLSLineBytes+1)
 	writer := bufio.NewWriter(rawConnection)
 	budget := &startTLSResponseBudget{}
-	if _, err := readStartTLSLine(reader, maxStartTLSGreetingBytes); err != nil {
+	if _, _, err := readStartTLSLine(reader, maxStartTLSGreetingBytes); err != nil {
 		_ = rawConnection.Close()
 		return nil, connectionError(ctx, err)
 	}
@@ -115,6 +116,11 @@ func establishStartTLS(ctx context.Context, rawConnection net.Conn, tlsConfig *t
 		return nil, connectionError(ctx, err)
 	}
 	_ = tlsConnection.SetDeadline(time.Time{})
+	stopCancelWatcher()
+	if ctx.Err() != nil {
+		_ = tlsConnection.Close()
+		return nil, connectionError(ctx, ctx.Err())
+	}
 
 	return &Connection{connection: tlsConnection}, nil
 }
@@ -129,11 +135,11 @@ func imapCommand(reader *bufio.Reader, writer *bufio.Writer, budget *startTLSRes
 
 	hasStartTLS := false
 	for {
-		line, err := readStartTLSLine(reader, maxStartTLSLineBytes)
+		line, rawBytes, err := readStartTLSLine(reader, maxStartTLSLineBytes)
 		if err != nil {
 			return false, err
 		}
-		if err := budget.add(line); err != nil {
+		if err := budget.add(rawBytes); err != nil {
 			return false, err
 		}
 		if capabilityHasStartTLS(line) {
@@ -155,9 +161,9 @@ type startTLSResponseBudget struct {
 	count int
 }
 
-func (budget *startTLSResponseBudget) add(line string) error {
+func (budget *startTLSResponseBudget) add(rawBytes int) error {
 	budget.count++
-	budget.bytes += len(line) + 2 // IMAP responses are CRLF-terminated.
+	budget.bytes += rawBytes
 	if budget.count > maxStartTLSResponseCount || budget.bytes > maxStartTLSResponseBytes {
 		return errStartTLSInputLimit
 	}
@@ -165,16 +171,19 @@ func (budget *startTLSResponseBudget) add(line string) error {
 	return nil
 }
 
-func readStartTLSLine(reader *bufio.Reader, limit int) (string, error) {
+func readStartTLSLine(reader *bufio.Reader, limit int) (string, int, error) {
 	line, err := reader.ReadSlice('\n')
 	if err != nil {
-		return "", err
+		if errors.Is(err, bufio.ErrBufferFull) {
+			return "", 0, errStartTLSInputLimit
+		}
+		return "", 0, err
 	}
 	if len(line) > limit {
-		return "", errStartTLSInputLimit
+		return "", 0, errStartTLSInputLimit
 	}
 
-	return strings.TrimRight(string(line), "\r\n"), nil
+	return strings.TrimRight(string(line), "\r\n"), len(line), nil
 }
 
 func capabilityHasStartTLS(line string) bool {
@@ -193,16 +202,24 @@ func capabilityHasStartTLS(line string) bool {
 }
 
 func closeOnContext(ctx context.Context, connection net.Conn) func() {
-	done := make(chan struct{})
+	stop := make(chan struct{})
+	exited := make(chan struct{})
+	var stopOnce sync.Once
 	go func() {
+		defer close(exited)
 		select {
 		case <-ctx.Done():
 			_ = connection.Close()
-		case <-done:
+		case <-stop:
 		}
 	}()
 
-	return func() { close(done) }
+	return func() {
+		stopOnce.Do(func() {
+			close(stop)
+			<-exited
+		})
+	}
 }
 
 func connectionError(ctx context.Context, err error) error {

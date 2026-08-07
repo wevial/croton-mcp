@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,6 +30,7 @@ func TestNewTLSConfigRejectsAmbiguousTrustAnchorFiles(t *testing.T) {
 		contents []byte
 	}{
 		{name: "multiple certificates", contents: append(append([]byte(nil), certificate...), certificate...)},
+		{name: "leading junk", contents: append([]byte("not a certificate\n"), certificate...)},
 		{name: "trailing non PEM data", contents: append(append([]byte(nil), certificate...), []byte("not a certificate")...)},
 		{name: "oversized file", contents: append(append([]byte(nil), certificate...), []byte(strings.Repeat("x", 64*1024))...)},
 	} {
@@ -67,8 +69,8 @@ func TestValidateConfigRejectsDurationOverflow(t *testing.T) {
 
 	maxInt := int(^uint(0) >> 1)
 	config := bridge.Config{IMAP: bridge.IMAPConfig{
-		CredentialCommand: []string{"/bin/true"},
-		TLS:               bridge.TLSConfig{CertificateSHA256: strings.Repeat("a", 64)},
+		CredentialCommand: credentialHelper(t, "valid"),
+		TLS:               bridge.TLSConfig{SPKISHA256: strings.Repeat("a", 64)},
 		ConnectTimeoutMs:  maxInt,
 	}}
 	if _, err := bridge.ValidateConfig(config); bridge.CodeOf(err) != bridge.CodeInvalidConfig {
@@ -152,6 +154,26 @@ func TestDialRequiresStartTLSCapabilityToken(t *testing.T) {
 	}
 }
 
+func TestDialCountsActualStartTLSWireBytes(t *testing.T) {
+	listener := startPlainIMAPServer(t, func(reader *bufio.Reader, connection net.Conn) {
+		_, _ = fmt.Fprint(connection, "* OK fixture\n")
+		_, _ = reader.ReadString('\n')
+
+		for range 13 {
+			_, _ = fmt.Fprintf(connection, "* %s\n", strings.Repeat("x", 1021))
+		}
+		_, _ = fmt.Fprintf(connection, "* CAPABILITY IMAP4rev1 STARTTLS %s\n", strings.Repeat("x", 990))
+		_, _ = fmt.Fprintf(connection, "a001 OK %s\n", strings.Repeat("x", 1015))
+		_, _ = reader.ReadString('\n')
+		_, _ = fmt.Fprintf(connection, "a002 OK %s\n", strings.Repeat("x", 1015))
+	})
+
+	_, err := bridge.Dial(context.Background(), plainServerConfig(t, listener.Addr().String()))
+	if bridge.CodeOf(err) != bridge.CodeBridgeUnreachable {
+		t.Fatalf("Dial error after exact raw response budget = %v, want TLS handshake failure %q", err, bridge.CodeBridgeUnreachable)
+	}
+}
+
 func TestDialStartTLSReadHonorsContextCancellation(t *testing.T) {
 	accepted := make(chan struct{})
 	listener := startPlainIMAPServer(t, func(_ *bufio.Reader, _ net.Conn) {
@@ -183,6 +205,108 @@ func TestDialStartTLSReadHonorsContextCancellation(t *testing.T) {
 	}
 }
 
+func TestDialStartTLSCancellationClosesBlockedProtocolPhases(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		handle func(*bufio.Reader, net.Conn, chan<- struct{})
+	}{
+		{
+			name: "greeting",
+			handle: func(_ *bufio.Reader, _ net.Conn, reached chan<- struct{}) {
+				close(reached)
+			},
+		},
+		{
+			name: "CAPABILITY response",
+			handle: func(reader *bufio.Reader, connection net.Conn, reached chan<- struct{}) {
+				_, _ = fmt.Fprint(connection, "* OK fixture\r\n")
+				_, _ = reader.ReadString('\n')
+				close(reached)
+			},
+		},
+		{
+			name: "STARTTLS response",
+			handle: func(reader *bufio.Reader, connection net.Conn, reached chan<- struct{}) {
+				_, _ = fmt.Fprint(connection, "* OK fixture\r\n")
+				_, _ = reader.ReadString('\n')
+				_, _ = fmt.Fprint(connection, "* CAPABILITY IMAP4rev1 STARTTLS\r\na001 OK CAPABILITY completed\r\n")
+				_, _ = reader.ReadString('\n')
+				close(reached)
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			reached := make(chan struct{})
+			listener := startPlainIMAPServer(t, func(reader *bufio.Reader, connection net.Conn) {
+				test.handle(reader, connection, reached)
+			})
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			result := make(chan error, 1)
+			go func() {
+				_, err := bridge.Dial(ctx, plainServerConfig(t, listener.Addr().String()))
+				result <- err
+			}()
+
+			select {
+			case <-reached:
+				cancel()
+			case <-time.After(time.Second):
+				t.Fatal("server did not reach blocked protocol phase")
+			}
+
+			select {
+			case err := <-result:
+				if bridge.CodeOf(err) != bridge.CodeBridgeUnreachable {
+					t.Fatalf("canceled Dial error = %v, want %q", err, bridge.CodeBridgeUnreachable)
+				}
+			case <-time.After(300 * time.Millisecond):
+				t.Fatal("canceled Dial remained blocked")
+			}
+		})
+	}
+}
+
+func TestPlainIMAPServerCleanupClosesAcceptedConnection(t *testing.T) {
+	var client net.Conn
+	t.Cleanup(func() {
+		if client != nil {
+			_ = client.Close()
+		}
+	})
+
+	t.Cleanup(func() {
+		if client == nil {
+			return
+		}
+
+		_ = client.SetReadDeadline(time.Now().Add(time.Second))
+		if _, err := client.Read(make([]byte, 1)); err == nil {
+			t.Error("plaintext IMAP server connection remained open after cleanup")
+		} else if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+			t.Error("plaintext IMAP server cleanup did not close accepted connection")
+		}
+	})
+
+	accepted := make(chan struct{})
+	listener := startPlainIMAPServer(t, func(_ *bufio.Reader, _ net.Conn) {
+		close(accepted)
+	})
+
+	connection, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatalf("dial plaintext IMAP server: %v", err)
+	}
+	client = connection
+
+	select {
+	case <-accepted:
+	case <-time.After(time.Second):
+		t.Fatal("plaintext IMAP server did not accept connection")
+	}
+}
+
 func startPlainIMAPServer(t *testing.T, handle func(*bufio.Reader, net.Conn)) net.Listener {
 	t.Helper()
 
@@ -190,17 +314,45 @@ func startPlainIMAPServer(t *testing.T, handle func(*bufio.Reader, net.Conn)) ne
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	t.Cleanup(func() { _ = listener.Close() })
+	var connection net.Conn
+	var connectionMu sync.Mutex
+	closing := false
+	finished := make(chan struct{})
+	t.Cleanup(func() {
+		_ = listener.Close()
+
+		connectionMu.Lock()
+		closing = true
+		if connection != nil {
+			_ = connection.Close()
+		}
+		connectionMu.Unlock()
+
+		select {
+		case <-finished:
+		case <-time.After(time.Second):
+			t.Error("plaintext IMAP server handler did not exit")
+		}
+	})
 
 	go func() {
-		connection, err := listener.Accept()
+		defer close(finished)
+		acceptedConnection, err := listener.Accept()
 		if err != nil {
 			return
 		}
-		defer connection.Close()
 
-		handle(bufio.NewReader(connection), connection)
-		_, _ = connection.Read(make([]byte, 1))
+		connectionMu.Lock()
+		connection = acceptedConnection
+		if closing {
+			_ = acceptedConnection.Close()
+		}
+		connectionMu.Unlock()
+
+		defer acceptedConnection.Close()
+
+		handle(bufio.NewReader(acceptedConnection), acceptedConnection)
+		_, _ = acceptedConnection.Read(make([]byte, 1))
 	}()
 
 	return listener
@@ -209,7 +361,7 @@ func startPlainIMAPServer(t *testing.T, handle func(*bufio.Reader, net.Conn)) ne
 func plainServerConfig(t *testing.T, address string) bridge.Config {
 	t.Helper()
 
-	return fakeServerConfig(t, address, bridge.TLSModeStartTLS, bridge.TLSConfig{CertificateSHA256: strings.Repeat("a", 64)})
+	return fakeServerConfig(t, address, bridge.TLSModeStartTLS, bridge.TLSConfig{SPKISHA256: strings.Repeat("a", 64)})
 }
 
 func assertDialReturnsPromptly(t *testing.T, config bridge.Config) {

@@ -32,7 +32,7 @@ func TestDialTrustVerifiedFakeServerInBothTLSModes(t *testing.T) {
 			t.Cleanup(func() { _ = server.Close() })
 
 			trustFile := writeTrustAnchor(t, server.LeafPEM())
-			config := fakeServerConfig(t, server.Addr(), mode.mode, bridge.TLSConfig{TrustAnchorFile: trustFile, CertificateSHA256: server.SPKISHA256()})
+			config := fakeServerConfig(t, server.Addr(), mode.mode, bridge.TLSConfig{TrustAnchorFile: trustFile, SPKISHA256: server.SPKISHA256()})
 			connection, err := bridge.Dial(context.Background(), config)
 			if err != nil {
 				t.Fatalf("Dial: %v", err)
@@ -60,7 +60,7 @@ func TestDialRejectsMismatchedTrust(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = server.Close() })
 
-	config := fakeServerConfig(t, server.Addr(), bridge.TLSModeImplicit, bridge.TLSConfig{CertificateSHA256: strings.Repeat("a", 64)})
+	config := fakeServerConfig(t, server.Addr(), bridge.TLSModeImplicit, bridge.TLSConfig{SPKISHA256: strings.Repeat("a", 64)})
 	if _, err := bridge.Dial(context.Background(), config); bridge.CodeOf(err) != bridge.CodeTLSMismatch {
 		t.Fatalf("Dial mismatch error = %v, want %q", err, bridge.CodeTLSMismatch)
 	}
@@ -77,8 +77,8 @@ func TestDialRejectsMismatchedTrust(t *testing.T) {
 	}
 
 	config = fakeServerConfig(t, server.Addr(), bridge.TLSModeImplicit, bridge.TLSConfig{
-		TrustAnchorFile:   writeTrustAnchor(t, server.LeafPEM()),
-		CertificateSHA256: strings.Repeat("a", 64),
+		TrustAnchorFile: writeTrustAnchor(t, server.LeafPEM()),
+		SPKISHA256:      strings.Repeat("a", 64),
 	})
 	if _, err := bridge.Dial(context.Background(), config); bridge.CodeOf(err) != bridge.CodeTLSMismatch {
 		t.Fatalf("Dial mismatched trust-anchor and pin error = %v, want %q", err, bridge.CodeTLSMismatch)
@@ -123,7 +123,7 @@ func TestDialFailsClosedWhenStartTLSIsUnavailable(t *testing.T) {
 		_, _ = connection.Write([]byte("* CAPABILITY IMAP4rev1 LOGINDISABLED\r\na001 OK CAPABILITY completed\r\n"))
 	}()
 
-	config := fakeServerConfig(t, listener.Addr().String(), bridge.TLSModeStartTLS, bridge.TLSConfig{CertificateSHA256: strings.Repeat("a", 64)})
+	config := fakeServerConfig(t, listener.Addr().String(), bridge.TLSModeStartTLS, bridge.TLSConfig{SPKISHA256: strings.Repeat("a", 64)})
 	if _, err := bridge.Dial(context.Background(), config); bridge.CodeOf(err) != bridge.CodeTLSNegotiation {
 		t.Fatalf("Dial without STARTTLS error = %v, want %q", err, bridge.CodeTLSNegotiation)
 	}

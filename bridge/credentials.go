@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -100,6 +101,10 @@ func isSafeCredentialCommand(command []string) bool {
 }
 
 func parseCredentials(output []byte) (Credentials, error) {
+	if !utf8.Valid(output) {
+		return Credentials{}, errorCode(CodeCredentialOutput)
+	}
+
 	decoder := json.NewDecoder(bytes.NewReader(output))
 	start, err := decoder.Token()
 	if err != nil {

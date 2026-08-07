@@ -14,7 +14,7 @@ func TestNewTLSConfigAlwaysInstallsCustomVerifier(t *testing.T) {
 		t.Fatalf("missing trust error = %v, want %q", err, bridge.CodeTLSRequired)
 	}
 
-	config, err := bridge.NewTLSConfig(bridge.TLSConfig{CertificateSHA256: strings.Repeat("a", 64)})
+	config, err := bridge.NewTLSConfig(bridge.TLSConfig{SPKISHA256: strings.Repeat("a", 64)})
 	if err != nil {
 		t.Fatalf("NewTLSConfig: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestNewTLSConfigAlwaysInstallsCustomVerifier(t *testing.T) {
 		t.Fatal("custom-verifier configuration omitted a TLS minimum version")
 	}
 
-	if _, err := bridge.NewTLSConfig(bridge.TLSConfig{CertificateSHA256: "not-a-pin"}); bridge.CodeOf(err) != bridge.CodeInvalidConfig {
+	if _, err := bridge.NewTLSConfig(bridge.TLSConfig{SPKISHA256: "not-a-pin"}); bridge.CodeOf(err) != bridge.CodeInvalidConfig {
 		t.Fatalf("invalid pin error = %v, want %q", err, bridge.CodeInvalidConfig)
 	}
 }

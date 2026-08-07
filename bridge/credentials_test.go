@@ -13,7 +13,12 @@ import (
 	"github.com/wevial/croton-mcp/bridge"
 )
 
-const credentialCommandTestTimeout = 5 * time.Second
+const (
+	credentialCommandTestTimeout       = 5 * time.Second
+	credentialDescendantStartTimeout   = 2 * time.Second
+	credentialDescendantCommandTimeout = 3 * time.Second
+	credentialDescendantMaximumWait    = 4 * time.Second
+)
 
 func TestLoadCredentialsAcceptsExactlyOneCredentialObject(t *testing.T) {
 	credentials, err := bridge.LoadCredentials(context.Background(), credentialHelper(t, "valid"), credentialCommandTestTimeout)
@@ -27,7 +32,7 @@ func TestLoadCredentialsAcceptsExactlyOneCredentialObject(t *testing.T) {
 		t.Fatalf("password = %q, want %q", got, want)
 	}
 
-	for _, mode := range []string{"empty", "malformed", "trailing", "duplicate", "case-variant"} {
+	for _, mode := range []string{"empty", "malformed", "invalid-utf8", "trailing", "duplicate", "case-variant"} {
 		t.Run(mode, func(t *testing.T) {
 			_, err := bridge.LoadCredentials(context.Background(), credentialHelper(t, mode), credentialCommandTestTimeout)
 			if bridge.CodeOf(err) != bridge.CodeCredentialOutput {
@@ -61,7 +66,7 @@ func TestLoadCredentialsFailsClosedWithoutLeakingOutput(t *testing.T) {
 	if _, err = bridge.LoadCredentials(context.Background(), []string{"credential-helper"}, credentialCommandTestTimeout); bridge.CodeOf(err) != bridge.CodeInvalidConfig {
 		t.Fatalf("relative executable error = %v, want %q", err, bridge.CodeInvalidConfig)
 	}
-	credentials, err := bridge.LoadCredentials(context.Background(), []string{"/bin/sh", "-c", "printf '%s' '{\"username\":\"fixture-user\",\"password\":\"fixture-password\"}'"}, credentialCommandTestTimeout)
+	credentials, err := bridge.LoadCredentials(context.Background(), credentialHelper(t, "valid"), credentialCommandTestTimeout)
 	if err != nil {
 		t.Fatalf("absolute command error = %v", err)
 	}
@@ -88,18 +93,51 @@ func TestLoadCredentialsBoundsInheritedStdoutPipe(t *testing.T) {
 	}
 
 	sentinel := t.TempDir() + "/descendant-survived"
+	startedFile := t.TempDir() + "/descendant-started"
 	started := time.Now()
-	_, err := bridge.LoadCredentials(context.Background(), credentialHelper(t, "timeout-descendant", sentinel), 20*time.Millisecond)
+	result := make(chan error, 1)
+	go func() {
+		_, err := bridge.LoadCredentials(context.Background(), credentialHelper(t, "timeout-descendant", sentinel, startedFile), credentialDescendantCommandTimeout)
+		result <- err
+	}()
+	waitForFile(t, startedFile, credentialDescendantStartTimeout)
+
+	var err error
+	select {
+	case err = <-result:
+	case <-time.After(credentialDescendantMaximumWait):
+		t.Fatal("timed out waiting for bounded credential command")
+	}
 	if bridge.CodeOf(err) != bridge.CodeCredentialTimeout {
 		t.Fatalf("descendant credential error = %v, want %q", err, bridge.CodeCredentialTimeout)
 	}
-	if elapsed := time.Since(started); elapsed > 300*time.Millisecond {
+	if elapsed := time.Since(started); elapsed > credentialDescendantMaximumWait {
 		t.Fatalf("descendant credential command waited %s for inherited stdout", elapsed)
 	}
 
 	time.Sleep(300 * time.Millisecond)
 	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
 		t.Fatalf("timed-out credential descendant remained alive: %v", err)
+	}
+}
+
+func waitForFile(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s", path)
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -129,6 +167,8 @@ func TestCredentialHelperProcess(t *testing.T) {
 	case "empty":
 	case "malformed":
 		fmt.Fprint(os.Stdout, `{"username":`)
+	case "invalid-utf8":
+		_, _ = os.Stdout.Write([]byte{'{', '"', 'u', 's', 'e', 'r', 'n', 'a', 'm', 'e', '"', ':', '"', 0xff, '"', ',', '"', 'p', 'a', 's', 's', 'w', 'o', 'r', 'd', '"', ':', '"', 'x', '"', '}'})
 	case "secret-malformed":
 		fmt.Fprint(os.Stdout, `{"username":"fixture-secret-must-not-appear"}`)
 	case "trailing":
@@ -142,14 +182,15 @@ func TestCredentialHelperProcess(t *testing.T) {
 	case "hang":
 		time.Sleep(time.Hour)
 	case "timeout-descendant":
-		child := exec.Command(os.Args[0], "-test.run=TestCredentialHelperProcess", "--", "descendant-child", arguments[0])
+		child := exec.Command(os.Args[0], "-test.run=TestCredentialHelperProcess", "--", "descendant-child", arguments[0], arguments[1])
 		child.Stdout = os.Stdout
 		if err := child.Start(); err != nil {
 			os.Exit(2)
 		}
 		time.Sleep(time.Hour)
 	case "descendant-child":
-		time.Sleep(200 * time.Millisecond)
+		_ = os.WriteFile(arguments[1], []byte("started"), 0o600)
+		time.Sleep(credentialDescendantCommandTimeout + time.Second)
 		_ = os.WriteFile(arguments[0], []byte("survived"), 0o600)
 	case "environment":
 		if os.Getenv("CROTON_UNRELATED_SECRET") != "" {

@@ -40,11 +40,13 @@ type IMAPConfig struct {
 type TLSConfig struct {
 	// TrustAnchorFile names one regular file containing the exact Bridge leaf
 	// certificate PEM. Certificate-authority bundles are intentionally rejected.
+	// File anchors are supported only on Linux, Darwin, and FreeBSD; use
+	// SPKISHA256 on other platforms.
 	TrustAnchorFile string `json:"trustAnchorFile,omitempty"`
-	// CertificateSHA256 is the lowercase hexadecimal SHA-256 pin of the
+	// SPKISHA256 is the lowercase hexadecimal SHA-256 pin of the
 	// certificate's SubjectPublicKeyInfo, not of the complete certificate.
-	CertificateSHA256 string `json:"certificateSha256,omitempty"`
-	MinVersion        string `json:"minVersion,omitempty"`
+	SPKISHA256 string `json:"spkiSha256,omitempty"`
+	MinVersion string `json:"minVersion,omitempty"`
 }
 
 // AuditConfig controls metadata-only audit logging in the MCP layer.
@@ -81,7 +83,7 @@ func ValidateConfig(input Config) (ValidatedConfig, error) {
 	if !isSafeCredentialCommand(imap.CredentialCommand) {
 		return ValidatedConfig{}, errorCode(CodeInvalidConfig)
 	}
-	if strings.TrimSpace(imap.TLS.TrustAnchorFile) == "" && strings.TrimSpace(imap.TLS.CertificateSHA256) == "" {
+	if strings.TrimSpace(imap.TLS.TrustAnchorFile) == "" && strings.TrimSpace(imap.TLS.SPKISHA256) == "" {
 		return ValidatedConfig{}, errorCode(CodeTLSRequired)
 	}
 	if _, err := validateTLSConfig(imap.TLS); err != nil {

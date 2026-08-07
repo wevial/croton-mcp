@@ -1,20 +1,32 @@
 package bridge_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/wevial/croton-mcp/bridge"
 )
 
+func TestTLSConfigSerializesSPKIPinWithExplicitName(t *testing.T) {
+	value := strings.Repeat("a", 64)
+	encoded, err := json.Marshal(bridge.TLSConfig{SPKISHA256: value})
+	if err != nil {
+		t.Fatalf("marshal TLS config: %v", err)
+	}
+	if got, want := string(encoded), `{"spkiSha256":"`+value+`"}`; got != want {
+		t.Fatalf("TLS config JSON = %s, want %s", got, want)
+	}
+}
+
 func TestValidateConfigMergesDefaultsAndClampsBounds(t *testing.T) {
 	t.Parallel()
 
 	config, err := bridge.ValidateConfig(bridge.Config{
 		IMAP: bridge.IMAPConfig{
-			CredentialCommand: []string{"/bin/true"},
+			CredentialCommand: credentialHelper(t, "valid"),
 			TLS: bridge.TLSConfig{
-				CertificateSHA256: strings.Repeat("a", 64),
+				SPKISHA256: strings.Repeat("a", 64),
 			},
 		},
 		Bounds: bridge.BoundsPatch{
@@ -79,14 +91,14 @@ func TestValidateConfigRejectsMissingTrustRelativeCommandsAndUnboundedTimeouts(t
 	}{
 		{
 			name:   "missing trust",
-			config: bridge.Config{IMAP: bridge.IMAPConfig{CredentialCommand: []string{"/bin/true"}}},
+			config: bridge.Config{IMAP: bridge.IMAPConfig{CredentialCommand: credentialHelper(t, "valid")}},
 			code:   bridge.CodeTLSRequired,
 		},
 		{
 			name: "relative command",
 			config: bridge.Config{IMAP: bridge.IMAPConfig{
 				CredentialCommand: []string{"pass"},
-				TLS:               bridge.TLSConfig{CertificateSHA256: strings.Repeat("a", 64)},
+				TLS:               bridge.TLSConfig{SPKISHA256: strings.Repeat("a", 64)},
 			}},
 			code: bridge.CodeInvalidConfig,
 		},
@@ -94,8 +106,8 @@ func TestValidateConfigRejectsMissingTrustRelativeCommandsAndUnboundedTimeouts(t
 		{
 			name: "unbounded connect timeout",
 			config: bridge.Config{IMAP: bridge.IMAPConfig{
-				CredentialCommand: []string{"/bin/true"},
-				TLS:               bridge.TLSConfig{CertificateSHA256: strings.Repeat("a", 64)},
+				CredentialCommand: credentialHelper(t, "valid"),
+				TLS:               bridge.TLSConfig{SPKISHA256: strings.Repeat("a", 64)},
 				ConnectTimeoutMs:  60001,
 			}},
 			code: bridge.CodeInvalidConfig,
@@ -115,7 +127,7 @@ func TestValidateConfigDoesNotReadTrustAnchorFiles(t *testing.T) {
 	t.Parallel()
 
 	config, err := bridge.ValidateConfig(bridge.Config{IMAP: bridge.IMAPConfig{
-		CredentialCommand: []string{"/bin/true"},
+		CredentialCommand: credentialHelper(t, "valid"),
 		TLS:               bridge.TLSConfig{TrustAnchorFile: "/not-a-real-test-trust-anchor.pem"},
 	}})
 	if err != nil {

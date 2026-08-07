@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
@@ -37,7 +38,7 @@ type tlsVerifier struct {
 }
 
 func newTLSVerifier(input TLSConfig) (*tlsVerifier, uint16, error) {
-	if strings.TrimSpace(input.TrustAnchorFile) == "" && strings.TrimSpace(input.CertificateSHA256) == "" {
+	if strings.TrimSpace(input.TrustAnchorFile) == "" && strings.TrimSpace(input.SPKISHA256) == "" {
 		return nil, 0, errorCode(CodeTLSRequired)
 	}
 
@@ -55,8 +56,8 @@ func newTLSVerifier(input TLSConfig) (*tlsVerifier, uint16, error) {
 		verifier.anchor = anchor
 	}
 
-	if input.CertificateSHA256 != "" {
-		pin, err := parseSPKIPin(input.CertificateSHA256)
+	if input.SPKISHA256 != "" {
+		pin, err := parseSPKIPin(input.SPKISHA256)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -67,21 +68,21 @@ func newTLSVerifier(input TLSConfig) (*tlsVerifier, uint16, error) {
 }
 
 func loadTrustAnchor(path string) (*x509.Certificate, error) {
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() {
+	return loadTrustAnchorWith(path, trustAnchorFileSupported, openTrustAnchor)
+}
+
+type trustAnchorOpener func(string) (*os.File, error)
+
+func loadTrustAnchorWith(path string, supported bool, open trustAnchorOpener) (*x509.Certificate, error) {
+	if !supported {
 		return nil, errorCode(CodeInvalidConfig)
 	}
 
-	file, err := os.Open(path)
+	file, err := open(path)
 	if err != nil {
-		return nil, err
+		return nil, errorCode(CodeInvalidConfig)
 	}
 	defer file.Close()
-
-	info, err = file.Stat()
-	if err != nil || !info.Mode().IsRegular() {
-		return nil, errorCode(CodeInvalidConfig)
-	}
 
 	pemBytes, err := io.ReadAll(io.LimitReader(file, trustAnchorMaxBytes+1))
 	if err != nil || len(pemBytes) > trustAnchorMaxBytes {
@@ -89,7 +90,7 @@ func loadTrustAnchor(path string) (*x509.Certificate, error) {
 	}
 
 	block, rest := pem.Decode(pemBytes)
-	if block == nil || block.Type != "CERTIFICATE" || len(rest) != 0 {
+	if !bytes.HasPrefix(pemBytes, []byte("-----BEGIN CERTIFICATE-----")) || block == nil || block.Type != "CERTIFICATE" || len(rest) != 0 {
 		return nil, errorCode(CodeInvalidConfig)
 	}
 
@@ -102,7 +103,7 @@ func loadTrustAnchor(path string) (*x509.Certificate, error) {
 }
 
 func validateTLSConfig(input TLSConfig) (uint16, error) {
-	if strings.TrimSpace(input.TrustAnchorFile) == "" && strings.TrimSpace(input.CertificateSHA256) == "" {
+	if strings.TrimSpace(input.TrustAnchorFile) == "" && strings.TrimSpace(input.SPKISHA256) == "" {
 		return 0, errorCode(CodeTLSRequired)
 	}
 
@@ -110,8 +111,8 @@ func validateTLSConfig(input TLSConfig) (uint16, error) {
 	if err != nil {
 		return 0, err
 	}
-	if input.CertificateSHA256 != "" {
-		if _, err := parseSPKIPin(input.CertificateSHA256); err != nil {
+	if input.SPKISHA256 != "" {
+		if _, err := parseSPKIPin(input.SPKISHA256); err != nil {
 			return 0, err
 		}
 	}
