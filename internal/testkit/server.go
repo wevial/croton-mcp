@@ -81,6 +81,7 @@ type Server struct {
 	listener  net.Listener
 	tlsConfig *tls.Config
 	caDER     []byte
+	leafDER   []byte
 	spkiPin   [sha256.Size]byte
 	options   Options
 	done      chan struct{}
@@ -132,6 +133,7 @@ func Start(options Options) (*Server, error) {
 			MinVersion:   tls.VersionTLS12,
 		},
 		caDER:       caDER,
+		leafDER:     certificate.Certificate[0],
 		spkiPin:     sha256.Sum256(leaf.RawSubjectPublicKeyInfo),
 		options:     options,
 		done:        make(chan struct{}),
@@ -152,6 +154,11 @@ func (server *Server) Addr() string {
 // CAPEM returns a copy of this server's generated CA certificate in PEM form.
 func (server *Server) CAPEM() []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.caDER})
+}
+
+// LeafPEM returns a copy of this server's generated leaf certificate in PEM form.
+func (server *Server) LeafPEM() []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.leafDER})
 }
 
 // SPKISHA256 returns the lowercase hexadecimal SHA-256 pin of the leaf certificate's public key.
