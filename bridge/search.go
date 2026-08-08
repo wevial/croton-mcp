@@ -55,7 +55,7 @@ func (adapter *Adapter) SearchMail(ctx context.Context, query SearchQuery) ([]Me
 
 	var results []MessageMetadata
 	err := adapter.execute(ctx, func(operationContext context.Context, session readSession) error {
-		var attemptResults []MessageMetadata
+		attemptResults := make([]MessageMetadata, 0)
 		attemptOutputBytes := 2 // JSON array brackets.
 
 		snapshot, err := session.Examine(operationContext, query.Mailbox)
