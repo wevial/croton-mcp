@@ -15,6 +15,8 @@ const (
 	hardMaxPreviewChars      = 1000
 	defaultMaxOutputBytes    = 100000
 	hardMaxOutputBytes       = 400000
+	maxMailboxNameBytes      = 512
+	maxSearchTermBytes       = 1024
 )
 
 // Bounds contains the effective finite limits used by bridge operations.

@@ -102,9 +102,14 @@ func establishStartTLS(ctx context.Context, rawConnection net.Conn, tlsConfig *t
 	reader := bufio.NewReaderSize(rawConnection, maxStartTLSLineBytes+1)
 	writer := bufio.NewWriter(rawConnection)
 	budget := &startTLSResponseBudget{}
-	if _, _, err := readStartTLSLine(reader, maxStartTLSGreetingBytes); err != nil {
+	greeting, _, err := readStartTLSLine(reader, maxStartTLSGreetingBytes)
+	if err != nil {
 		_ = rawConnection.Close()
 		return nil, connectionError(ctx, err)
+	}
+	if !validStartTLSGreeting(greeting) {
+		_ = rawConnection.Close()
+		return nil, errorCode(CodeTLSNegotiation)
 	}
 
 	hasStartTLS, err := imapCommand(reader, writer, budget, "a001", "CAPABILITY")
@@ -202,6 +207,11 @@ func readStartTLSLine(reader *bufio.Reader, limit int) (string, int, error) {
 	}
 
 	return strings.TrimRight(string(line), "\r\n"), len(line), nil
+}
+
+func validStartTLSGreeting(line string) bool {
+	fields := strings.Fields(line)
+	return len(fields) >= 2 && fields[0] == "*" && strings.EqualFold(fields[1], "OK")
 }
 
 func capabilityHasStartTLS(line string) bool {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/mail"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -141,17 +142,27 @@ func (session *imapSession) Status(ctx context.Context, mailbox string) (Mailbox
 		if err != nil {
 			return err
 		}
-		if data.NumMessages != nil {
-			result.Messages = int(*data.NumMessages)
+		if !mailboxIdentityMatches(mailbox, data.Mailbox) || data.NumMessages == nil || data.NumUnseen == nil || data.UIDNext == 0 || data.UIDValidity == 0 {
+			return errorCode(CodeIMAPProtocol)
 		}
-		if data.NumUnseen != nil {
-			result.Unseen = int(*data.NumUnseen)
+		maxInt := uint64(^uint(0) >> 1)
+		if uint64(*data.NumMessages) > maxInt || uint64(*data.NumUnseen) > maxInt {
+			return errorCode(CodeIMAPProtocol)
 		}
+		result.Messages = int(*data.NumMessages)
+		result.Unseen = int(*data.NumUnseen)
 		result.UIDNext = uint32(data.UIDNext)
 		result.UIDValidity = data.UIDValidity
 		return nil
 	})
 	return result, err
+}
+
+func mailboxIdentityMatches(requested, actual string) bool {
+	if strings.EqualFold(requested, "INBOX") {
+		return strings.EqualFold(actual, "INBOX")
+	}
+	return requested == actual
 }
 
 func (session *imapSession) Examine(ctx context.Context, mailbox string) (mailboxSnapshot, error) {

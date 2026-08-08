@@ -37,6 +37,34 @@ func TestIMAPDependencyAndMutationMethodsStayInsideFacade(t *testing.T) {
 				t.Fatalf("go-imap import escaped facade: %s imports %s", sourcePath, imported.Path.Value)
 			}
 		}
+		if filepath.Base(sourcePath) == "imapclient.go" {
+			allowedClientMethods := map[string]bool{
+				"WaitGreeting": true,
+				"Capability":   true,
+				"Close":        true,
+				"Login":        true,
+				"List":         true,
+				"Status":       true,
+				"Select":       true,
+				"UIDSearch":    true,
+				"Fetch":        true,
+				"Logout":       true,
+			}
+			ast.Inspect(parsed, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				selector, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok || !isIMAPClientReceiver(selector.X) {
+					return true
+				}
+				if !allowedClientMethods[selector.Sel.Name] {
+					t.Fatalf("go-imap client method outside exact facade allowlist: %s", selector.Sel.Name)
+				}
+				return true
+			})
+		}
 		if parsed.Name.Name == "bridge" && filepath.Base(sourcePath) != "imapclient.go" {
 			ast.Inspect(parsed, func(node ast.Node) bool {
 				selector, ok := node.(*ast.SelectorExpr)
@@ -50,5 +78,16 @@ func TestIMAPDependencyAndMutationMethodsStayInsideFacade(t *testing.T) {
 				return true
 			})
 		}
+	}
+}
+
+func isIMAPClientReceiver(expression ast.Expr) bool {
+	switch receiver := expression.(type) {
+	case *ast.Ident:
+		return receiver.Name == "client"
+	case *ast.SelectorExpr:
+		return receiver.Sel.Name == "client"
+	default:
+		return false
 	}
 }

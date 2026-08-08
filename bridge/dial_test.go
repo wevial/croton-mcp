@@ -137,6 +137,27 @@ func TestDialFailsClosedWhenStartTLSIsUnavailable(t *testing.T) {
 	}
 }
 
+func TestDialSTARTTLSRejectsNonOKGreeting(t *testing.T) {
+	server, err := testkit.Start(testkit.Options{
+		Mode:     testkit.StartTLS,
+		Scenario: testkit.Scenario{Greeting: "* BYE fake server unavailable"},
+	})
+	if err != nil {
+		t.Fatalf("start fake server: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	config := fakeServerConfig(t, server.Addr(), bridge.TLSModeStartTLS, bridge.TLSConfig{SPKISHA256: server.SPKISHA256()})
+	connection, err := bridge.Dial(context.Background(), config)
+	if connection != nil {
+		_ = connection.Close()
+		t.Fatal("Dial returned a connection for a BYE greeting")
+	}
+	if bridge.CodeOf(err) != bridge.CodeTLSNegotiation {
+		t.Fatalf("Dial error = %v, want %q", err, bridge.CodeTLSNegotiation)
+	}
+}
+
 func fakeServerConfig(t *testing.T, address, mode string, tlsConfig bridge.TLSConfig) bridge.Config {
 	t.Helper()
 	host, port, err := net.SplitHostPort(address)

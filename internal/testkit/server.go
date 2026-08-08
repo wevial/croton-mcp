@@ -53,6 +53,8 @@ func (mode TLSMode) String() string {
 
 // Scenario controls deterministic protocol faults for adapter tests.
 type Scenario struct {
+	// Greeting replaces the normal initial IMAP greeting.
+	Greeting string
 	// RejectAuthentication makes LOGIN and AUTHENTICATE return a tagged NO response.
 	RejectAuthentication bool
 	// ResponseDelay waits before every server response.
@@ -91,6 +93,11 @@ type Scenario struct {
 	SearchResponse string
 	// SearchWindowResult returns the highest requested UID from every search window.
 	SearchWindowResult bool
+	// StatusResponse replaces the normal untagged STATUS response. It must be a
+	// complete untagged STATUS response without a trailing CRLF.
+	StatusResponse string
+	// OmitStatusResponse sends only the tagged STATUS completion.
+	OmitStatusResponse bool
 	// FetchResponseSection replaces the BODY section label returned by UID FETCH.
 	FetchResponseSection string
 	// BodyFetchResponseSection replaces only whole-body FETCH response labels.
@@ -380,7 +387,11 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 	reader := bufio.NewReader(connection)
 	writer := bufio.NewWriter(connection)
 
-	if err := server.writeLine(writer, "* OK fake IMAP server ready"); err != nil {
+	greeting := "* OK fake IMAP server ready"
+	if server.options.Scenario.Greeting != "" {
+		greeting = server.options.Scenario.Greeting
+	}
+	if err := server.writeLine(writer, greeting); err != nil {
 		return
 	}
 
@@ -545,7 +556,15 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 				continue
 			}
 
-			if !server.writeLines(writer, "* STATUS \"INBOX\" (MESSAGES 2 UIDNEXT 103 UIDVALIDITY 9001 UNSEEN 1)", tagged(tag, "OK STATUS completed")) {
+			statusResponse := "* STATUS \"INBOX\" (MESSAGES 2 UIDNEXT 103 UIDVALIDITY 9001 UNSEEN 1)"
+			if server.options.Scenario.StatusResponse != "" {
+				statusResponse = server.options.Scenario.StatusResponse
+			}
+			if server.options.Scenario.OmitStatusResponse {
+				if !server.writeLines(writer, tagged(tag, "OK STATUS completed")) {
+					return
+				}
+			} else if !server.writeLines(writer, statusResponse, tagged(tag, "OK STATUS completed")) {
 				return
 			}
 		case "EXAMINE":

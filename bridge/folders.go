@@ -45,6 +45,9 @@ func (adapter *Adapter) Status(ctx context.Context, mailbox string) (MailboxStat
 	if mailbox == "" {
 		return MailboxStatus{}, errorCode(CodeMailboxNotFound)
 	}
+	if len(mailbox) > maxMailboxNameBytes {
+		return MailboxStatus{}, errorCode(CodeBoundsExceeded)
+	}
 
 	var status MailboxStatus
 	err := adapter.execute(ctx, func(operationContext context.Context, session readSession) error {

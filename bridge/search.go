@@ -49,10 +49,14 @@ func (adapter *Adapter) SearchMail(ctx context.Context, query SearchQuery) ([]Me
 	if query.Mailbox == "" {
 		return nil, errorCode(CodeMailboxNotFound)
 	}
+	if len(query.Mailbox) > maxMailboxNameBytes || len(query.Sender) > maxSearchTermBytes || len(query.Subject) > maxSearchTermBytes || adapter.config.Bounds.MaxOutputBytes < 2 {
+		return nil, errorCode(CodeBoundsExceeded)
+	}
 
 	var results []MessageMetadata
 	err := adapter.execute(ctx, func(operationContext context.Context, session readSession) error {
 		var attemptResults []MessageMetadata
+		attemptOutputBytes := 2 // JSON array brackets.
 
 		snapshot, err := session.Examine(operationContext, query.Mailbox)
 		if err != nil {
@@ -82,6 +86,18 @@ func (adapter *Adapter) SearchMail(ctx context.Context, query SearchQuery) ([]Me
 					return err
 				}
 				item.Mailbox = query.Mailbox
+				encodedItem, err := json.Marshal(item)
+				if err != nil {
+					return errorCode(CodeIMAPProtocol)
+				}
+				separatorBytes := 0
+				if len(attemptResults) > 0 {
+					separatorBytes = 1
+				}
+				if attemptOutputBytes > adapter.config.Bounds.MaxOutputBytes || len(encodedItem)+separatorBytes > adapter.config.Bounds.MaxOutputBytes-attemptOutputBytes {
+					return errorCode(CodeBoundsExceeded)
+				}
+				attemptOutputBytes += len(encodedItem) + separatorBytes
 				attemptResults = append(attemptResults, item)
 			}
 			remaining = start
@@ -102,9 +118,16 @@ func (adapter *Adapter) encodeMessageID(payload messageIDPayload) (string, error
 	if err != nil {
 		return "", errorCode(CodeIMAPProtocol)
 	}
+	if len(encoded)+sha256.Size > maxMessageIDBytes {
+		return "", errorCode(CodeBoundsExceeded)
+	}
 	mac := hmac.New(sha256.New, adapter.idKey[:])
 	_, _ = mac.Write(encoded)
-	return base64.RawURLEncoding.EncodeToString(append(encoded, mac.Sum(nil)...)), nil
+	value := base64.RawURLEncoding.EncodeToString(append(encoded, mac.Sum(nil)...))
+	if len(value) > maxMessageIDEncodedBytes {
+		return "", errorCode(CodeBoundsExceeded)
+	}
+	return value, nil
 }
 
 func (adapter *Adapter) decodeMessageID(value string) (messageIDPayload, error) {

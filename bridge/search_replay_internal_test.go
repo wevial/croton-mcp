@@ -77,7 +77,7 @@ func TestSearchMailDiscardsPartialResultsBeforeTransportReplay(t *testing.T) {
 	adapter := &Adapter{
 		config: ValidatedConfig{
 			IMAP:   IMAPConfig{CommandTimeoutMs: 1000},
-			Bounds: Bounds{MaxSearchResults: 2},
+			Bounds: Bounds{MaxSearchResults: 2, MaxOutputBytes: defaultMaxOutputBytes},
 		},
 		factory: func(context.Context) (readSession, error) {
 			session := sessions[factoryCalls]

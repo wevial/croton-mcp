@@ -1,6 +1,6 @@
 # Croton MCP for Proton Mail
 
-Croton is a privacy-first, local stdio [Model Context Protocol](https://modelcontextprotocol.io/) server that provides controlled access to Proton Mail through Proton Mail Bridge. This repository intentionally begins with protocol and boundary scaffolding only; it does not contain Proton credentials, account identifiers, mailbox content, or any live-data integration.
+Croton is a privacy-first, local stdio [Model Context Protocol](https://modelcontextprotocol.io/) server that provides controlled access to Proton Mail through Proton Mail Bridge. The repository includes a production read-only Bridge adapter and synthetic protocol fixtures; it does not bundle Proton credentials, account identifiers, mailbox content, or live fixture data.
 
 ## Status
 
@@ -31,6 +31,8 @@ The server speaks JSON-RPC over standard input/output. Diagnostics must go to st
 ## Security and privacy
 
 See [SECURITY.md](SECURITY.md). Never commit credentials, account identifiers, mailbox contents, or unredacted protocol logs.
+
+A single accepted transport replay opens a fresh authenticated session and may invoke the configured credential helper one additional time. Credential helpers should therefore be idempotent and free of unrelated side effects.
 
 ## Contributing
 
