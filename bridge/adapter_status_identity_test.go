@@ -8,6 +8,32 @@ import (
 	"github.com/wevial/croton-mcp/internal/testkit"
 )
 
+func TestAdapterStatusAcceptsCaseInsensitiveINBOXRequests(t *testing.T) {
+	for _, mailbox := range []string{"inbox", "InBoX"} {
+		t.Run(mailbox, func(t *testing.T) {
+			server, err := testkit.Start(testkit.Options{Mode: testkit.ImplicitTLS})
+			if err != nil {
+				t.Fatalf("start fake server: %v", err)
+			}
+			t.Cleanup(func() { _ = server.Close() })
+
+			adapter, err := bridge.NewAdapter(fakeServerConfig(t, server.Addr(), bridge.TLSModeImplicit, bridge.TLSConfig{SPKISHA256: server.SPKISHA256()}))
+			if err != nil {
+				t.Fatalf("NewAdapter: %v", err)
+			}
+			t.Cleanup(func() { _ = adapter.Close() })
+
+			status, err := adapter.Status(context.Background(), mailbox)
+			if err != nil {
+				t.Fatalf("Status(%q): %v", mailbox, err)
+			}
+			if status.UIDValidity != 9001 || status.UIDNext != 103 || status.Messages != 2 || status.Unseen != 1 {
+				t.Fatalf("Status(%q) = %#v", mailbox, status)
+			}
+		})
+	}
+}
+
 func TestAdapterStatusRejectsMissingSubstitutedAndIncompleteResponses(t *testing.T) {
 	tests := []struct {
 		name     string

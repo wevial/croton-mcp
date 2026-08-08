@@ -89,6 +89,19 @@ func TestEncodeMessageIDRejectsPayloadBeyondDecoderBudget(t *testing.T) {
 	}
 }
 
+func TestEncodeMessageIDRejectsSemanticallyInvalidPayload(t *testing.T) {
+	tests := []messageIDPayload{
+		{UIDValidity: 9001, UID: 1},
+		{Mailbox: "INBOX", UID: 1},
+		{Mailbox: "INBOX", UIDValidity: 9001},
+	}
+	for _, payload := range tests {
+		if _, err := (&Adapter{}).encodeMessageID(payload); CodeOf(err) != CodeIMAPProtocol {
+			t.Fatalf("encodeMessageID(%#v) error = %v, want %q", payload, err, CodeIMAPProtocol)
+		}
+	}
+}
+
 func TestSearchMailRejectsAggregateOutputBeyondConfiguredBudget(t *testing.T) {
 	session := &boundedSearchSession{metadata: []MessageMetadata{{Subject: strings.Repeat("s", 64), uid: 1}}}
 	adapter := newBoundedSearchAdapter(session, 32)

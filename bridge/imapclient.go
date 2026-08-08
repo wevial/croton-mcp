@@ -136,13 +136,14 @@ func (session *imapSession) List(ctx context.Context, limit int) ([]Folder, erro
 }
 
 func (session *imapSession) Status(ctx context.Context, mailbox string) (MailboxStatus, error) {
+	wireMailbox := canonicalMailbox(mailbox)
 	var result MailboxStatus
 	err := session.withBoundedInput(ctx, maxControlResponseBytes, func() error {
-		data, err := session.client.Status(mailbox, &imap.StatusOptions{NumMessages: true, UIDNext: true, UIDValidity: true, NumUnseen: true}).Wait()
+		data, err := session.client.Status(wireMailbox, &imap.StatusOptions{NumMessages: true, UIDNext: true, UIDValidity: true, NumUnseen: true}).Wait()
 		if err != nil {
 			return err
 		}
-		if !mailboxIdentityMatches(mailbox, data.Mailbox) || data.NumMessages == nil || data.NumUnseen == nil || data.UIDNext == 0 || data.UIDValidity == 0 {
+		if !mailboxIdentityMatches(wireMailbox, data.Mailbox) || data.NumMessages == nil || data.NumUnseen == nil || data.UIDNext == 0 || data.UIDValidity == 0 {
 			return errorCode(CodeIMAPProtocol)
 		}
 		maxInt := uint64(^uint(0) >> 1)
@@ -156,6 +157,13 @@ func (session *imapSession) Status(ctx context.Context, mailbox string) (Mailbox
 		return nil
 	})
 	return result, err
+}
+
+func canonicalMailbox(mailbox string) string {
+	if strings.EqualFold(mailbox, "INBOX") {
+		return "INBOX"
+	}
+	return mailbox
 }
 
 func mailboxIdentityMatches(requested, actual string) bool {

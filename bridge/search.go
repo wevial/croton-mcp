@@ -114,6 +114,9 @@ func (adapter *Adapter) SearchMail(ctx context.Context, query SearchQuery) ([]Me
 }
 
 func (adapter *Adapter) encodeMessageID(payload messageIDPayload) (string, error) {
+	if payload.Mailbox == "" || payload.UIDValidity == 0 || payload.UID == 0 {
+		return "", errorCode(CodeIMAPProtocol)
+	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return "", errorCode(CodeIMAPProtocol)
