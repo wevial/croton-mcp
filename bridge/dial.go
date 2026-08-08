@@ -19,7 +19,10 @@ const (
 	maxStartTLSLineBytes     = 4 * 1024
 )
 
-var errStartTLSInputLimit = errors.New("STARTTLS input limit exceeded")
+var (
+	errStartTLSInputLimit = errors.New("STARTTLS input limit exceeded")
+	errStartTLSProtocol   = errors.New("invalid STARTTLS plaintext response")
+)
 
 // Connection is a TLS-established connection to the configured local Bridge endpoint.
 type Connection struct {
@@ -105,6 +108,12 @@ func establishStartTLS(ctx context.Context, rawConnection net.Conn, tlsConfig *t
 	greeting, _, err := readStartTLSLine(reader, maxStartTLSGreetingBytes)
 	if err != nil {
 		_ = rawConnection.Close()
+		if ctx.Err() != nil {
+			return nil, connectionError(ctx, err)
+		}
+		if errors.Is(err, errStartTLSProtocol) {
+			return nil, errorCode(CodeTLSNegotiation)
+		}
 		return nil, connectionError(ctx, err)
 	}
 	if !validStartTLSGreeting(greeting) {
@@ -205,13 +214,35 @@ func readStartTLSLine(reader *bufio.Reader, limit int) (string, int, error) {
 	if len(line) > limit {
 		return "", 0, errStartTLSInputLimit
 	}
+	if len(line) < 2 || line[len(line)-2] != '\r' || line[len(line)-1] != '\n' {
+		return "", 0, errStartTLSProtocol
+	}
+	content := line[:len(line)-2]
+	for _, value := range content {
+		if value < 0x20 || value > 0x7e {
+			return "", 0, errStartTLSProtocol
+		}
+	}
 
-	return strings.TrimRight(string(line), "\r\n"), len(line), nil
+	return string(content), len(line), nil
 }
 
 func validStartTLSGreeting(line string) bool {
-	fields := strings.Fields(line)
-	return len(fields) >= 2 && fields[0] == "*" && strings.EqualFold(fields[1], "OK")
+	if len(line) < len("* OK x") || line[0] != '*' || line[1] != ' ' || !strings.EqualFold(line[2:4], "OK") || line[4] != ' ' {
+		return false
+	}
+	responseText := line[5:]
+	if responseText == "" {
+		return false
+	}
+	if responseText[0] != '[' {
+		return true
+	}
+	closing := strings.IndexByte(responseText, ']')
+	if closing <= 1 || closing+2 >= len(responseText) || responseText[closing+1] != ' ' {
+		return false
+	}
+	return !strings.ContainsAny(responseText[1:closing], "[]")
 }
 
 func capabilityHasStartTLS(line string) bool {

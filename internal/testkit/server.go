@@ -91,6 +91,8 @@ type Scenario struct {
 	// SearchResponse replaces the untagged response to UID SEARCH. It must be a
 	// complete untagged SEARCH or ESEARCH response without a trailing CRLF.
 	SearchResponse string
+	// OmitExactUIDSearchResponse returns no matches for single-UID existence checks.
+	OmitExactUIDSearchResponse bool
 	// SearchWindowResult returns the highest requested UID from every search window.
 	SearchWindowResult bool
 	// StatusResponse replaces the normal untagged STATUS response. It must be a
@@ -98,6 +100,8 @@ type Scenario struct {
 	StatusResponse string
 	// OmitStatusResponse sends only the tagged STATUS completion.
 	OmitStatusResponse bool
+	// OmitMetadataFetchResponse sends only tagged completion for every metadata FETCH.
+	OmitMetadataFetchResponse bool
 	// FetchResponseSection replaces the BODY section label returned by UID FETCH.
 	FetchResponseSection string
 	// BodyFetchResponseSection replaces only whole-body FETCH response labels.
@@ -608,8 +612,12 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 				searchResponse := "* SEARCH"
 				if strings.Contains(raw, "UID 3:102") {
 					searchResponse = "* SEARCH 101"
+				} else if searchWindowIsExact(raw) {
+					searchResponse = fmt.Sprintf("* SEARCH %d", searchWindowEnd(raw))
 				}
-				if server.options.Scenario.SearchResponse != "" {
+				if server.options.Scenario.OmitExactUIDSearchResponse && searchWindowIsExact(raw) {
+					searchResponse = "* SEARCH"
+				} else if server.options.Scenario.SearchResponse != "" {
 					searchResponse = strings.ReplaceAll(server.options.Scenario.SearchResponse, "{TAG}", tag)
 				} else if server.options.Scenario.SearchWindowResult {
 					searchResponse = fmt.Sprintf("* SEARCH %d", searchWindowEnd(raw))
@@ -620,6 +628,12 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 			case "FETCH":
 				literal := syntheticMessageBody
 				header := strings.Contains(strings.ToUpper(raw), "HEADER")
+				if server.shouldOmitFetchResponse(header) {
+					if err := server.writeLine(writer, tagged(tag, "OK FETCH completed")); err != nil {
+						return
+					}
+					continue
+				}
 				if header {
 					literal = syntheticMessageHeader
 				}
@@ -715,6 +729,10 @@ func (server *Server) shouldDisconnect(connectionSequence int) bool {
 	server.disconnectUsed = true
 
 	return true
+}
+
+func (server *Server) shouldOmitFetchResponse(header bool) bool {
+	return header && server.options.Scenario.OmitMetadataFetchResponse
 }
 
 func (server *Server) nextUIDValidity() uint32 {
@@ -846,20 +864,37 @@ func fetchResponseSection(raw string, header bool) string {
 	return "[]<" + upper[start:start+end] + ">"
 }
 
+func searchWindowIsExact(raw string) bool {
+	start, end, ok := searchUIDRange(raw)
+	return ok && start == end
+}
+
 func searchWindowEnd(raw string) uint32 {
-	for _, field := range strings.Fields(raw) {
-		start, end, ok := strings.Cut(field, ":")
-		if !ok || start == "" || end == "" {
+	_, end, ok := searchUIDRange(raw)
+	if ok {
+		return end
+	}
+	return 1
+}
+
+func searchUIDRange(raw string) (uint32, uint32, bool) {
+	fields := strings.Fields(raw)
+	for index, field := range fields {
+		if !strings.EqualFold(field, "UID") || index+1 >= len(fields) {
 			continue
 		}
-
-		value, err := strconv.ParseUint(end, 10, 32)
-		if err == nil && value > 0 {
-			return uint32(value)
+		value := strings.Trim(fields[index+1], "(),")
+		startText, endText, hasRange := strings.Cut(value, ":")
+		if !hasRange {
+			startText, endText = value, value
+		}
+		start, startErr := strconv.ParseUint(startText, 10, 32)
+		end, endErr := strconv.ParseUint(endText, 10, 32)
+		if startErr == nil && endErr == nil && start > 0 && end >= start {
+			return uint32(start), uint32(end), true
 		}
 	}
-
-	return 1
+	return 0, 0, false
 }
 
 func fetchResponseUID(raw string) uint32 {

@@ -19,6 +19,9 @@ func (adapter *Adapter) GetMessageMetadata(ctx context.Context, identifier strin
 		if snapshot.UIDValidity != payload.UIDValidity {
 			return errorCode(CodeStaleMessageID)
 		}
+		if err := requireMessageUID(operationContext, session, payload.UID); err != nil {
+			return err
+		}
 		metadata, err := session.UIDFetchMetadata(operationContext, payload.Mailbox, []uint32{payload.UID}, adapter.config.Bounds.MaxHeaderBytes)
 		if err != nil {
 			return err
@@ -55,6 +58,9 @@ func (adapter *Adapter) GetMessageBody(ctx context.Context, identifier string) (
 		if snapshot.UIDValidity != payload.UIDValidity {
 			return errorCode(CodeStaleMessageID)
 		}
+		if err := requireMessageUID(operationContext, session, payload.UID); err != nil {
+			return err
+		}
 		body, err = session.UIDFetchBody(operationContext, payload.UID, adapter.config.Bounds.MaxBodyBytes)
 		return err
 	})
@@ -63,4 +69,21 @@ func (adapter *Adapter) GetMessageBody(ctx context.Context, identifier string) (
 	}
 
 	return body, nil
+}
+
+func requireMessageUID(ctx context.Context, session readSession, uid uint32) error {
+	uids, err := session.UIDSearchWindow(ctx, SearchQuery{}, uidWindow{Start: uid, End: uid}, 1)
+	if err != nil {
+		if CodeOf(err) == CodeBoundsExceeded {
+			return errorCode(CodeIMAPProtocol)
+		}
+		return err
+	}
+	if len(uids) == 0 {
+		return errorCode(CodeStaleMessageID)
+	}
+	if len(uids) != 1 || uids[0] != uid {
+		return errorCode(CodeIMAPProtocol)
+	}
+	return nil
 }

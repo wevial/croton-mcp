@@ -158,6 +158,78 @@ func TestDialSTARTTLSRejectsNonOKGreeting(t *testing.T) {
 	}
 }
 
+func TestDialSTARTTLSAcceptsWellFormedResponseCodeGreeting(t *testing.T) {
+	server, err := testkit.Start(testkit.Options{
+		Mode:     testkit.StartTLS,
+		Scenario: testkit.Scenario{Greeting: "* OK [CAPABILITY IMAP4rev1 STARTTLS] ready"},
+	})
+	if err != nil {
+		t.Fatalf("start fake server: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	config := fakeServerConfig(t, server.Addr(), bridge.TLSModeStartTLS, bridge.TLSConfig{SPKISHA256: server.SPKISHA256()})
+	connection, err := bridge.Dial(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = connection.Close() })
+}
+
+func TestDialSTARTTLSRejectsMalformedOKGreetings(t *testing.T) {
+	tests := []struct {
+		name     string
+		greeting string
+	}{
+		{name: "bare LF", greeting: "* OK ready\n"},
+		{name: "embedded CR", greeting: "* OK ready\rinside\r\n"},
+		{name: "NUL", greeting: "* OK ready\x00\r\n"},
+		{name: "empty response text", greeting: "* OK\r\n"},
+		{name: "unclosed response code", greeting: "* OK [CAPABILITY IMAP4rev1 ready\r\n"},
+		{name: "empty response code", greeting: "* OK [] ready\r\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("listen: %v", err)
+			}
+			t.Cleanup(func() { _ = listener.Close() })
+			commands := make(chan string, 1)
+			go func() {
+				connection, err := listener.Accept()
+				if err != nil {
+					return
+				}
+				defer connection.Close()
+				_, _ = connection.Write([]byte(test.greeting))
+				_ = connection.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+				buffer := make([]byte, 256)
+				count, _ := connection.Read(buffer)
+				commands <- string(buffer[:count])
+			}()
+
+			config := fakeServerConfig(t, listener.Addr().String(), bridge.TLSModeStartTLS, bridge.TLSConfig{SPKISHA256: strings.Repeat("a", 64)})
+			connection, err := bridge.Dial(context.Background(), config)
+			if connection != nil {
+				_ = connection.Close()
+				t.Fatal("Dial returned a connection for malformed greeting")
+			}
+			if bridge.CodeOf(err) != bridge.CodeTLSNegotiation {
+				t.Fatalf("Dial error = %v, want %q", err, bridge.CodeTLSNegotiation)
+			}
+			select {
+			case command := <-commands:
+				if command != "" {
+					t.Fatalf("malformed greeting triggered plaintext command %q", command)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("fake server did not finish")
+			}
+		})
+	}
+}
+
 func fakeServerConfig(t *testing.T, address, mode string, tlsConfig bridge.TLSConfig) bridge.Config {
 	t.Helper()
 	host, port, err := net.SplitHostPort(address)
