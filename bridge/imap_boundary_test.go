@@ -40,7 +40,7 @@ func TestIMAPDependencyAndMutationMethodsStayInsideFacade(t *testing.T) {
 		if filepath.Base(sourcePath) == "imapclient.go" {
 			allowedClientMethods := map[string]bool{
 				"WaitGreeting": true,
-				"Capability":   true,
+				"Caps":         true,
 				"Close":        true,
 				"Login":        true,
 				"List":         true,

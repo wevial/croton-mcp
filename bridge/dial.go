@@ -228,21 +228,39 @@ func readStartTLSLine(reader *bufio.Reader, limit int) (string, int, error) {
 }
 
 func validStartTLSGreeting(line string) bool {
-	if len(line) < len("* OK x") || line[0] != '*' || line[1] != ' ' || !strings.EqualFold(line[2:4], "OK") || line[4] != ' ' {
+	const prefix = "* OK "
+	if len(line) < len(prefix) || line[0] != '*' || line[1] != ' ' || !strings.EqualFold(line[2:4], "OK") || line[4] != ' ' {
 		return false
 	}
-	responseText := line[5:]
-	if responseText == "" {
-		return false
-	}
-	if responseText[0] != '[' {
+	responseText := line[len(prefix):]
+	if responseText == "" || responseText[0] != '[' {
 		return true
 	}
 	closing := strings.IndexByte(responseText, ']')
-	if closing <= 1 || closing+2 >= len(responseText) || responseText[closing+1] != ' ' {
+	if closing < 2 || closing+2 >= len(responseText) || responseText[closing+1] != ' ' {
 		return false
 	}
-	return !strings.ContainsAny(responseText[1:closing], "[]")
+	code := responseText[1:closing]
+	atom := code
+	if separator := strings.IndexByte(code, ' '); separator >= 0 {
+		atom = code[:separator]
+		if separator == len(code)-1 {
+			return false
+		}
+	}
+	return validIMAPAtom(atom)
+}
+
+func validIMAPAtom(atom string) bool {
+	if atom == "" {
+		return false
+	}
+	for _, value := range []byte(atom) {
+		if value < 0x21 || value > 0x7e || strings.ContainsRune("(){}%*]", rune(value)) {
+			return false
+		}
+	}
+	return true
 }
 
 func capabilityHasStartTLS(line string) bool {

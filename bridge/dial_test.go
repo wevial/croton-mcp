@@ -158,22 +158,30 @@ func TestDialSTARTTLSRejectsNonOKGreeting(t *testing.T) {
 	}
 }
 
-func TestDialSTARTTLSAcceptsWellFormedResponseCodeGreeting(t *testing.T) {
-	server, err := testkit.Start(testkit.Options{
-		Mode:     testkit.StartTLS,
-		Scenario: testkit.Scenario{Greeting: "* OK [CAPABILITY IMAP4rev1 STARTTLS] ready"},
-	})
-	if err != nil {
-		t.Fatalf("start fake server: %v", err)
-	}
-	t.Cleanup(func() { _ = server.Close() })
+func TestDialSTARTTLSAcceptsWellFormedGreetings(t *testing.T) {
+	for _, greeting := range []string{
+		"* OK ",
+		"* OK [CAPABILITY IMAP4rev1 STARTTLS] ready",
+		"* OK [X-CODE arg[more] ready",
+	} {
+		t.Run(greeting, func(t *testing.T) {
+			server, err := testkit.Start(testkit.Options{
+				Mode:     testkit.StartTLS,
+				Scenario: testkit.Scenario{Greeting: greeting},
+			})
+			if err != nil {
+				t.Fatalf("start fake server: %v", err)
+			}
+			t.Cleanup(func() { _ = server.Close() })
 
-	config := fakeServerConfig(t, server.Addr(), bridge.TLSModeStartTLS, bridge.TLSConfig{SPKISHA256: server.SPKISHA256()})
-	connection, err := bridge.Dial(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Dial: %v", err)
+			config := fakeServerConfig(t, server.Addr(), bridge.TLSModeStartTLS, bridge.TLSConfig{SPKISHA256: server.SPKISHA256()})
+			connection, err := bridge.Dial(context.Background(), config)
+			if err != nil {
+				t.Fatalf("Dial: %v", err)
+			}
+			t.Cleanup(func() { _ = connection.Close() })
+		})
 	}
-	t.Cleanup(func() { _ = connection.Close() })
 }
 
 func TestDialSTARTTLSRejectsMalformedOKGreetings(t *testing.T) {
@@ -184,7 +192,8 @@ func TestDialSTARTTLSRejectsMalformedOKGreetings(t *testing.T) {
 		{name: "bare LF", greeting: "* OK ready\n"},
 		{name: "embedded CR", greeting: "* OK ready\rinside\r\n"},
 		{name: "NUL", greeting: "* OK ready\x00\r\n"},
-		{name: "empty response text", greeting: "* OK\r\n"},
+		{name: "invalid empty response-code atom", greeting: "* OK [ ] ready\r\n"},
+		{name: "invalid parenthesis response-code atom", greeting: "* OK [(] ready\r\n"},
 		{name: "unclosed response code", greeting: "* OK [CAPABILITY IMAP4rev1 ready\r\n"},
 		{name: "empty response code", greeting: "* OK [] ready\r\n"},
 	}

@@ -13,20 +13,19 @@ func TestAdapterReplaysOneTransportFailure(t *testing.T) {
 	t.Parallel()
 
 	for _, test := range []struct {
-		name            string
-		fakeMode        testkit.TLSMode
-		adapterMode     string
-		disconnectAfter int
+		name        string
+		fakeMode    testkit.TLSMode
+		adapterMode string
 	}{
-		{name: "implicit TLS", fakeMode: testkit.ImplicitTLS, adapterMode: bridge.TLSModeImplicit, disconnectAfter: 10},
-		{name: "STARTTLS", fakeMode: testkit.StartTLS, adapterMode: bridge.TLSModeStartTLS, disconnectAfter: 12},
+		{name: "implicit TLS", fakeMode: testkit.ImplicitTLS, adapterMode: bridge.TLSModeImplicit},
+		{name: "STARTTLS", fakeMode: testkit.StartTLS, adapterMode: bridge.TLSModeStartTLS},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
 			server, err := testkit.Start(testkit.Options{
 				Mode:     test.fakeMode,
-				Scenario: testkit.Scenario{DisconnectAfterCommand: test.disconnectAfter},
+				Scenario: testkit.Scenario{DisconnectOnExactUIDSearch: true},
 			})
 			if err != nil {
 				t.Fatalf("start fake server: %v", err)
@@ -86,6 +85,90 @@ func TestAdapterReplaysOneTransportFailure(t *testing.T) {
 	}
 }
 
+func TestAdapterReplaysPostLoginCapabilityFailure(t *testing.T) {
+	for _, mode := range []struct {
+		name        string
+		fakeMode    testkit.TLSMode
+		adapterMode string
+	}{
+		{name: "implicit TLS", fakeMode: testkit.ImplicitTLS, adapterMode: bridge.TLSModeImplicit},
+		{name: "STARTTLS", fakeMode: testkit.StartTLS, adapterMode: bridge.TLSModeStartTLS},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			server, err := testkit.Start(testkit.Options{
+				Mode:     mode.fakeMode,
+				Scenario: testkit.Scenario{DisconnectOnPostLoginCapability: true},
+			})
+			if err != nil {
+				t.Fatalf("start fake server: %v", err)
+			}
+			t.Cleanup(func() { _ = server.Close() })
+
+			adapter, err := bridge.NewAdapter(fakeServerConfig(t, server.Addr(), mode.adapterMode, bridge.TLSConfig{SPKISHA256: server.SPKISHA256()}))
+			if err != nil {
+				t.Fatalf("NewAdapter: %v", err)
+			}
+			t.Cleanup(func() { _ = adapter.Close() })
+
+			messages, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+			if err != nil || len(messages) != 1 {
+				t.Fatalf("SearchMail after post-login CAPABILITY disconnect = %#v, %v", messages, err)
+			}
+			assertTwoLogins(t, server.Commands())
+		})
+	}
+}
+
+func TestAdapterReplaysExactUIDSearchFailure(t *testing.T) {
+	server, err := testkit.Start(testkit.Options{
+		Mode:     testkit.ImplicitTLS,
+		Scenario: testkit.Scenario{DisconnectOnExactUIDSearch: true},
+	})
+	if err != nil {
+		t.Fatalf("start fake server: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	adapter, err := bridge.NewAdapter(fakeServerConfig(t, server.Addr(), bridge.TLSModeImplicit, bridge.TLSConfig{SPKISHA256: server.SPKISHA256()}))
+	if err != nil {
+		t.Fatalf("NewAdapter: %v", err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+
+	messages, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+	if err != nil || len(messages) != 1 {
+		t.Fatalf("SearchMail = %#v, %v", messages, err)
+	}
+	body, err := adapter.GetMessageBody(context.Background(), messages[0].ID)
+	if err != nil || !strings.Contains(string(body), "Welcome to Croton") {
+		t.Fatalf("GetMessageBody after exact UID SEARCH disconnect = %q, %v", body, err)
+	}
+	commands := server.Commands()
+	assertTwoLogins(t, commands)
+	exactSearches := 0
+	for _, command := range commands {
+		if command.Name == "UID" && strings.Contains(command.Raw, " SEARCH ") && strings.Contains(command.Raw, "UID 101") {
+			exactSearches++
+		}
+	}
+	if exactSearches != 2 {
+		t.Fatalf("exact UID SEARCH count = %d, want one failed attempt and one replay: %+v", exactSearches, commands)
+	}
+}
+
+func assertTwoLogins(t *testing.T, commands []testkit.Command) {
+	t.Helper()
+	loginCount := 0
+	for _, command := range commands {
+		if command.Name == "LOGIN" {
+			loginCount++
+		}
+	}
+	if loginCount != 2 {
+		t.Fatalf("LOGIN count = %d, want one replay: %+v", loginCount, commands)
+	}
+}
+
 func TestAdapterRejectsStaleMessageIDAfterTransportReplay(t *testing.T) {
 	t.Parallel()
 
@@ -95,8 +178,8 @@ func TestAdapterRejectsStaleMessageIDAfterTransportReplay(t *testing.T) {
 		adapterMode     string
 		disconnectAfter int
 	}{
-		{name: "implicit TLS", fakeMode: testkit.ImplicitTLS, adapterMode: bridge.TLSModeImplicit, disconnectAfter: 10},
-		{name: "STARTTLS", fakeMode: testkit.StartTLS, adapterMode: bridge.TLSModeStartTLS, disconnectAfter: 12},
+		{name: "implicit TLS", fakeMode: testkit.ImplicitTLS, adapterMode: bridge.TLSModeImplicit, disconnectAfter: 8},
+		{name: "STARTTLS", fakeMode: testkit.StartTLS, adapterMode: bridge.TLSModeStartTLS, disconnectAfter: 10},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()

@@ -29,6 +29,47 @@ func TestSearchMailMissingFetchedUIDRemainsProtocolError(t *testing.T) {
 	}
 }
 
+func TestAdapterRejectsTaggedOnlyExactUIDSearch(t *testing.T) {
+	for _, lookup := range []struct {
+		name string
+		call func(context.Context, *bridge.Adapter, string) error
+	}{
+		{name: "metadata", call: func(ctx context.Context, adapter *bridge.Adapter, id string) error {
+			_, err := adapter.GetMessageMetadata(ctx, id)
+			return err
+		}},
+		{name: "body", call: func(ctx context.Context, adapter *bridge.Adapter, id string) error {
+			_, err := adapter.GetMessageBody(ctx, id)
+			return err
+		}},
+	} {
+		t.Run(lookup.name, func(t *testing.T) {
+			server, err := testkit.Start(testkit.Options{
+				Mode:     testkit.ImplicitTLS,
+				Scenario: testkit.Scenario{OmitExactUIDSearchData: true},
+			})
+			if err != nil {
+				t.Fatalf("start fake server: %v", err)
+			}
+			t.Cleanup(func() { _ = server.Close() })
+
+			adapter, err := bridge.NewAdapter(fakeServerConfig(t, server.Addr(), bridge.TLSModeImplicit, bridge.TLSConfig{SPKISHA256: server.SPKISHA256()}))
+			if err != nil {
+				t.Fatalf("NewAdapter: %v", err)
+			}
+			t.Cleanup(func() { _ = adapter.Close() })
+
+			results, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+			if err != nil || len(results) != 1 {
+				t.Fatalf("SearchMail = %#v, %v", results, err)
+			}
+			if err := lookup.call(context.Background(), adapter, results[0].ID); bridge.CodeOf(err) != bridge.CodeIMAPProtocol {
+				t.Fatalf("lookup error = %v, want %q", err, bridge.CodeIMAPProtocol)
+			}
+		})
+	}
+}
+
 func TestAdapterReportsExpungedOpaqueIDsAsStale(t *testing.T) {
 	tests := []struct {
 		name     string

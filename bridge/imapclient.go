@@ -76,9 +76,7 @@ func newIMAPSession(ctx context.Context, connection *Connection) (*imapSession, 
 		if err := client.WaitGreeting(); err != nil {
 			return err
 		}
-
-		_, err := client.Capability().Wait()
-		return err
+		return waitForCapabilities(client)
 	}); err != nil {
 		_ = client.Close()
 		return nil, err
@@ -100,9 +98,15 @@ func (session *imapSession) Authenticate(ctx context.Context, credentials Creden
 			}
 			return err
 		}
-		_, err := session.client.Capability().Wait()
-		return err
+		return waitForCapabilities(session.client)
 	})
+}
+
+func waitForCapabilities(client *imapclient.Client) error {
+	if client.Caps() == nil {
+		return io.EOF
+	}
+	return nil
 }
 
 func (session *imapSession) List(ctx context.Context, limit int) ([]Folder, error) {
@@ -212,7 +216,8 @@ func (session *imapSession) UIDSearchWindow(ctx context.Context, query SearchQue
 		var data *imap.SearchData
 		var searchErr error
 		exceeded := false
-		exceeded, searchErr = session.withSearchInputBudget(func() error {
+		responseSeen := false
+		exceeded, responseSeen, searchErr = session.withSearchInputBudget(func() error {
 			data, searchErr = session.client.UIDSearch(criteria, nil).Wait()
 			return searchErr
 		})
@@ -221,6 +226,9 @@ func (session *imapSession) UIDSearchWindow(ctx context.Context, query SearchQue
 		}
 		if searchErr != nil {
 			return searchErr
+		}
+		if !responseSeen {
+			return errorCode(CodeIMAPProtocol)
 		}
 
 		var rangeErr error
@@ -456,8 +464,15 @@ func (session *imapSession) withBoundedInput(ctx context.Context, limit int, ope
 	})
 }
 
-func (session *imapSession) withSearchInputBudget(operation func() error) (bool, error) {
-	return session.withInputBudget(maxSearchResponseBytes, operation)
+func (session *imapSession) withSearchInputBudget(operation func() error) (bool, bool, error) {
+	if session.budget == nil {
+		return false, false, operation()
+	}
+
+	session.budget.beginSearch(maxSearchResponseBytes)
+	err := operation()
+	exceeded, responseSeen := session.budget.endSearch()
+	return exceeded, responseSeen, err
 }
 
 func (session *imapSession) withInputBudget(limit int, operation func() error) (bool, error) {
@@ -595,11 +610,14 @@ func (connection *syntheticGreetingConn) Read(buffer []byte) (int, error) {
 
 type readBudgetConn struct {
 	net.Conn
-	mu        sync.Mutex
-	active    bool
-	idleLimit int
-	remaining int
-	exceeded  bool
+	mu                 sync.Mutex
+	active             bool
+	idleLimit          int
+	remaining          int
+	exceeded           bool
+	searchActive       bool
+	searchResponseSeen bool
+	searchBuffer       string
 }
 
 func newReadBudgetConn(connection net.Conn, idleLimit int) *readBudgetConn {
@@ -618,6 +636,30 @@ func (connection *readBudgetConn) begin(limit int) {
 	connection.active = true
 	connection.remaining = limit
 	connection.exceeded = false
+}
+
+func (connection *readBudgetConn) beginSearch(limit int) {
+	connection.begin(limit)
+	connection.mu.Lock()
+	defer connection.mu.Unlock()
+	connection.searchActive = true
+	connection.searchResponseSeen = false
+	connection.searchBuffer = ""
+}
+
+func (connection *readBudgetConn) endSearch() (bool, bool) {
+	connection.mu.Lock()
+	defer connection.mu.Unlock()
+
+	exceeded := connection.exceeded
+	seen := connection.searchResponseSeen
+	connection.active = true
+	connection.remaining = connection.idleLimit
+	connection.exceeded = false
+	connection.searchActive = false
+	connection.searchResponseSeen = false
+	connection.searchBuffer = ""
+	return exceeded, seen
 }
 
 func (connection *readBudgetConn) end() bool {
@@ -652,8 +694,27 @@ func (connection *readBudgetConn) Read(buffer []byte) (int, error) {
 	if connection.active {
 		connection.remaining -= count
 	}
+	if connection.searchActive && count > 0 {
+		connection.observeSearchResponseLocked(string(buffer[:count]))
+	}
 	connection.mu.Unlock()
 	return count, err
+}
+
+func (connection *readBudgetConn) observeSearchResponseLocked(input string) {
+	connection.searchBuffer += input
+	for {
+		end := strings.Index(connection.searchBuffer, "\r\n")
+		if end < 0 {
+			return
+		}
+		line := connection.searchBuffer[:end]
+		connection.searchBuffer = connection.searchBuffer[end+2:]
+		upper := strings.ToUpper(line)
+		if upper == "* SEARCH" || strings.HasPrefix(upper, "* SEARCH ") || upper == "* ESEARCH" || strings.HasPrefix(upper, "* ESEARCH ") {
+			connection.searchResponseSeen = true
+		}
+	}
 }
 
 type deadlineConn struct {

@@ -62,6 +62,10 @@ type Scenario struct {
 	// DisconnectAfterCommand closes the first matching connection after this
 	// connection-local command number, allowing reconnect-once tests to recover.
 	DisconnectAfterCommand int
+	// DisconnectOnPostLoginCapability closes the first authenticated CAPABILITY.
+	DisconnectOnPostLoginCapability bool
+	// DisconnectOnExactUIDSearch closes the first single-UID SEARCH command.
+	DisconnectOnExactUIDSearch bool
 	// MalformedResponse replaces normal command responses with this literal wire response.
 	MalformedResponse string
 	// OversizedResponseBytes emits an untagged response of this size before normal responses.
@@ -91,8 +95,11 @@ type Scenario struct {
 	// SearchResponse replaces the untagged response to UID SEARCH. It must be a
 	// complete untagged SEARCH or ESEARCH response without a trailing CRLF.
 	SearchResponse string
-	// OmitExactUIDSearchResponse returns no matches for single-UID existence checks.
+	// OmitExactUIDSearchResponse returns a conforming empty SEARCH response for
+	// single-UID existence checks.
 	OmitExactUIDSearchResponse bool
+	// OmitExactUIDSearchData sends tagged OK without the mandatory SEARCH data.
+	OmitExactUIDSearchData bool
 	// SearchWindowResult returns the highest requested UID from every search window.
 	SearchWindowResult bool
 	// StatusResponse replaces the normal untagged STATUS response. It must be a
@@ -417,7 +424,7 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 		server.record(raw, name, tlsEstablished, connectionID)
 		connectionCommands++
 
-		if server.shouldDisconnect(connectionCommands) {
+		if server.shouldDisconnectForScenario(name, raw, authenticated) || server.shouldDisconnect(connectionCommands) {
 			return
 		}
 		if server.options.Scenario.MalformedResponse != "" {
@@ -609,13 +616,20 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 
 			switch strings.ToUpper(fields[2]) {
 			case "SEARCH":
+				exactUIDSearch := searchWindowIsExact(raw)
+				if server.options.Scenario.OmitExactUIDSearchData && exactUIDSearch {
+					if err := server.writeLine(writer, tagged(tag, "OK SEARCH completed")); err != nil {
+						return
+					}
+					continue
+				}
 				searchResponse := "* SEARCH"
 				if strings.Contains(raw, "UID 3:102") {
 					searchResponse = "* SEARCH 101"
-				} else if searchWindowIsExact(raw) {
+				} else if exactUIDSearch {
 					searchResponse = fmt.Sprintf("* SEARCH %d", searchWindowEnd(raw))
 				}
-				if server.options.Scenario.OmitExactUIDSearchResponse && searchWindowIsExact(raw) {
+				if server.options.Scenario.OmitExactUIDSearchResponse && exactUIDSearch {
 					searchResponse = "* SEARCH"
 				} else if server.options.Scenario.SearchResponse != "" {
 					searchResponse = strings.ReplaceAll(server.options.Scenario.SearchResponse, "{TAG}", tag)
@@ -711,6 +725,22 @@ func (server *Server) record(raw, name string, tlsEstablished bool, connectionID
 	server.commands = append(server.commands, command)
 
 	return command
+}
+
+func (server *Server) shouldDisconnectForScenario(name, raw string, authenticated bool) bool {
+	matched := server.options.Scenario.DisconnectOnPostLoginCapability && authenticated && name == "CAPABILITY"
+	matched = matched || server.options.Scenario.DisconnectOnExactUIDSearch && name == "UID" && strings.Contains(strings.ToUpper(raw), " SEARCH ") && searchWindowIsExact(raw)
+	if !matched {
+		return false
+	}
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if server.disconnectUsed {
+		return false
+	}
+	server.disconnectUsed = true
+	return true
 }
 
 func (server *Server) shouldDisconnect(connectionSequence int) bool {
