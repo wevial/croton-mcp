@@ -85,6 +85,52 @@ func TestAdapterReplaysOneTransportFailure(t *testing.T) {
 	}
 }
 
+func TestAdapterSynchronizesPostLoginCapabilityBeforeOperation(t *testing.T) {
+	for _, mode := range []struct {
+		name        string
+		fakeMode    testkit.TLSMode
+		adapterMode string
+	}{
+		{name: "implicit TLS", fakeMode: testkit.ImplicitTLS, adapterMode: bridge.TLSModeImplicit},
+		{name: "STARTTLS", fakeMode: testkit.StartTLS, adapterMode: bridge.TLSModeStartTLS},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			server, err := testkit.Start(testkit.Options{Mode: mode.fakeMode})
+			if err != nil {
+				t.Fatalf("start fake server: %v", err)
+			}
+			t.Cleanup(func() { _ = server.Close() })
+
+			adapter, err := bridge.NewAdapter(fakeServerConfig(t, server.Addr(), mode.adapterMode, bridge.TLSConfig{SPKISHA256: server.SPKISHA256()}))
+			if err != nil {
+				t.Fatalf("NewAdapter: %v", err)
+			}
+			t.Cleanup(func() { _ = adapter.Close() })
+			if _, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"}); err != nil {
+				t.Fatalf("SearchMail: %v", err)
+			}
+
+			betweenLoginAndExamine := map[string]int{}
+			seenLogin := false
+			for _, command := range server.Commands() {
+				if command.Name == "LOGIN" {
+					seenLogin = true
+					continue
+				}
+				if seenLogin && command.Name == "EXAMINE" {
+					break
+				}
+				if seenLogin {
+					betweenLoginAndExamine[command.Name]++
+				}
+			}
+			if betweenLoginAndExamine["CAPABILITY"] != 1 || betweenLoginAndExamine["NOOP"] != 1 {
+				t.Fatalf("commands between LOGIN and EXAMINE = %v, want one automatic CAPABILITY and one synchronization NOOP: %+v", betweenLoginAndExamine, server.Commands())
+			}
+		})
+	}
+}
+
 func TestAdapterReplaysPostLoginCapabilityFailure(t *testing.T) {
 	for _, mode := range []struct {
 		name        string
@@ -178,8 +224,8 @@ func TestAdapterRejectsStaleMessageIDAfterTransportReplay(t *testing.T) {
 		adapterMode     string
 		disconnectAfter int
 	}{
-		{name: "implicit TLS", fakeMode: testkit.ImplicitTLS, adapterMode: bridge.TLSModeImplicit, disconnectAfter: 8},
-		{name: "STARTTLS", fakeMode: testkit.StartTLS, adapterMode: bridge.TLSModeStartTLS, disconnectAfter: 10},
+		{name: "implicit TLS", fakeMode: testkit.ImplicitTLS, adapterMode: bridge.TLSModeImplicit, disconnectAfter: 9},
+		{name: "STARTTLS", fakeMode: testkit.StartTLS, adapterMode: bridge.TLSModeStartTLS, disconnectAfter: 11},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()

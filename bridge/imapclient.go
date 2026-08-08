@@ -98,6 +98,16 @@ func (session *imapSession) Authenticate(ctx context.Context, credentials Creden
 			}
 			return err
 		}
+		// go-imap signals LOGIN completion immediately before it invalidates the
+		// pre-login capabilities and launches its automatic refresh. NOOP is a
+		// decoder-ordering barrier: once it completes, that invalidation has run.
+		if err := session.client.Noop().Wait(); err != nil {
+			var imapError *imap.Error
+			if errors.As(err, &imapError) {
+				return err
+			}
+			return io.EOF
+		}
 		return waitForCapabilities(session.client)
 	})
 }
@@ -216,8 +226,9 @@ func (session *imapSession) UIDSearchWindow(ctx context.Context, query SearchQue
 		var data *imap.SearchData
 		var searchErr error
 		exceeded := false
-		responseSeen := false
-		exceeded, responseSeen, searchErr = session.withSearchInputBudget(func() error {
+		searchSeen := false
+		eSearchSeen := false
+		exceeded, searchSeen, eSearchSeen, searchErr = session.withSearchInputBudget(func() error {
 			data, searchErr = session.client.UIDSearch(criteria, nil).Wait()
 			return searchErr
 		})
@@ -227,8 +238,14 @@ func (session *imapSession) UIDSearchWindow(ctx context.Context, query SearchQue
 		if searchErr != nil {
 			return searchErr
 		}
-		if !responseSeen {
+		if !searchSeen && (!eSearchSeen || !eSearchAppliedToUIDSearch(data)) {
 			return errorCode(CodeIMAPProtocol)
+		}
+		if !searchSeen && data.All == nil {
+			if data.Min != 0 || data.Max != 0 || data.Count != 0 {
+				return errorCode(CodeIMAPProtocol)
+			}
+			data.All = imap.UIDSet(nil)
 		}
 
 		var rangeErr error
@@ -236,6 +253,23 @@ func (session *imapSession) UIDSearchWindow(ctx context.Context, query SearchQue
 		return rangeErr
 	})
 	return results, err
+}
+
+// eSearchAppliedToUIDSearch distinguishes a matching ESEARCH response from a
+// valid but stale correlator that go-imap correctly ignores. A UID SEARCH
+// command starts with a typed empty UIDSet. A matching ESEARCH replaces the
+// complete SearchData, leaving All nil for no result data or nonempty when ALL
+// is present; an ignored ESEARCH leaves that typed empty sentinel unchanged.
+func eSearchAppliedToUIDSearch(data *imap.SearchData) bool {
+	if data == nil || data.All == nil {
+		return data != nil
+	}
+	uids, ok := data.All.(imap.UIDSet)
+	if !ok {
+		return true
+	}
+	numbers, complete := uids.Nums()
+	return complete && len(numbers) > 0
 }
 
 func (session *imapSession) UIDFetchMetadata(ctx context.Context, _ string, uids []uint32, headerLimit int) ([]MessageMetadata, error) {
@@ -464,15 +498,15 @@ func (session *imapSession) withBoundedInput(ctx context.Context, limit int, ope
 	})
 }
 
-func (session *imapSession) withSearchInputBudget(operation func() error) (bool, bool, error) {
+func (session *imapSession) withSearchInputBudget(operation func() error) (bool, bool, bool, error) {
 	if session.budget == nil {
-		return false, false, operation()
+		return false, false, false, operation()
 	}
 
 	session.budget.beginSearch(maxSearchResponseBytes)
 	err := operation()
-	exceeded, responseSeen := session.budget.endSearch()
-	return exceeded, responseSeen, err
+	exceeded, searchSeen, eSearchSeen := session.budget.endSearch()
+	return exceeded, searchSeen, eSearchSeen, err
 }
 
 func (session *imapSession) withInputBudget(limit int, operation func() error) (bool, error) {
@@ -610,14 +644,15 @@ func (connection *syntheticGreetingConn) Read(buffer []byte) (int, error) {
 
 type readBudgetConn struct {
 	net.Conn
-	mu                 sync.Mutex
-	active             bool
-	idleLimit          int
-	remaining          int
-	exceeded           bool
-	searchActive       bool
-	searchResponseSeen bool
-	searchBuffer       string
+	mu                  sync.Mutex
+	active              bool
+	idleLimit           int
+	remaining           int
+	exceeded            bool
+	searchActive        bool
+	searchResponseSeen  bool
+	eSearchResponseSeen bool
+	searchBuffer        string
 }
 
 func newReadBudgetConn(connection net.Conn, idleLimit int) *readBudgetConn {
@@ -644,22 +679,25 @@ func (connection *readBudgetConn) beginSearch(limit int) {
 	defer connection.mu.Unlock()
 	connection.searchActive = true
 	connection.searchResponseSeen = false
+	connection.eSearchResponseSeen = false
 	connection.searchBuffer = ""
 }
 
-func (connection *readBudgetConn) endSearch() (bool, bool) {
+func (connection *readBudgetConn) endSearch() (bool, bool, bool) {
 	connection.mu.Lock()
 	defer connection.mu.Unlock()
 
 	exceeded := connection.exceeded
-	seen := connection.searchResponseSeen
+	searchSeen := connection.searchResponseSeen
+	eSearchSeen := connection.eSearchResponseSeen
 	connection.active = true
 	connection.remaining = connection.idleLimit
 	connection.exceeded = false
 	connection.searchActive = false
 	connection.searchResponseSeen = false
+	connection.eSearchResponseSeen = false
 	connection.searchBuffer = ""
-	return exceeded, seen
+	return exceeded, searchSeen, eSearchSeen
 }
 
 func (connection *readBudgetConn) end() bool {
@@ -711,8 +749,11 @@ func (connection *readBudgetConn) observeSearchResponseLocked(input string) {
 		line := connection.searchBuffer[:end]
 		connection.searchBuffer = connection.searchBuffer[end+2:]
 		upper := strings.ToUpper(line)
-		if upper == "* SEARCH" || strings.HasPrefix(upper, "* SEARCH ") || upper == "* ESEARCH" || strings.HasPrefix(upper, "* ESEARCH ") {
+		switch {
+		case upper == "* SEARCH" || strings.HasPrefix(upper, "* SEARCH "):
 			connection.searchResponseSeen = true
+		case upper == "* ESEARCH" || strings.HasPrefix(upper, "* ESEARCH "):
+			connection.eSearchResponseSeen = true
 		}
 	}
 }

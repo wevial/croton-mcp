@@ -95,6 +95,9 @@ type Scenario struct {
 	// SearchResponse replaces the untagged response to UID SEARCH. It must be a
 	// complete untagged SEARCH or ESEARCH response without a trailing CRLF.
 	SearchResponse string
+	// ExactUIDSearchResponse replaces the untagged response only for single-UID
+	// existence checks. {TAG} is replaced with the active command tag.
+	ExactUIDSearchResponse string
 	// OmitExactUIDSearchResponse returns a conforming empty SEARCH response for
 	// single-UID existence checks.
 	OmitExactUIDSearchResponse bool
@@ -552,6 +555,10 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 			if err := server.writeLine(writer, tagged(tag, "OK AUTHENTICATE completed")); err != nil {
 				return
 			}
+		case "NOOP":
+			if err := server.writeLine(writer, tagged(tag, "OK NOOP completed")); err != nil {
+				return
+			}
 		case "LIST":
 			if !authenticated {
 				if err := server.writeLine(writer, tagged(tag, "NO authenticate first")); err != nil {
@@ -629,7 +636,9 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 				} else if exactUIDSearch {
 					searchResponse = fmt.Sprintf("* SEARCH %d", searchWindowEnd(raw))
 				}
-				if server.options.Scenario.OmitExactUIDSearchResponse && exactUIDSearch {
+				if server.options.Scenario.ExactUIDSearchResponse != "" && exactUIDSearch {
+					searchResponse = strings.ReplaceAll(server.options.Scenario.ExactUIDSearchResponse, "{TAG}", tag)
+				} else if server.options.Scenario.OmitExactUIDSearchResponse && exactUIDSearch {
 					searchResponse = "* SEARCH"
 				} else if server.options.Scenario.SearchResponse != "" {
 					searchResponse = strings.ReplaceAll(server.options.Scenario.SearchResponse, "{TAG}", tag)

@@ -43,6 +43,7 @@ func TestIMAPDependencyAndMutationMethodsStayInsideFacade(t *testing.T) {
 				"Caps":         true,
 				"Close":        true,
 				"Login":        true,
+				"Noop":         true,
 				"List":         true,
 				"Status":       true,
 				"Select":       true,

@@ -163,6 +163,7 @@ func TestDialSTARTTLSAcceptsWellFormedGreetings(t *testing.T) {
 		"* OK ",
 		"* OK [CAPABILITY IMAP4rev1 STARTTLS] ready",
 		"* OK [X-CODE arg[more] ready",
+		"* OK [X}Y arg] ready",
 	} {
 		t.Run(greeting, func(t *testing.T) {
 			server, err := testkit.Start(testkit.Options{
@@ -194,6 +195,8 @@ func TestDialSTARTTLSRejectsMalformedOKGreetings(t *testing.T) {
 		{name: "NUL", greeting: "* OK ready\x00\r\n"},
 		{name: "invalid empty response-code atom", greeting: "* OK [ ] ready\r\n"},
 		{name: "invalid parenthesis response-code atom", greeting: "* OK [(] ready\r\n"},
+		{name: "invalid quote response-code atom", greeting: "* OK [X\"Y arg] ready\r\n"},
+		{name: "invalid backslash response-code atom", greeting: "* OK [X\\Y arg] ready\r\n"},
 		{name: "unclosed response code", greeting: "* OK [CAPABILITY IMAP4rev1 ready\r\n"},
 		{name: "empty response code", greeting: "* OK [] ready\r\n"},
 	}

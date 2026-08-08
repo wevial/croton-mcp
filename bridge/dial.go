@@ -256,7 +256,7 @@ func validIMAPAtom(atom string) bool {
 		return false
 	}
 	for _, value := range []byte(atom) {
-		if value < 0x21 || value > 0x7e || strings.ContainsRune("(){}%*]", rune(value)) {
+		if value < 0x21 || value > 0x7e || strings.ContainsRune("(){%*\"\\]", rune(value)) {
 			return false
 		}
 	}
