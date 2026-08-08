@@ -279,12 +279,37 @@ func (session *imapSession) UIDFetchMetadata(ctx context.Context, _ string, uids
 		if err := command.Close(); err != nil {
 			return err
 		}
-		if len(results) != len(uids) {
-			return errorCode(CodeIMAPProtocol)
-		}
-		return nil
+		return validateFetchedMetadataUIDs(uids, results)
 	})
 	return results, err
+}
+
+func validateFetchedMetadataUIDs(requested []uint32, results []MessageMetadata) error {
+	if len(results) != len(requested) {
+		return errorCode(CodeIMAPProtocol)
+	}
+
+	remaining := make(map[uint32]struct{}, len(requested))
+	for _, uid := range requested {
+		if uid == 0 {
+			return errorCode(CodeIMAPProtocol)
+		}
+		if _, exists := remaining[uid]; exists {
+			return errorCode(CodeIMAPProtocol)
+		}
+		remaining[uid] = struct{}{}
+	}
+	for _, result := range results {
+		if _, exists := remaining[result.uid]; !exists {
+			return errorCode(CodeIMAPProtocol)
+		}
+		delete(remaining, result.uid)
+	}
+	if len(remaining) != 0 {
+		return errorCode(CodeIMAPProtocol)
+	}
+
+	return nil
 }
 
 func (session *imapSession) UIDFetchBody(ctx context.Context, uid uint32, limit int) ([]byte, error) {
