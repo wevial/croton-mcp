@@ -105,6 +105,10 @@ type Scenario struct {
 	// FetchResponseUID replaces the UID in every metadata FETCH response.
 	// Zero preserves the requested UID.
 	FetchResponseUID uint32
+	// FetchExtraUIDBefore emits an additional UID item before the normal UID.
+	FetchExtraUIDBefore uint32
+	// FetchExtraUIDAfter emits an additional UID item after the normal UID.
+	FetchExtraUIDAfter uint32
 	// BodyFetchResponseUID replaces only whole-body FETCH response UIDs.
 	// Zero preserves the requested UID.
 	BodyFetchResponseUID uint32
@@ -654,7 +658,12 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 				if !header && server.options.Scenario.BodyFetchResponseUID != 0 {
 					responseUID = server.options.Scenario.BodyFetchResponseUID
 				}
-				if !server.writeFetch(writer, tag, responseUID, literal, section, declaredBytes, duplicate, unexpectedBinaryLiteralBytes) {
+				extraUIDBefore, extraUIDAfter := uint32(0), uint32(0)
+				if header {
+					extraUIDBefore = server.options.Scenario.FetchExtraUIDBefore
+					extraUIDAfter = server.options.Scenario.FetchExtraUIDAfter
+				}
+				if !server.writeFetch(writer, tag, responseUID, extraUIDBefore, extraUIDAfter, literal, section, declaredBytes, duplicate, unexpectedBinaryLiteralBytes) {
 					return
 				}
 			default:
@@ -778,7 +787,7 @@ func (server *Server) writeLine(writer *bufio.Writer, line string) error {
 	return writer.Flush()
 }
 
-func (server *Server) writeFetch(writer *bufio.Writer, tag string, uid uint32, literal, section string, declaredBytes int, duplicate bool, unexpectedBinaryLiteralBytes int) bool {
+func (server *Server) writeFetch(writer *bufio.Writer, tag string, uid, extraUIDBefore, extraUIDAfter uint32, literal, section string, declaredBytes int, duplicate bool, unexpectedBinaryLiteralBytes int) bool {
 	if delay := server.options.Scenario.ResponseDelay; delay > 0 {
 		timer := time.NewTimer(delay)
 		defer timer.Stop()
@@ -802,7 +811,14 @@ func (server *Server) writeFetch(writer *bufio.Writer, tag string, uid uint32, l
 		items += fmt.Sprintf(" BINARY[] {%d}\r\n%s", len(unexpectedLiteral), unexpectedLiteral)
 	}
 
-	response := fmt.Sprintf("* 1 FETCH (UID %d FLAGS () INTERNALDATE \"01-Jan-2026 00:00:00 +0000\" RFC822.SIZE %d %s)\r\n%s OK FETCH completed\r\n", uid, len(syntheticMessageBody), items, tag)
+	uidItems := fmt.Sprintf("UID %d", uid)
+	if extraUIDBefore != 0 {
+		uidItems = fmt.Sprintf("UID %d %s", extraUIDBefore, uidItems)
+	}
+	if extraUIDAfter != 0 {
+		uidItems += fmt.Sprintf(" UID %d", extraUIDAfter)
+	}
+	response := fmt.Sprintf("* 1 FETCH (%s FLAGS () INTERNALDATE \"01-Jan-2026 00:00:00 +0000\" RFC822.SIZE %d %s)\r\n%s OK FETCH completed\r\n", uidItems, len(syntheticMessageBody), items, tag)
 	if _, err := writer.WriteString(response); err != nil {
 		return false
 	}

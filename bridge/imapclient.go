@@ -260,9 +260,14 @@ func (session *imapSession) UIDFetchMetadata(ctx context.Context, _ string, uids
 		for message := command.Next(); message != nil; message = command.Next() {
 			var item MessageMetadata
 			bodySections := 0
+			uidItems := 0
 			for data := message.Next(); data != nil; data = message.Next() {
 				switch value := data.(type) {
 				case imapclient.FetchItemDataUID:
+					if uidItems != 0 || value.UID == 0 {
+						return errorCode(CodeIMAPProtocol)
+					}
+					uidItems++
 					item.uid = uint32(value.UID)
 				case imapclient.FetchItemDataRFC822Size:
 					item.Size = value.Size
@@ -282,7 +287,7 @@ func (session *imapSession) UIDFetchMetadata(ctx context.Context, _ string, uids
 					item.Subject = parsed.Header.Get("Subject")
 				}
 			}
-			if item.uid == 0 || bodySections != 1 {
+			if uidItems != 1 || item.uid == 0 || bodySections != 1 {
 				return errorCode(CodeIMAPProtocol)
 			}
 			results = append(results, item)
