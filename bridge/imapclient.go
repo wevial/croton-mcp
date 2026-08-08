@@ -268,8 +268,7 @@ func eSearchAppliedToUIDSearch(data *imap.SearchData) bool {
 	if !ok {
 		return true
 	}
-	numbers, complete := uids.Nums()
-	return complete && len(numbers) > 0
+	return len(uids) > 0
 }
 
 func (session *imapSession) UIDFetchMetadata(ctx context.Context, _ string, uids []uint32, headerLimit int) ([]MessageMetadata, error) {
