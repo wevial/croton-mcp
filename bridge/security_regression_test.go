@@ -156,16 +156,16 @@ func TestDialRequiresStartTLSCapabilityToken(t *testing.T) {
 
 func TestDialCountsActualStartTLSWireBytes(t *testing.T) {
 	listener := startPlainIMAPServer(t, func(reader *bufio.Reader, connection net.Conn) {
-		_, _ = fmt.Fprint(connection, "* OK fixture\n")
+		_, _ = fmt.Fprint(connection, "* OK fixture\r\n")
 		_, _ = reader.ReadString('\n')
 
 		for range 13 {
-			_, _ = fmt.Fprintf(connection, "* %s\n", strings.Repeat("x", 1021))
+			_, _ = fmt.Fprintf(connection, "* %s\r\n", strings.Repeat("x", 1020))
 		}
-		_, _ = fmt.Fprintf(connection, "* CAPABILITY IMAP4rev1 STARTTLS %s\n", strings.Repeat("x", 990))
-		_, _ = fmt.Fprintf(connection, "a001 OK %s\n", strings.Repeat("x", 1015))
+		_, _ = fmt.Fprintf(connection, "* CAPABILITY IMAP4rev1 STARTTLS %s\r\n", strings.Repeat("x", 989))
+		_, _ = fmt.Fprintf(connection, "a001 OK %s\r\n", strings.Repeat("x", 1014))
 		_, _ = reader.ReadString('\n')
-		_, _ = fmt.Fprintf(connection, "a002 OK %s\n", strings.Repeat("x", 1015))
+		_, _ = fmt.Fprintf(connection, "a002 OK %s\r\n", strings.Repeat("x", 1014))
 	})
 
 	_, err := bridge.Dial(context.Background(), plainServerConfig(t, listener.Addr().String()))

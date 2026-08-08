@@ -19,10 +19,16 @@ const (
 	maxStartTLSLineBytes     = 4 * 1024
 )
 
-var errStartTLSInputLimit = errors.New("STARTTLS input limit exceeded")
+var (
+	errStartTLSInputLimit = errors.New("STARTTLS input limit exceeded")
+	errStartTLSProtocol   = errors.New("invalid STARTTLS plaintext response")
+)
 
 // Connection is a TLS-established connection to the configured local Bridge endpoint.
-type Connection struct{ connection net.Conn }
+type Connection struct {
+	connection net.Conn
+	startTLS   bool
+}
 
 // Close releases the underlying network connection.
 func (connection *Connection) Close() error {
@@ -30,6 +36,21 @@ func (connection *Connection) Close() error {
 		return nil
 	}
 	return connection.connection.Close()
+}
+
+// takeConn transfers exclusive ownership to the package-local IMAP facade.
+// The prior Connection becomes inert, so its Close method cannot interrupt a
+// session after ownership has moved.
+func (connection *Connection) takeConn() (net.Conn, bool, error) {
+	if connection == nil || connection.connection == nil {
+		return nil, false, errorCode(CodeAdapterClosed)
+	}
+
+	transport := connection.connection
+	startTLS := connection.startTLS
+	connection.connection = nil
+
+	return transport, startTLS, nil
 }
 
 // Dial validates the local endpoint and establishes its configured verified TLS transport.
@@ -84,9 +105,20 @@ func establishStartTLS(ctx context.Context, rawConnection net.Conn, tlsConfig *t
 	reader := bufio.NewReaderSize(rawConnection, maxStartTLSLineBytes+1)
 	writer := bufio.NewWriter(rawConnection)
 	budget := &startTLSResponseBudget{}
-	if _, _, err := readStartTLSLine(reader, maxStartTLSGreetingBytes); err != nil {
+	greeting, _, err := readStartTLSLine(reader, maxStartTLSGreetingBytes)
+	if err != nil {
 		_ = rawConnection.Close()
+		if ctx.Err() != nil {
+			return nil, connectionError(ctx, err)
+		}
+		if errors.Is(err, errStartTLSProtocol) {
+			return nil, errorCode(CodeTLSNegotiation)
+		}
 		return nil, connectionError(ctx, err)
+	}
+	if !validStartTLSGreeting(greeting) {
+		_ = rawConnection.Close()
+		return nil, errorCode(CodeTLSNegotiation)
 	}
 
 	hasStartTLS, err := imapCommand(reader, writer, budget, "a001", "CAPABILITY")
@@ -122,7 +154,7 @@ func establishStartTLS(ctx context.Context, rawConnection net.Conn, tlsConfig *t
 		return nil, connectionError(ctx, ctx.Err())
 	}
 
-	return &Connection{connection: tlsConnection}, nil
+	return &Connection{connection: tlsConnection, startTLS: true}, nil
 }
 
 func imapCommand(reader *bufio.Reader, writer *bufio.Writer, budget *startTLSResponseBudget, tag, command string) (bool, error) {
@@ -182,8 +214,53 @@ func readStartTLSLine(reader *bufio.Reader, limit int) (string, int, error) {
 	if len(line) > limit {
 		return "", 0, errStartTLSInputLimit
 	}
+	if len(line) < 2 || line[len(line)-2] != '\r' || line[len(line)-1] != '\n' {
+		return "", 0, errStartTLSProtocol
+	}
+	content := line[:len(line)-2]
+	for _, value := range content {
+		if value == 0 || value == '\r' || value == '\n' || value > 0x7f {
+			return "", 0, errStartTLSProtocol
+		}
+	}
 
-	return strings.TrimRight(string(line), "\r\n"), len(line), nil
+	return string(content), len(line), nil
+}
+
+func validStartTLSGreeting(line string) bool {
+	const prefix = "* OK "
+	if len(line) < len(prefix) || line[0] != '*' || line[1] != ' ' || !strings.EqualFold(line[2:4], "OK") || line[4] != ' ' {
+		return false
+	}
+	responseText := line[len(prefix):]
+	if responseText == "" || responseText[0] != '[' {
+		return true
+	}
+	closing := strings.IndexByte(responseText, ']')
+	if closing < 2 || closing+1 >= len(responseText) || responseText[closing+1] != ' ' {
+		return false
+	}
+	code := responseText[1:closing]
+	atom := code
+	if separator := strings.IndexByte(code, ' '); separator >= 0 {
+		atom = code[:separator]
+		if separator == len(code)-1 {
+			return false
+		}
+	}
+	return validIMAPAtom(atom)
+}
+
+func validIMAPAtom(atom string) bool {
+	if atom == "" {
+		return false
+	}
+	for _, value := range []byte(atom) {
+		if value < 0x21 || value > 0x7e || strings.ContainsRune("(){%*\"\\]", rune(value)) {
+			return false
+		}
+	}
+	return true
 }
 
 func capabilityHasStartTLS(line string) bool {

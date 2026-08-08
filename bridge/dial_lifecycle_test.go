@@ -57,7 +57,7 @@ func TestDialStartTLSHandoffSurvivesTimeoutContextCleanup(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read after Dial handoff: %v", err)
 		}
-		if response != "a003 BAD unsupported command\r\n" {
+		if response != "a003 OK NOOP completed\r\n" {
 			t.Fatalf("NOOP response = %q", response)
 		}
 	}

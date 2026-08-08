@@ -17,12 +17,17 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 const serverName = "fake-imap.test"
+
+const syntheticMessageHeader = "From: Croton Fixture <fixture@croton.test>\r\nTo: Reader <reader@croton.test>\r\nSubject: Welcome to Croton\r\nDate: Thu, 01 Jan 2026 00:00:00 +0000\r\nMessage-ID: <welcome@croton.test>\r\n\r\n"
+
+const syntheticMessageBody = syntheticMessageHeader + "Welcome to Croton. This synthetic message exists only for adapter tests.\r\n"
 
 // TLSMode selects how a fake IMAP server negotiates TLS.
 type TLSMode uint8
@@ -48,6 +53,8 @@ func (mode TLSMode) String() string {
 
 // Scenario controls deterministic protocol faults for adapter tests.
 type Scenario struct {
+	// Greeting replaces the normal initial IMAP greeting.
+	Greeting string
 	// RejectAuthentication makes LOGIN and AUTHENTICATE return a tagged NO response.
 	RejectAuthentication bool
 	// ResponseDelay waits before every server response.
@@ -55,10 +62,85 @@ type Scenario struct {
 	// DisconnectAfterCommand closes the first matching connection after this
 	// connection-local command number, allowing reconnect-once tests to recover.
 	DisconnectAfterCommand int
+	// DisconnectOnPostLoginCapability closes the first authenticated CAPABILITY.
+	DisconnectOnPostLoginCapability bool
+	// DisconnectOnExactUIDSearch closes the first single-UID SEARCH command.
+	DisconnectOnExactUIDSearch bool
 	// MalformedResponse replaces normal command responses with this literal wire response.
 	MalformedResponse string
 	// OversizedResponseBytes emits an untagged response of this size before normal responses.
 	OversizedResponseBytes int
+	// OversizedResponseCommand limits an oversized response to a command name.
+	// An empty value emits it before every command.
+	OversizedResponseCommand string
+	// IgnoreBodyPartial makes UID FETCH return the complete body even when the
+	// client requested a BODY.PEEK partial range.
+	IgnoreBodyPartial bool
+	// OversizedLiteralBytes replaces a normal FETCH literal with a deterministic
+	// payload of this size.
+	OversizedLiteralBytes int
+	// OversizedBodyLiteralBytes replaces a body FETCH literal without changing
+	// metadata FETCH literals used to obtain an opaque message ID.
+	OversizedBodyLiteralBytes int
+	// UIDValidityAfterExamine changes the mailbox generation after the first
+	// EXAMINE, simulating a mailbox rebuild between opaque-ID operations.
+	UIDValidityAfterExamine uint32
+	// UIDNext replaces the mailbox UIDNEXT returned by EXAMINE when non-zero.
+	UIDNext uint32
+	// ListResponseCount controls the number of synthetic folders in a LIST response.
+	ListResponseCount int
+	// ListMailboxLiteralBytes replaces the first LIST mailbox name with a literal
+	// of this size. Zero preserves the normal quoted mailbox name.
+	ListMailboxLiteralBytes int
+	// SearchResponse replaces the untagged response to UID SEARCH. It must be a
+	// complete untagged SEARCH or ESEARCH response without a trailing CRLF.
+	SearchResponse string
+	// ExactUIDSearchResponse replaces the untagged response only for single-UID
+	// existence checks. {TAG} is replaced with the active command tag.
+	ExactUIDSearchResponse string
+	// OmitExactUIDSearchResponse returns a conforming empty SEARCH response for
+	// single-UID existence checks.
+	OmitExactUIDSearchResponse bool
+	// OmitExactUIDSearchData sends tagged OK without the mandatory SEARCH data.
+	OmitExactUIDSearchData bool
+	// SearchWindowResult returns the highest requested UID from every search window.
+	SearchWindowResult bool
+	// StatusResponse replaces the normal untagged STATUS response. It must be a
+	// complete untagged STATUS response without a trailing CRLF.
+	StatusResponse string
+	// OmitStatusResponse sends only the tagged STATUS completion.
+	OmitStatusResponse bool
+	// OmitMetadataFetchResponse sends only tagged completion for every metadata FETCH.
+	OmitMetadataFetchResponse bool
+	// FetchResponseSection replaces the BODY section label returned by UID FETCH.
+	FetchResponseSection string
+	// BodyFetchResponseSection replaces only whole-body FETCH response labels.
+	BodyFetchResponseSection string
+	// FetchResponseUID replaces the UID in every metadata FETCH response.
+	// Zero preserves the requested UID.
+	FetchResponseUID uint32
+	// FetchExtraUIDBefore emits an additional UID item before the normal UID.
+	FetchExtraUIDBefore uint32
+	// FetchExtraUIDAfter emits an additional UID item after the normal UID.
+	FetchExtraUIDAfter uint32
+	// BodyFetchResponseUID replaces only whole-body FETCH response UIDs.
+	// Zero preserves the requested UID.
+	BodyFetchResponseUID uint32
+	// DuplicateFetchSection emits the requested FETCH body section twice.
+	DuplicateFetchSection bool
+	// DuplicateBodyFetchSection emits only whole-body FETCH sections twice.
+	DuplicateBodyFetchSection bool
+	// FetchLiteralDeclaredBytes replaces a FETCH literal declaration without
+	// changing its payload. Zero preserves the payload length declaration.
+	FetchLiteralDeclaredBytes int
+	// BodyFetchLiteralDeclaredBytes replaces only whole-body FETCH declarations.
+	BodyFetchLiteralDeclaredBytes int
+	// UnexpectedFetchBinaryLiteralBytes appends an unrequested BINARY[] literal
+	// to every FETCH response. Zero preserves the requested response shape.
+	UnexpectedFetchBinaryLiteralBytes int
+	// UnexpectedBodyFetchBinaryLiteralBytes appends an unrequested BINARY[]
+	// literal only to whole-body FETCH responses.
+	UnexpectedBodyFetchBinaryLiteralBytes int
 }
 
 // Options configures a fake server. The zero value uses STARTTLS without faults.
@@ -89,6 +171,7 @@ type Server struct {
 	mu               sync.Mutex
 	closed           bool
 	disconnectUsed   bool
+	examineCount     int
 	nextConnectionID int
 	commands         []Command
 	connections      map[net.Conn]struct{}
@@ -109,6 +192,38 @@ func Start(options Options) (*Server, error) {
 
 	if options.Scenario.OversizedResponseBytes < 0 {
 		return nil, errors.New("testkit: oversized response size must not be negative")
+	}
+
+	if options.Scenario.OversizedLiteralBytes < 0 {
+		return nil, errors.New("testkit: oversized literal size must not be negative")
+	}
+
+	if options.Scenario.OversizedBodyLiteralBytes < 0 {
+		return nil, errors.New("testkit: oversized body literal size must not be negative")
+	}
+
+	if options.Scenario.ListResponseCount < 0 {
+		return nil, errors.New("testkit: list response count must not be negative")
+	}
+
+	if options.Scenario.ListMailboxLiteralBytes < 0 {
+		return nil, errors.New("testkit: list mailbox literal size must not be negative")
+	}
+
+	if options.Scenario.FetchLiteralDeclaredBytes < 0 {
+		return nil, errors.New("testkit: fetch literal declaration must not be negative")
+	}
+
+	if options.Scenario.BodyFetchLiteralDeclaredBytes < 0 {
+		return nil, errors.New("testkit: body fetch literal declaration must not be negative")
+	}
+
+	if options.Scenario.UnexpectedFetchBinaryLiteralBytes < 0 {
+		return nil, errors.New("testkit: unexpected FETCH binary literal size must not be negative")
+	}
+
+	if options.Scenario.UnexpectedBodyFetchBinaryLiteralBytes < 0 {
+		return nil, errors.New("testkit: unexpected body FETCH binary literal size must not be negative")
 	}
 
 	certificate, caDER, err := generateCertificate()
@@ -290,7 +405,11 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 	reader := bufio.NewReader(connection)
 	writer := bufio.NewWriter(connection)
 
-	if err := server.writeLine(writer, "* OK fake IMAP server ready"); err != nil {
+	greeting := "* OK fake IMAP server ready"
+	if server.options.Scenario.Greeting != "" {
+		greeting = server.options.Scenario.Greeting
+	}
+	if err := server.writeLine(writer, greeting); err != nil {
 		return
 	}
 
@@ -308,7 +427,7 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 		server.record(raw, name, tlsEstablished, connectionID)
 		connectionCommands++
 
-		if server.shouldDisconnect(connectionCommands) {
+		if server.shouldDisconnectForScenario(name, raw, authenticated) || server.shouldDisconnect(connectionCommands) {
 			return
 		}
 		if server.options.Scenario.MalformedResponse != "" {
@@ -318,9 +437,9 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 			continue
 		}
 
-		if server.options.Scenario.OversizedResponseBytes > 0 {
+		if server.options.Scenario.OversizedResponseBytes > 0 && (server.options.Scenario.OversizedResponseCommand == "" || strings.EqualFold(server.options.Scenario.OversizedResponseCommand, name)) {
 			size := server.options.Scenario.OversizedResponseBytes
-			if err := server.writeLine(writer, "*"+strings.Repeat("X", size-1)); err != nil {
+			if err := server.writeLine(writer, "* OK "+strings.Repeat("X", size-5)); err != nil {
 				return
 			}
 		}
@@ -436,6 +555,10 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 			if err := server.writeLine(writer, tagged(tag, "OK AUTHENTICATE completed")); err != nil {
 				return
 			}
+		case "NOOP":
+			if err := server.writeLine(writer, tagged(tag, "OK NOOP completed")); err != nil {
+				return
+			}
 		case "LIST":
 			if !authenticated {
 				if err := server.writeLine(writer, tagged(tag, "NO authenticate first")); err != nil {
@@ -444,8 +567,146 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 				continue
 			}
 
-			if !server.writeLines(writer, "* LIST (\\HasNoChildren) \"/\" \"INBOX\"", tagged(tag, "OK LIST completed")) {
+			if !server.writeList(writer, tag) {
 				return
+			}
+		case "STATUS":
+			if !authenticated {
+				if err := server.writeLine(writer, tagged(tag, "NO authenticate first")); err != nil {
+					return
+				}
+				continue
+			}
+
+			statusResponse := "* STATUS \"INBOX\" (MESSAGES 2 UIDNEXT 103 UIDVALIDITY 9001 UNSEEN 1)"
+			if server.options.Scenario.StatusResponse != "" {
+				statusResponse = server.options.Scenario.StatusResponse
+			}
+			if server.options.Scenario.OmitStatusResponse {
+				if !server.writeLines(writer, tagged(tag, "OK STATUS completed")) {
+					return
+				}
+			} else if !server.writeLines(writer, statusResponse, tagged(tag, "OK STATUS completed")) {
+				return
+			}
+		case "EXAMINE":
+			if !authenticated {
+				if err := server.writeLine(writer, tagged(tag, "NO authenticate first")); err != nil {
+					return
+				}
+				continue
+			}
+
+			uidValidity := server.nextUIDValidity()
+			uidNext := server.options.Scenario.UIDNext
+			if uidNext == 0 {
+				uidNext = 103
+			}
+			if !server.writeLines(writer, "* 2 EXISTS", fmt.Sprintf("* OK [UIDVALIDITY %d] fixture generation", uidValidity), fmt.Sprintf("* OK [UIDNEXT %d] fixture next UID", uidNext), tagged(tag, "OK [READ-ONLY] EXAMINE completed")) {
+				return
+			}
+		case "UID":
+			if !authenticated {
+				if err := server.writeLine(writer, tagged(tag, "NO authenticate first")); err != nil {
+					return
+				}
+				continue
+			}
+
+			fields := strings.Fields(raw)
+			if len(fields) < 3 {
+				if err := server.writeLine(writer, tagged(tag, "BAD incomplete UID command")); err != nil {
+					return
+				}
+				continue
+			}
+
+			switch strings.ToUpper(fields[2]) {
+			case "SEARCH":
+				exactUIDSearch := searchWindowIsExact(raw)
+				if server.options.Scenario.OmitExactUIDSearchData && exactUIDSearch {
+					if err := server.writeLine(writer, tagged(tag, "OK SEARCH completed")); err != nil {
+						return
+					}
+					continue
+				}
+				searchResponse := "* SEARCH"
+				if strings.Contains(raw, "UID 3:102") {
+					searchResponse = "* SEARCH 101"
+				} else if exactUIDSearch {
+					searchResponse = fmt.Sprintf("* SEARCH %d", searchWindowEnd(raw))
+				}
+				if server.options.Scenario.ExactUIDSearchResponse != "" && exactUIDSearch {
+					searchResponse = strings.ReplaceAll(server.options.Scenario.ExactUIDSearchResponse, "{TAG}", tag)
+				} else if server.options.Scenario.OmitExactUIDSearchResponse && exactUIDSearch {
+					searchResponse = "* SEARCH"
+				} else if server.options.Scenario.SearchResponse != "" {
+					searchResponse = strings.ReplaceAll(server.options.Scenario.SearchResponse, "{TAG}", tag)
+				} else if server.options.Scenario.SearchWindowResult {
+					searchResponse = fmt.Sprintf("* SEARCH %d", searchWindowEnd(raw))
+				}
+				if !server.writeLines(writer, searchResponse, tagged(tag, "OK SEARCH completed")) {
+					return
+				}
+			case "FETCH":
+				literal := syntheticMessageBody
+				header := strings.Contains(strings.ToUpper(raw), "HEADER")
+				if server.shouldOmitFetchResponse(header) {
+					if err := server.writeLine(writer, tagged(tag, "OK FETCH completed")); err != nil {
+						return
+					}
+					continue
+				}
+				if header {
+					literal = syntheticMessageHeader
+				}
+				if server.options.Scenario.OversizedLiteralBytes > 0 {
+					literal = strings.Repeat("x", server.options.Scenario.OversizedLiteralBytes)
+				}
+				if !header && server.options.Scenario.OversizedBodyLiteralBytes > 0 {
+					literal = strings.Repeat("x", server.options.Scenario.OversizedBodyLiteralBytes)
+				}
+				if !header && !server.options.Scenario.IgnoreBodyPartial {
+					literal = partialBodyLiteral(raw, literal)
+				}
+				section := fetchResponseSection(raw, header)
+				if server.options.Scenario.FetchResponseSection != "" {
+					section = server.options.Scenario.FetchResponseSection
+				}
+				if !header && server.options.Scenario.BodyFetchResponseSection != "" {
+					section = server.options.Scenario.BodyFetchResponseSection
+				}
+				declaredBytes := server.options.Scenario.FetchLiteralDeclaredBytes
+				if !header && server.options.Scenario.BodyFetchLiteralDeclaredBytes != 0 {
+					declaredBytes = server.options.Scenario.BodyFetchLiteralDeclaredBytes
+				}
+				duplicate := server.options.Scenario.DuplicateFetchSection
+				if !header && server.options.Scenario.DuplicateBodyFetchSection {
+					duplicate = true
+				}
+				unexpectedBinaryLiteralBytes := server.options.Scenario.UnexpectedFetchBinaryLiteralBytes
+				if !header && server.options.Scenario.UnexpectedBodyFetchBinaryLiteralBytes > 0 {
+					unexpectedBinaryLiteralBytes = server.options.Scenario.UnexpectedBodyFetchBinaryLiteralBytes
+				}
+				responseUID := fetchResponseUID(raw)
+				if server.options.Scenario.FetchResponseUID != 0 {
+					responseUID = server.options.Scenario.FetchResponseUID
+				}
+				if !header && server.options.Scenario.BodyFetchResponseUID != 0 {
+					responseUID = server.options.Scenario.BodyFetchResponseUID
+				}
+				extraUIDBefore, extraUIDAfter := uint32(0), uint32(0)
+				if header {
+					extraUIDBefore = server.options.Scenario.FetchExtraUIDBefore
+					extraUIDAfter = server.options.Scenario.FetchExtraUIDAfter
+				}
+				if !server.writeFetch(writer, tag, responseUID, extraUIDBefore, extraUIDAfter, literal, section, declaredBytes, duplicate, unexpectedBinaryLiteralBytes) {
+					return
+				}
+			default:
+				if err := server.writeLine(writer, tagged(tag, "BAD unsupported UID command")); err != nil {
+					return
+				}
 			}
 		case "LOGOUT":
 			server.writeLines(writer, "* BYE fake IMAP server logging out", tagged(tag, "OK LOGOUT completed"))
@@ -475,6 +736,22 @@ func (server *Server) record(raw, name string, tlsEstablished bool, connectionID
 	return command
 }
 
+func (server *Server) shouldDisconnectForScenario(name, raw string, authenticated bool) bool {
+	matched := server.options.Scenario.DisconnectOnPostLoginCapability && authenticated && name == "CAPABILITY"
+	matched = matched || server.options.Scenario.DisconnectOnExactUIDSearch && name == "UID" && strings.Contains(strings.ToUpper(raw), " SEARCH ") && searchWindowIsExact(raw)
+	if !matched {
+		return false
+	}
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if server.disconnectUsed {
+		return false
+	}
+	server.disconnectUsed = true
+	return true
+}
+
 func (server *Server) shouldDisconnect(connectionSequence int) bool {
 	threshold := server.options.Scenario.DisconnectAfterCommand
 	if threshold <= 0 || connectionSequence < threshold {
@@ -493,6 +770,22 @@ func (server *Server) shouldDisconnect(connectionSequence int) bool {
 	return true
 }
 
+func (server *Server) shouldOmitFetchResponse(header bool) bool {
+	return header && server.options.Scenario.OmitMetadataFetchResponse
+}
+
+func (server *Server) nextUIDValidity() uint32 {
+	server.mu.Lock()
+	defer server.mu.Unlock()
+
+	server.examineCount++
+	if server.examineCount > 1 && server.options.Scenario.UIDValidityAfterExamine != 0 {
+		return server.options.Scenario.UIDValidityAfterExamine
+	}
+
+	return 9001
+}
+
 func (server *Server) writeLines(writer *bufio.Writer, lines ...string) bool {
 	for _, line := range lines {
 		if err := server.writeLine(writer, line); err != nil {
@@ -501,6 +794,34 @@ func (server *Server) writeLines(writer *bufio.Writer, lines ...string) bool {
 	}
 
 	return true
+}
+
+func (server *Server) writeList(writer *bufio.Writer, tag string) bool {
+	count := server.options.Scenario.ListResponseCount
+	if count == 0 {
+		count = 1
+	}
+	if server.options.Scenario.ListMailboxLiteralBytes > 0 {
+		literal := strings.Repeat("x", server.options.Scenario.ListMailboxLiteralBytes)
+		response := fmt.Sprintf("* LIST (\\HasNoChildren) \"/\" {%d}\r\n%s\r\n%s OK LIST completed\r\n", len(literal), literal, tag)
+		if _, err := writer.WriteString(response); err != nil {
+			return false
+		}
+
+		return writer.Flush() == nil
+	}
+
+	lines := make([]string, 0, count+1)
+	for index := range count {
+		mailbox := "INBOX"
+		if index > 0 {
+			mailbox = fmt.Sprintf("Archive-%d", index)
+		}
+		lines = append(lines, fmt.Sprintf("* LIST (\\HasNoChildren) \"/\" \"%s\"", mailbox))
+	}
+	lines = append(lines, tagged(tag, "OK LIST completed"))
+
+	return server.writeLines(writer, lines...)
 }
 
 func (server *Server) writeLine(writer *bufio.Writer, line string) error {
@@ -521,6 +842,133 @@ func (server *Server) writeLine(writer *bufio.Writer, line string) error {
 	}
 
 	return writer.Flush()
+}
+
+func (server *Server) writeFetch(writer *bufio.Writer, tag string, uid, extraUIDBefore, extraUIDAfter uint32, literal, section string, declaredBytes int, duplicate bool, unexpectedBinaryLiteralBytes int) bool {
+	if delay := server.options.Scenario.ResponseDelay; delay > 0 {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-server.done:
+			return false
+		}
+	}
+
+	if declaredBytes == 0 {
+		declaredBytes = len(literal)
+	}
+
+	items := fmt.Sprintf("BODY%s {%d}\r\n%s", section, declaredBytes, literal)
+	if duplicate {
+		items += fmt.Sprintf(" BODY%s {%d}\r\n%s", section, declaredBytes, literal)
+	}
+	if unexpectedBinaryLiteralBytes > 0 {
+		unexpectedLiteral := strings.Repeat("x", unexpectedBinaryLiteralBytes)
+		items += fmt.Sprintf(" BINARY[] {%d}\r\n%s", len(unexpectedLiteral), unexpectedLiteral)
+	}
+
+	uidItems := fmt.Sprintf("UID %d", uid)
+	if extraUIDBefore != 0 {
+		uidItems = fmt.Sprintf("UID %d %s", extraUIDBefore, uidItems)
+	}
+	if extraUIDAfter != 0 {
+		uidItems += fmt.Sprintf(" UID %d", extraUIDAfter)
+	}
+	response := fmt.Sprintf("* 1 FETCH (%s FLAGS () INTERNALDATE \"01-Jan-2026 00:00:00 +0000\" RFC822.SIZE %d %s)\r\n%s OK FETCH completed\r\n", uidItems, len(syntheticMessageBody), items, tag)
+	if _, err := writer.WriteString(response); err != nil {
+		return false
+	}
+
+	return writer.Flush() == nil
+}
+
+func fetchResponseSection(raw string, header bool) string {
+	if header {
+		return "[HEADER]"
+	}
+
+	upper := strings.ToUpper(raw)
+	const marker = "BODY.PEEK[]<"
+	start := strings.Index(upper, marker)
+	if start < 0 {
+		return "[]"
+	}
+	start += len(marker)
+	end := strings.IndexByte(upper[start:], '.')
+	if end < 0 {
+		return "[]"
+	}
+
+	return "[]<" + upper[start:start+end] + ">"
+}
+
+func searchWindowIsExact(raw string) bool {
+	start, end, ok := searchUIDRange(raw)
+	return ok && start == end
+}
+
+func searchWindowEnd(raw string) uint32 {
+	_, end, ok := searchUIDRange(raw)
+	if ok {
+		return end
+	}
+	return 1
+}
+
+func searchUIDRange(raw string) (uint32, uint32, bool) {
+	fields := strings.Fields(raw)
+	for index, field := range fields {
+		if !strings.EqualFold(field, "UID") || index+1 >= len(fields) {
+			continue
+		}
+		value := strings.Trim(fields[index+1], "(),")
+		startText, endText, hasRange := strings.Cut(value, ":")
+		if !hasRange {
+			startText, endText = value, value
+		}
+		start, startErr := strconv.ParseUint(startText, 10, 32)
+		end, endErr := strconv.ParseUint(endText, 10, 32)
+		if startErr == nil && endErr == nil && start > 0 && end >= start {
+			return uint32(start), uint32(end), true
+		}
+	}
+	return 0, 0, false
+}
+
+func fetchResponseUID(raw string) uint32 {
+	fields := strings.Fields(raw)
+	for index := range fields {
+		if !strings.EqualFold(fields[index], "FETCH") || index+1 >= len(fields) {
+			continue
+		}
+
+		value, err := strconv.ParseUint(strings.Trim(fields[index+1], "(),"), 10, 32)
+		if err == nil && value > 0 {
+			return uint32(value)
+		}
+	}
+
+	return 101
+}
+
+func partialBodyLiteral(raw, literal string) string {
+	const marker = "BODY.PEEK[]<0."
+
+	start := strings.Index(strings.ToUpper(raw), marker)
+	if start < 0 {
+		return literal
+	}
+	end := strings.IndexByte(raw[start+len(marker):], '>')
+	if end < 0 {
+		return literal
+	}
+	size, err := strconv.Atoi(raw[start+len(marker) : start+len(marker)+end])
+	if err != nil || size < 0 || size >= len(literal) {
+		return literal
+	}
+
+	return literal[:size]
 }
 
 func generateCertificate() (tls.Certificate, []byte, error) {
