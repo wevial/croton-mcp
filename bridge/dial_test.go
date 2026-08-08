@@ -159,17 +159,22 @@ func TestDialSTARTTLSRejectsNonOKGreeting(t *testing.T) {
 }
 
 func TestDialSTARTTLSAcceptsWellFormedGreetings(t *testing.T) {
-	for _, greeting := range []string{
-		"* OK ",
-		"* OK [X] ",
-		"* OK [CAPABILITY IMAP4rev1 STARTTLS] ready",
-		"* OK [X-CODE arg[more] ready",
-		"* OK [X}Y arg] ready",
+	for _, test := range []struct {
+		name     string
+		greeting string
+	}{
+		{name: "empty response text", greeting: "* OK "},
+		{name: "response code with empty response text", greeting: "* OK [X] "},
+		{name: "capability response code", greeting: "* OK [CAPABILITY IMAP4rev1 STARTTLS] ready"},
+		{name: "unknown response code argument", greeting: "* OK [X-CODE arg[more] ready"},
+		{name: "right brace atom", greeting: "* OK [X}Y arg] ready"},
+		{name: "TEXT-CHAR controls", greeting: "* OK x	\v\f\x0e\x1f\x7fy"},
+		{name: "TEXT-CHAR controls in unknown response code", greeting: "* OK [X arg	\v\f\x0e\x1f\x7f] ready"},
 	} {
-		t.Run(greeting, func(t *testing.T) {
+		t.Run(test.name, func(t *testing.T) {
 			server, err := testkit.Start(testkit.Options{
 				Mode:     testkit.StartTLS,
-				Scenario: testkit.Scenario{Greeting: greeting},
+				Scenario: testkit.Scenario{Greeting: test.greeting},
 			})
 			if err != nil {
 				t.Fatalf("start fake server: %v", err)
@@ -194,6 +199,7 @@ func TestDialSTARTTLSRejectsMalformedOKGreetings(t *testing.T) {
 		{name: "bare LF", greeting: "* OK ready\n"},
 		{name: "embedded CR", greeting: "* OK ready\rinside\r\n"},
 		{name: "NUL", greeting: "* OK ready\x00\r\n"},
+		{name: "outside CHAR", greeting: "* OK ready\x80\r\n"},
 		{name: "invalid empty response-code atom", greeting: "* OK [ ] ready\r\n"},
 		{name: "invalid parenthesis response-code atom", greeting: "* OK [(] ready\r\n"},
 		{name: "invalid quote response-code atom", greeting: "* OK [X\"Y arg] ready\r\n"},

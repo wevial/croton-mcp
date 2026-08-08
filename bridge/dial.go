@@ -219,7 +219,7 @@ func readStartTLSLine(reader *bufio.Reader, limit int) (string, int, error) {
 	}
 	content := line[:len(line)-2]
 	for _, value := range content {
-		if value < 0x20 || value > 0x7e {
+		if value == 0 || value == '\r' || value == '\n' || value > 0x7f {
 			return "", 0, errStartTLSProtocol
 		}
 	}
