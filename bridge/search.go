@@ -43,17 +43,34 @@ type MessageMetadata struct {
 	uid uint32
 }
 
-// SearchMail searches a finite sequence of descending UID windows. It never
-// issues an unbounded whole-mailbox SEARCH.
+// SearchPage returns bounded message metadata and reports whether adapter-side
+// traversal stopped before every UID range was examined.
+type SearchPage struct {
+	Messages  []MessageMetadata
+	Truncated bool
+}
+
+// SearchMail preserves the original adapter API for existing callers.
 func (adapter *Adapter) SearchMail(ctx context.Context, query SearchQuery) ([]MessageMetadata, error) {
+	page, err := adapter.SearchMailPage(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	return page.Messages, nil
+}
+
+// SearchMailPage searches a finite sequence of descending UID windows and
+// reports when configured bounds leave an older mailbox range unexamined. It
+// never issues an unbounded whole-mailbox SEARCH.
+func (adapter *Adapter) SearchMailPage(ctx context.Context, query SearchQuery) (SearchPage, error) {
 	if query.Mailbox == "" {
-		return nil, errorCode(CodeMailboxNotFound)
+		return SearchPage{}, errorCode(CodeMailboxNotFound)
 	}
 	if len(query.Mailbox) > maxMailboxNameBytes || len(query.Sender) > maxSearchTermBytes || len(query.Subject) > maxSearchTermBytes || adapter.config.Bounds.MaxOutputBytes < 2 {
-		return nil, errorCode(CodeBoundsExceeded)
+		return SearchPage{}, errorCode(CodeBoundsExceeded)
 	}
 
-	var results []MessageMetadata
+	var page SearchPage
 	err := adapter.execute(ctx, func(operationContext context.Context, session readSession) error {
 		attemptResults := make([]MessageMetadata, 0)
 		attemptOutputBytes := 2 // JSON array brackets.
@@ -63,7 +80,8 @@ func (adapter *Adapter) SearchMail(ctx context.Context, query SearchQuery) ([]Me
 			return err
 		}
 
-		for remaining, windows := snapshot.UIDNext, 0; remaining > 1 && windows < maxSearchWindows && len(attemptResults) < adapter.config.Bounds.MaxSearchResults; windows++ {
+		remaining := snapshot.UIDNext
+		for windows := 0; remaining > 1 && windows < maxSearchWindows && len(attemptResults) < adapter.config.Bounds.MaxSearchResults; windows++ {
 			start := uint32(1)
 			if remaining > searchWindowWidth {
 				start = remaining - searchWindowWidth
@@ -103,14 +121,14 @@ func (adapter *Adapter) SearchMail(ctx context.Context, query SearchQuery) ([]Me
 			remaining = start
 		}
 
-		results = attemptResults
+		page = SearchPage{Messages: attemptResults, Truncated: remaining > 1}
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return SearchPage{}, err
 	}
 
-	return results, nil
+	return page, nil
 }
 
 func (adapter *Adapter) encodeMessageID(payload messageIDPayload) (string, error) {
