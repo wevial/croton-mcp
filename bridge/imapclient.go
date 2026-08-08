@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/mail"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -596,11 +597,16 @@ func mapIMAPError(ctx context.Context, err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(ctx.Err(), context.Canceled) {
-		return errorCode(CodeOperationCanceled)
-	}
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return errorCode(CodeCommandTimedOut)
+	if ctx != nil {
+		if contextError := ctx.Err(); contextError != nil {
+			if errors.Is(contextError, context.Canceled) {
+				return errorCode(CodeOperationCanceled)
+			}
+			return errorCode(CodeCommandTimedOut)
+		}
+		if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+			return errorCode(CodeCommandTimedOut)
+		}
 	}
 	var bridgeError *Error
 	if errors.As(err, &bridgeError) {
@@ -652,6 +658,7 @@ type readBudgetConn struct {
 	searchResponseSeen  bool
 	eSearchResponseSeen bool
 	searchBuffer        string
+	searchLiteralBytes  uint64
 }
 
 func newReadBudgetConn(connection net.Conn, idleLimit int) *readBudgetConn {
@@ -680,6 +687,7 @@ func (connection *readBudgetConn) beginSearch(limit int) {
 	connection.searchResponseSeen = false
 	connection.eSearchResponseSeen = false
 	connection.searchBuffer = ""
+	connection.searchLiteralBytes = 0
 }
 
 func (connection *readBudgetConn) endSearch() (bool, bool, bool) {
@@ -696,6 +704,7 @@ func (connection *readBudgetConn) endSearch() (bool, bool, bool) {
 	connection.searchResponseSeen = false
 	connection.eSearchResponseSeen = false
 	connection.searchBuffer = ""
+	connection.searchLiteralBytes = 0
 	return exceeded, searchSeen, eSearchSeen
 }
 
@@ -741,6 +750,17 @@ func (connection *readBudgetConn) Read(buffer []byte) (int, error) {
 func (connection *readBudgetConn) observeSearchResponseLocked(input string) {
 	connection.searchBuffer += input
 	for {
+		if connection.searchLiteralBytes > 0 {
+			available := uint64(len(connection.searchBuffer))
+			if available <= connection.searchLiteralBytes {
+				connection.searchLiteralBytes -= available
+				connection.searchBuffer = ""
+				return
+			}
+			connection.searchBuffer = connection.searchBuffer[int(connection.searchLiteralBytes):]
+			connection.searchLiteralBytes = 0
+		}
+
 		end := strings.Index(connection.searchBuffer, "\r\n")
 		if end < 0 {
 			return
@@ -754,7 +774,35 @@ func (connection *readBudgetConn) observeSearchResponseLocked(input string) {
 		case upper == "* ESEARCH" || strings.HasPrefix(upper, "* ESEARCH "):
 			connection.eSearchResponseSeen = true
 		}
+		if literalBytes, ok := trailingIMAPLiteralSize(line); ok {
+			connection.searchLiteralBytes = literalBytes
+		}
 	}
+}
+
+func trailingIMAPLiteralSize(line string) (uint64, bool) {
+	if !strings.HasSuffix(line, "}") {
+		return 0, false
+	}
+	opening := strings.LastIndexByte(line, '{')
+	if opening < 0 {
+		return 0, false
+	}
+	digits := line[opening+1 : len(line)-1]
+	digits = strings.TrimSuffix(digits, "+")
+	if digits == "" {
+		return 0, false
+	}
+	for _, character := range digits {
+		if character < '0' || character > '9' {
+			return 0, false
+		}
+	}
+	size, err := strconv.ParseUint(digits, 10, 64)
+	if err != nil {
+		return ^uint64(0), true
+	}
+	return size, true
 }
 
 type deadlineConn struct {

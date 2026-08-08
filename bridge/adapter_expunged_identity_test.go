@@ -29,6 +29,40 @@ func TestSearchMailMissingFetchedUIDRemainsProtocolError(t *testing.T) {
 	}
 }
 
+func TestAdapterRejectsSearchProofInsideLiteral(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		response string
+	}{
+		{name: "SEARCH", response: "* 1 FETCH (BODY[] {10}\r\n* SEARCH\r\n)"},
+		{name: "ESEARCH", response: "* 1 FETCH (BODY[] {11}\r\n* ESEARCH\r\n)"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server, err := testkit.Start(testkit.Options{
+				Mode:     testkit.ImplicitTLS,
+				Scenario: testkit.Scenario{ExactUIDSearchResponse: test.response},
+			})
+			if err != nil {
+				t.Fatalf("start fake server: %v", err)
+			}
+			t.Cleanup(func() { _ = server.Close() })
+
+			adapter, err := bridge.NewAdapter(fakeServerConfig(t, server.Addr(), bridge.TLSModeImplicit, bridge.TLSConfig{SPKISHA256: server.SPKISHA256()}))
+			if err != nil {
+				t.Fatalf("NewAdapter: %v", err)
+			}
+			t.Cleanup(func() { _ = adapter.Close() })
+			results, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+			if err != nil || len(results) != 1 {
+				t.Fatalf("SearchMail = %#v, %v", results, err)
+			}
+			if _, err := adapter.GetMessageMetadata(context.Background(), results[0].ID); bridge.CodeOf(err) != bridge.CodeIMAPProtocol {
+				t.Fatalf("GetMessageMetadata error = %v, want %q", err, bridge.CodeIMAPProtocol)
+			}
+		})
+	}
+}
+
 func TestAdapterAcceptsMatchingTagESearchProof(t *testing.T) {
 	for _, test := range []struct {
 		name        string

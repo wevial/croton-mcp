@@ -237,7 +237,7 @@ func validStartTLSGreeting(line string) bool {
 		return true
 	}
 	closing := strings.IndexByte(responseText, ']')
-	if closing < 2 || closing+2 >= len(responseText) || responseText[closing+1] != ' ' {
+	if closing < 2 || closing+1 >= len(responseText) || responseText[closing+1] != ' ' {
 		return false
 	}
 	code := responseText[1:closing]

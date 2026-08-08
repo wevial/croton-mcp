@@ -6,6 +6,7 @@ import (
 	"net"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestMapIMAPErrorClassifiesTransportFailuresForReplay(t *testing.T) {
@@ -31,5 +32,21 @@ func TestMapIMAPErrorDoesNotClassifyNonTransportErrorsForReplay(t *testing.T) {
 	}
 	if (&Adapter{}).canReplay(context.Background(), mapped) {
 		t.Fatalf("mapIMAPError(non-transport) unexpectedly permitted replay")
+	}
+}
+
+type elapsedDeadlineContext struct {
+	context.Context
+}
+
+func (elapsedDeadlineContext) Deadline() (time.Time, bool) {
+	return time.Now().Add(-time.Second), true
+}
+
+func TestMapIMAPErrorTreatsElapsedDeadlineAsAuthoritative(t *testing.T) {
+	ctx := elapsedDeadlineContext{Context: context.Background()}
+	mapped := mapIMAPError(ctx, errors.New("decoder closed before context state propagated"))
+	if CodeOf(mapped) != CodeCommandTimedOut {
+		t.Fatalf("mapIMAPError(elapsed deadline) = %v, want %q", mapped, CodeCommandTimedOut)
 	}
 }

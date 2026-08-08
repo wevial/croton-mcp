@@ -161,6 +161,7 @@ func TestDialSTARTTLSRejectsNonOKGreeting(t *testing.T) {
 func TestDialSTARTTLSAcceptsWellFormedGreetings(t *testing.T) {
 	for _, greeting := range []string{
 		"* OK ",
+		"* OK [X] ",
 		"* OK [CAPABILITY IMAP4rev1 STARTTLS] ready",
 		"* OK [X-CODE arg[more] ready",
 		"* OK [X}Y arg] ready",
