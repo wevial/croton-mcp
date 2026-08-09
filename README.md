@@ -20,6 +20,20 @@ Early read-only implementation. The executable supports MCP `2026-07-28` by defa
 
 The server speaks JSON-RPC over standard input/output. Diagnostics must go to standard error; standard output is protocol-only.
 
+## Use with Hermes
+
+Croton registers with Hermes as a local stdio server exposing six read-only
+tools and no resources or prompts:
+
+```sh
+hermes mcp add croton --connect-timeout 60 \
+  --command /absolute/path/to/croton-mcp \
+  --args --config /absolute/path/to/croton.json
+```
+
+See [Hermes registration](docs/MCP.md#hermes-registration) for prerequisites,
+verification, the exact tool names, and removal.
+
 ## Layout
 
 - `cmd/croton-mcp`: stdio executable
