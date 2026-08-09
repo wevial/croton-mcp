@@ -43,6 +43,67 @@ Validation and clamping remain the bridge's responsibility; the loader only
 reads and decodes. `SIGTERM` and `SIGINT` shut the server down cleanly and log
 out the retained IMAP session.
 
+## Hermes registration
+
+Hermes runs Croton as a stdio MCP server. Two prerequisites: an absolute path
+to a built `croton-mcp` binary, and the absolute path of a secure
+configuration file as described above.
+
+```sh
+hermes mcp add croton --connect-timeout 60 \
+  --command /absolute/path/to/croton-mcp \
+  --args --config /absolute/path/to/croton.json
+```
+
+`--args` must come last: everything after it is passed through to Croton.
+`hermes mcp add` starts Croton once to discover its catalog and stores the
+resulting registration in the active Hermes profile.
+
+Verify and inspect the registration:
+
+```sh
+hermes mcp test croton
+hermes mcp list
+```
+
+Hermes prefixes every discovered tool with the server name, so exactly six
+names should appear:
+
+- `mcp__croton__list_folders`
+- `mcp__croton__search_mail`
+- `mcp__croton__get_message`
+- `mcp__croton__get_thread`
+- `mcp__croton__list_attachments`
+- `mcp__croton__select_digest_candidates`
+
+Croton exposes no resources or prompts, so no `list_resources`, `read_resource`,
+`list_prompts`, or `get_prompt` utilities should be present.
+
+Registration needs no `--env` secrets. Croton reads its own configuration file
+from the path given after `--config`; credential material belongs behind that
+file's `credentialCommand` and never on a command line or in profile
+documentation.
+
+To try the registration without touching an existing profile, point Hermes at a
+throwaway profile directory first:
+
+```sh
+export HERMES_HOME="$(mktemp -d)"
+```
+
+The profile and configuration changes made by the commands above are then
+confined to that temporary directory, leaving the existing profile untouched.
+
+Removal is the rollback:
+
+```sh
+hermes mcp remove croton
+```
+
+`hermes mcp remove` asks for interactive confirmation before dropping the
+registration; afterwards `hermes mcp list` no longer shows the `croton`
+registration (in the throwaway profile above, it lists nothing at all).
+
 ## Tools
 
 Exactly six read-only tools are registered, each with `readOnlyHint: true`,
