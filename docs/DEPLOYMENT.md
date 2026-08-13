@@ -71,6 +71,10 @@ symlink in any parent component of `CROTON_ROOT` either.
 
 What Croton enforces, versus what is operator policy:
 
+Treat the implementation as authoritative and re-verify these claims against
+`internal/config/config.go`, `bridge/tlspolicy.go`, `bridge/credentials.go`, and
+`internal/mcpserver/audit.go` before relying on them after a code change.
+
 - **Config — enforced by Croton:** absolute path, every path component
   traversed with `O_NOFOLLOW` (secure parent traversal), regular file, owned by
   the effective UID of the running process, size ≤ 64 KiB, and **no group or
