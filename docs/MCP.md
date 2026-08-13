@@ -19,9 +19,10 @@ croton-mcp --config /absolute/path/to/croton.json
 
 The configuration file is bounded JSON (64 KiB maximum, top-level object required,
 unknown, null, duplicate, and case-folded-alias fields rejected) mirroring
-`bridge.Config`. Secure configuration loading is currently Linux-only, using
-descriptor-relative no-follow traversal for every path component. Other
-platforms compile but fail closed until they have an equivalent secure opener.
+`bridge.Config`. Secure configuration loading is supported on Linux and macOS,
+which share one descriptor-relative no-follow traversal over every path
+component. Windows and all other platforms compile but fail closed: they refuse
+to load configuration at all until they have an equivalent secure opener.
 The file must be an absolute, symlink-free regular path owned by the current
 user and must not grant group or world permissions (normally mode `0600`):
 

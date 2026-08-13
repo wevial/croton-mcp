@@ -8,7 +8,20 @@ Early read-only implementation. The executable supports MCP `2026-07-28` by defa
 
 ## Requirements
 
-- Go 1.26.5 (the module's `toolchain` directive enforces this release)
+- Go 1.26.6 (the module's `toolchain` directive enforces this release)
+
+## Platform support
+
+Linux and macOS are supported and receive identical configuration-loading
+guarantees. Both resolve the `--config` path with descriptor-relative,
+no-follow traversal over every component, so no symlinked parent or final
+component is ever followed and there is no check-then-open race. On both, the
+configuration file must be an absolute regular file owned by the current user
+with no group or world permission bits (normally mode `0600`).
+
+Windows and every other platform compile but fail closed: they refuse to load a
+configuration file at all rather than fall back to a path-based open that
+cannot offer the same guarantees.
 
 ## Local development
 
@@ -31,8 +44,10 @@ hermes mcp add croton --connect-timeout 60 \
   --args --config /absolute/path/to/croton.json
 ```
 
-See [Hermes registration](docs/MCP.md#hermes-registration) for prerequisites,
-verification, the exact tool names, and removal.
+To try this out without touching an existing profile, export
+`HERMES_HOME="$(mktemp -d)"` first so the registration lands in a throwaway
+profile directory. See [Hermes registration](docs/MCP.md#hermes-registration)
+for prerequisites, verification, the exact tool names, and removal.
 
 ## Layout
 

@@ -17,7 +17,51 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.0.0
         with:
-          go-version: 1.26.5
+          go-version: 1.26.6
+          check-latest: true
+          cache: true
+      - name: Verify formatting
+        run: test -z "$(gofmt -l $(git ls-files '*.go'))"
+      - name: Build and vet
+        run: |
+          go build ./...
+          go vet ./...
+      - name: Typecheck for macOS
+        run: |
+          GOOS=darwin GOARCH=arm64 go build ./...
+          GOOS=darwin GOARCH=amd64 go build ./...
+          GOOS=darwin GOARCH=arm64 go vet ./...
+          GOOS=darwin GOARCH=amd64 go vet ./...
+      - name: Install pinned analysis tools
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
+          go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+      - name: Static analysis
+        run: |
+          "$GOBIN/staticcheck" ./...
+      - name: Race-enabled tests
+        # The Hermes catalog smoke skips itself when the CLI is absent, so this
+        # job stays exactly as broad as it was before macOS support landed.
+        run: go test -race ./...
+      - name: Verify module metadata
+        run: |
+          go mod tidy -diff
+          go mod verify
+      - name: Check reachable vulnerabilities
+        run: |
+          "$GOBIN/govulncheck" ./...
+
+  verify-macos:
+    name: macOS quality and security checks
+    runs-on: macos-latest
+    env:
+      GOBIN: ${{ github.workspace }}/.bin
+      CROTON_REQUIRE_HERMES: "1"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.0.0
+        with:
+          go-version: 1.26.6
           check-latest: true
           cache: true
       - name: Verify formatting
@@ -33,12 +77,32 @@ jobs:
       - name: Static analysis
         run: |
           "$GOBIN/staticcheck" ./...
-      - name: Race-enabled tests
-        run: go test -race ./...
-      - name: Verify module metadata
+      - name: Install Hermes CLI
+        # The Hermes catalog smoke registers a freshly built Croton against a
+        # throwaway HERMES_HOME and a synthetic fixture server; it needs no
+        # credentials, no mailbox, and no existing profile. With
+        # CROTON_REQUIRE_HERMES=1 a missing CLI fails the job rather than
+        # silently skipping the only native macOS proof in CI.
+        #
+        # The official installer is the only route documented for a machine
+        # that has never seen Hermes, which is exactly what a GitHub runner is.
+        # Everything the smoke cannot reach through `hermes --version` is
+        # skipped: prompts, the setup wizard, the Playwright browser download,
+        # and the bundled skills. Installation state is confined to a CI
+        # temporary HERMES_HOME, so no credential, profile, or mailbox on the
+        # runner is read or written.
+        env:
+          HERMES_HOME: ${{ runner.temp }}/hermes-install-home
         run: |
-          go mod tidy -diff
-          go mod verify
+          curl -fsSL https://hermes-agent.nousresearch.com/install.sh \
+            | bash -s -- --non-interactive --skip-setup --skip-browser --no-skills
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          hermes --version
+      - name: Race-enabled tests
+        # Darwin secure-configuration tests and the Hermes catalog smoke run
+        # natively here; nothing else in CI executes them on macOS.
+        run: go test -race ./...
       - name: Check reachable vulnerabilities
         run: |
           "$GOBIN/govulncheck" ./...

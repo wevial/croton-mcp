@@ -2,11 +2,11 @@
 
 ## Development prerequisites
 
-Install Go 1.26.5. The module declares `toolchain go1.26.5`; use that toolchain for all checks.
+Install Go 1.26.6. The module declares `toolchain go1.26.6`; use that toolchain for all checks.
 
 ## Required checks
 
-Run the documented checks before proposing a change. `go` must resolve to Go 1.26.5 on your `PATH`; do not depend on a fixed installation directory. Install the external analyzers into a project-local directory so they do not alter the module dependencies:
+Run the documented checks before proposing a change. `go` must resolve to Go 1.26.6 on your `PATH`; do not depend on a fixed installation directory. Install the external analyzers into a project-local directory so they do not alter the module dependencies:
 
 ```sh
 export GOBIN="$PWD/.bin"
