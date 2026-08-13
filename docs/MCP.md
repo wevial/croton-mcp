@@ -66,8 +66,17 @@ hermes mcp test croton
 hermes mcp list
 ```
 
-Hermes prefixes every discovered tool with the server name, so exactly six
-names should appear:
+`hermes mcp test croton` reports the six raw tool names Croton advertises:
+
+- `list_folders`
+- `search_mail`
+- `get_message`
+- `get_thread`
+- `list_attachments`
+- `select_digest_candidates`
+
+When Hermes registers those tools for model use, it prefixes each name with
+the server name, producing exactly six runtime names:
 
 - `mcp__croton__list_folders`
 - `mcp__croton__search_mail`
@@ -76,8 +85,8 @@ names should appear:
 - `mcp__croton__list_attachments`
 - `mcp__croton__select_digest_candidates`
 
-Croton exposes no resources or prompts, so no `list_resources`, `read_resource`,
-`list_prompts`, or `get_prompt` utilities should be present.
+Croton exposes no resources or prompts, so Hermes registers no prefixed
+`list_resources`, `read_resource`, `list_prompts`, or `get_prompt` utilities.
 
 Registration needs no `--env` secrets. Croton reads its own configuration file
 from the path given after `--config`; credential material belongs behind that
