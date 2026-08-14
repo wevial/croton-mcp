@@ -276,6 +276,9 @@ func hermesPythonInterpreter(t *testing.T, hermesPath string) string {
 		if next == "" {
 			t.Fatalf("launcher %s names no Python interpreter or exec target", current)
 		}
+		if strings.Contains(filepath.Base(next), "python") {
+			return next
+		}
 
 		current = next
 	}
@@ -343,6 +346,31 @@ func hermesExecTarget(line string) (string, bool) {
 	}
 
 	return "", false
+}
+
+// TestHermesPythonInterpreterResolvesNativeInterpreter proves the launcher
+// chain resolver accepts a native (non-script) Python interpreter as its
+// terminal hop, which is what macOS virtual environments install, while a
+// shell wrapper leading to it is still traced through its exec target. The
+// synthetic interpreter is only resolved, never executed.
+func TestHermesPythonInterpreterResolvesNativeInterpreter(t *testing.T) {
+	directory := t.TempDir()
+
+	interpreterPath := filepath.Join(directory, "python3")
+	nativeMagic := []byte{0x7f, 'E', 'L', 'F', 0x02, 0x01, 0x01, 0x00}
+	if err := os.WriteFile(interpreterPath, nativeMagic, 0o700); err != nil {
+		t.Fatalf("write native interpreter: %v", err)
+	}
+
+	launcherPath := filepath.Join(directory, "hermes")
+	launcher := "#!/bin/sh\nexec \"" + interpreterPath + "\" -m hermes \"$@\"\n"
+	if err := os.WriteFile(launcherPath, []byte(launcher), 0o700); err != nil {
+		t.Fatalf("write launcher: %v", err)
+	}
+
+	if got := hermesPythonInterpreter(t, launcherPath); got != interpreterPath {
+		t.Fatalf("resolved interpreter %q, want %q", got, interpreterPath)
+	}
 }
 
 // hermesToolNamesAfter collects the tool names Hermes prints in the indented
