@@ -6,6 +6,19 @@ Croton is a privacy-first, local stdio [Model Context Protocol](https://modelcon
 
 Early read-only implementation. The executable supports MCP `2026-07-28` by default and the legacy `2025-11-25` initialization flow for older clients. Its local Bridge adapter supports bounded folder, status, search, metadata, and body reads over verified loopback TLS; it does not expose mail mutation operations.
 
+## Croton Drive MCP (unofficial scaffold)
+
+`croton-drive-mcp` is a separate, currently tool-free stdio executable for a
+future read-only wrapper around an operator-installed Proton Drive CLI. Croton
+is an unofficial community project: it is not affiliated with or endorsed by
+Proton AG. It does not use Proton logos or imitate Proton branding.
+
+Drive uses its own `--config` file, process, and MCP server. Its strict JSON
+schema reserves an absolute CLI `binaryPath`, an
+`allowedDownloadDirectories` allowlist, and a `writes.enabled` policy that is
+disabled by default. The scaffold does not invoke the CLI, access credentials,
+or register Drive tools.
+
 ## Requirements
 
 - Go 1.26.6 (the module's `toolchain` directive enforces this release)
@@ -52,7 +65,9 @@ for prerequisites, verification, the exact tool names, and removal.
 ## Layout
 
 - `cmd/croton-mcp`: stdio executable
-- `internal/config`: future configuration boundary
+- `cmd/croton-drive-mcp`: independent Drive stdio executable scaffold
+- `internal/config`: secure configuration boundary for separate Mail and Drive schemas
+- `internal/drivemcp`: independent, currently empty Drive MCP server
 - `bridge`: narrow, bounded read-only IMAP adapter boundary
 - `internal/mcpserver`: MCP server construction
 - `docs/DEPENDENCIES.md`: reviewed dependency choices and adoption constraints
