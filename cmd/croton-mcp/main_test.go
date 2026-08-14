@@ -77,11 +77,29 @@ func writeServerConfig(t *testing.T, server *testkit.Server) string {
 	if err != nil {
 		t.Fatalf("encode config: %v", err)
 	}
-	path := filepath.Join(t.TempDir(), "croton.json")
+	path := filepath.Join(canonicalTempDir(t), "croton.json")
 	if err := os.WriteFile(path, encoded, 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	return path
+}
+
+// canonicalTempDir returns a temporary directory with every symlink in it
+// resolved. Croton's secure loader refuses to traverse a symlinked parent, and
+// on macOS t.TempDir hands back a path under /var, which is a symlink to
+// /private/var, so a Croton process handed an unresolved fixture path exits
+// before serving a single request. Resolving belongs to the fixture, not to
+// the loader: production policy is untouched. On Linux, where the temporary
+// directory is already canonical, this is a no-op.
+func canonicalTempDir(t *testing.T) string {
+	t.Helper()
+
+	resolved, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve temporary directory: %v", err)
+	}
+
+	return resolved
 }
 
 func serverCommand(t *testing.T, configPath string, stderr *bytes.Buffer) *exec.Cmd {

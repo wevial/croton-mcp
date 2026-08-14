@@ -1,27 +1,26 @@
-//go:build linux
+//go:build linux || darwin
 
 // Hermes catalog discovery is an integration test against the installed
-// Hermes CLI, which ships on Linux. The non-mutating fingerprint below also
-// depends on Linux-only open flags and stat fields.
+// Hermes CLI, which ships on Linux and macOS. Croton supports both, so the
+// smoke runs natively on both. It is isolated from the first command onwards:
+// every invocation runs against a throwaway HERMES_HOME holding nothing but
+// this test's own registration, and the registered server is a freshly built
+// Croton pinned to a synthetic fixture. No real Hermes profile, credential, or
+// mailbox is read, written, or inspected.
 package main
 
 import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -35,6 +34,18 @@ const hermesServerName = "croton"
 // hermesCommandTimeout bounds every Hermes CLI invocation: discovery spawns
 // the Croton binary, which only ever talks to the synthetic fixture.
 const hermesCommandTimeout = 90 * time.Second
+
+// hermesRequiredEnvironmentVariable turns a missing Hermes CLI from a skip
+// into a failure. CI sets it on the runners whose entire purpose is to observe
+// catalog discovery natively.
+const hermesRequiredEnvironmentVariable = "CROTON_REQUIRE_HERMES"
+
+// hermesSmokeRequired reports whether this host must actually observe Hermes
+// rather than skip. Only an explicit "1" opts in, so an unrelated exported
+// variable cannot fail an ordinary developer's test run.
+func hermesSmokeRequired() bool {
+	return strings.TrimSpace(os.Getenv(hermesRequiredEnvironmentVariable)) == "1"
+}
 
 // hermesRawToolNames are the tool names Croton itself advertises over MCP.
 var hermesRawToolNames = []string{
@@ -91,31 +102,23 @@ finally:
 os.write(1, json.dumps(names).encode("utf-8"))
 `
 
-// hermesFileFingerprint is a byte-and-metadata identity for one live Hermes
-// file. Contents are reduced to a digest so the live profile is never logged.
-type hermesFileFingerprint struct {
-	exists     bool
-	digest     string
-	size       int64
-	mode       fs.FileMode
-	modTime    time.Time
-	accessTime time.Time
-	uid        uint32
-	gid        uint32
-}
-
 // TestHermesDiscoversExactCrotonCatalogFromProductionBinary drives the
-// installed Hermes CLI through add, test, list, and remove against a
-// production Croton binary that is pinned to a synthetic fixture, and proves
-// Hermes registers exactly the six prefixed Croton tools and no utilities.
+// installed Hermes CLI through add, test, list, runtime registration, and
+// remove inside a throwaway profile, against a production Croton binary that
+// is pinned to a synthetic fixture, and proves Hermes registers exactly the
+// six prefixed Croton tools and no utilities.
 func TestHermesDiscoversExactCrotonCatalogFromProductionBinary(t *testing.T) {
 	hermesPath, err := exec.LookPath("hermes")
 	if err != nil {
+		if hermesSmokeRequired() {
+			t.Fatalf("%s=1 but the Hermes CLI is not installed: %v", hermesRequiredEnvironmentVariable, err)
+		}
 		t.Skip("hermes CLI is not installed; Croton catalog discovery cannot be observed")
 	}
 
-	liveConfigPath := hermesLiveConfigPath(t)
-	before := hermesFingerprint(t, liveConfigPath)
+	// The throwaway profile comes first: nothing below can reach a real
+	// Hermes profile, because every invocation is pinned to this directory.
+	hermesHome := t.TempDir()
 
 	server, err := testkit.Start(testkit.Options{Mode: testkit.ImplicitTLS})
 	if err != nil {
@@ -125,7 +128,6 @@ func TestHermesDiscoversExactCrotonCatalogFromProductionBinary(t *testing.T) {
 
 	configPath := writeServerConfig(t, server)
 	binaryPath := buildCrotonBinary(t)
-	hermesHome := t.TempDir()
 
 	added := runHermes(t, hermesPath, hermesHome, "\n",
 		"mcp", "add", hermesServerName,
@@ -171,153 +173,20 @@ func TestHermesDiscoversExactCrotonCatalogFromProductionBinary(t *testing.T) {
 	if strings.Contains(empty, hermesServerName) {
 		t.Fatalf("removed registration is still visible:\n%s", empty)
 	}
-
-	assertHermesLiveConfigUnchanged(t, liveConfigPath, before)
 }
 
-// TestHermesFingerprintPreservesLiveConfigAccessTime pins the live profile
-// down to its access time: reading the file to fingerprint it must not itself
-// be the mutation the fingerprint is meant to detect. A deliberately stale
-// atime is what a relatime mount would refresh on the first ordinary read.
-func TestHermesFingerprintPreservesLiveConfigAccessTime(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	contents := []byte("mcp_servers: {}\n")
-	if err := os.WriteFile(path, contents, 0o600); err != nil {
-		t.Fatalf("write fixture config: %v", err)
-	}
+// hermesEnvironment builds the child environment for one Hermes invocation.
+// An inherited HERMES_HOME is removed rather than shadowed, so no command can
+// fall back to a developer's real profile, and inherited Python paths are
+// dropped so runtime discovery loads only the installed Hermes package.
+func hermesEnvironment(base []string, home string) []string {
+	environment := slices.DeleteFunc(slices.Clone(base), func(entry string) bool {
+		name, _, _ := strings.Cut(entry, "=")
 
-	stale := time.Now().Add(-90 * 24 * time.Hour).Truncate(time.Second)
-	modified := time.Now().Add(-30 * 24 * time.Hour).Truncate(time.Second)
-	if err := os.Chtimes(path, stale, modified); err != nil {
-		t.Fatalf("age fixture config: %v", err)
-	}
+		return name == "HERMES_HOME" || name == "PYTHONPATH" || name == "PYTHONHOME"
+	})
 
-	before := hermesAccessTime(t, path)
-
-	fingerprint := hermesFingerprint(t, path)
-
-	digest := sha256.Sum256(contents)
-	switch {
-	case !fingerprint.exists:
-		t.Fatal("fingerprint reports the fixture config missing")
-	case fingerprint.digest != hex.EncodeToString(digest[:]):
-		t.Fatal("fingerprint digest does not match the fixture bytes")
-	case fingerprint.size != int64(len(contents)):
-		t.Fatalf("fingerprint size = %d, want %d", fingerprint.size, len(contents))
-	case fingerprint.mode.Perm() != 0o600:
-		t.Fatalf("fingerprint mode = %v, want -rw-------", fingerprint.mode.Perm())
-	case !fingerprint.modTime.Equal(modified):
-		t.Fatalf("fingerprint mtime = %s, want %s", fingerprint.modTime, modified)
-	case !fingerprint.accessTime.Equal(stale):
-		t.Fatalf("fingerprint atime = %s, want %s", fingerprint.accessTime, stale)
-	}
-
-	if after := hermesAccessTime(t, path); !after.Equal(before) {
-		t.Fatalf("fingerprinting updated access time: %s -> %s", before, after)
-	}
-}
-
-// hermesAccessTime reads one file's access time without opening it.
-func hermesAccessTime(t *testing.T, path string) time.Time {
-	t.Helper()
-
-	var stat syscall.Stat_t
-	if err := syscall.Stat(path, &stat); err != nil {
-		t.Fatalf("stat access time: %v", err)
-	}
-
-	return time.Unix(stat.Atim.Sec, stat.Atim.Nsec)
-}
-
-// hermesLiveConfigPath resolves the profile configuration the test must never
-// touch: the active HERMES_HOME when one is set, and ~/.hermes otherwise.
-func hermesLiveConfigPath(t *testing.T) string {
-	t.Helper()
-
-	if home := strings.TrimSpace(os.Getenv("HERMES_HOME")); home != "" {
-		return filepath.Join(home, "config.yaml")
-	}
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("resolve home directory: %v", err)
-	}
-
-	return filepath.Join(home, ".hermes", "config.yaml")
-}
-
-// hermesFingerprint digests one live file. A missing file is a valid state and
-// must still be missing afterwards.
-func hermesFingerprint(t *testing.T, path string) hermesFileFingerprint {
-	t.Helper()
-
-	// O_NOATIME keeps the fingerprinting read from becoming the very
-	// mutation the fingerprint exists to detect. Fail closed: anything short
-	// of a non-mutating open aborts rather than quietly degrading to a read
-	// that touches the live profile.
-	descriptor, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOATIME, 0)
-	if errors.Is(err, fs.ErrNotExist) {
-		return hermesFileFingerprint{}
-	}
-	if err != nil {
-		t.Fatalf("open live Hermes config without access-time updates: %v", err)
-	}
-
-	file := os.NewFile(uintptr(descriptor), path)
-	defer file.Close()
-
-	info, err := file.Stat()
-	if err != nil {
-		t.Fatalf("stat live Hermes config: %v", err)
-	}
-
-	contents, err := io.ReadAll(file)
-	if err != nil {
-		t.Fatalf("read live Hermes config: %v", err)
-	}
-	sum := sha256.Sum256(contents)
-
-	fingerprint := hermesFileFingerprint{
-		exists:  true,
-		digest:  hex.EncodeToString(sum[:]),
-		size:    info.Size(),
-		mode:    info.Mode(),
-		modTime: info.ModTime(),
-	}
-
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		t.Fatal("live Hermes config carries no stat metadata")
-	}
-	fingerprint.accessTime = time.Unix(stat.Atim.Sec, stat.Atim.Nsec)
-	fingerprint.uid, fingerprint.gid = stat.Uid, stat.Gid
-
-	return fingerprint
-}
-
-// assertHermesLiveConfigUnchanged reports drift without ever echoing the live
-// profile: only the differing field is named.
-func assertHermesLiveConfigUnchanged(t *testing.T, path string, before hermesFileFingerprint) {
-	t.Helper()
-
-	after := hermesFingerprint(t, path)
-
-	switch {
-	case before.exists != after.exists:
-		t.Fatalf("live Hermes config existence changed: before=%t after=%t", before.exists, after.exists)
-	case before.digest != after.digest:
-		t.Fatal("live Hermes config contents changed")
-	case before.size != after.size:
-		t.Fatalf("live Hermes config size changed: %d -> %d", before.size, after.size)
-	case before.mode != after.mode:
-		t.Fatalf("live Hermes config mode changed: %v -> %v", before.mode, after.mode)
-	case !before.modTime.Equal(after.modTime):
-		t.Fatalf("live Hermes config mtime changed: %s -> %s", before.modTime, after.modTime)
-	case !before.accessTime.Equal(after.accessTime):
-		t.Fatalf("live Hermes config atime changed: %s -> %s", before.accessTime, after.accessTime)
-	case before.uid != after.uid || before.gid != after.gid:
-		t.Fatalf("live Hermes config ownership changed: %d:%d -> %d:%d", before.uid, before.gid, after.uid, after.gid)
-	}
+	return append(environment, "HERMES_HOME="+home, "NO_COLOR=1")
 }
 
 // buildCrotonBinary builds the production command into a test-owned directory.
@@ -345,7 +214,7 @@ func runHermes(t *testing.T, hermesPath, hermesHome, stdin string, args ...strin
 	defer cancel()
 
 	command := exec.CommandContext(ctx, hermesPath, args...)
-	command.Env = append(os.Environ(), "HERMES_HOME="+hermesHome, "NO_COLOR=1")
+	command.Env = hermesEnvironment(os.Environ(), hermesHome)
 	command.Stdin = strings.NewReader(stdin)
 
 	output, err := command.CombinedOutput()
@@ -370,10 +239,7 @@ func runHermesDiscovery(t *testing.T, hermesPath, hermesHome string) []string {
 	defer cancel()
 
 	command := exec.CommandContext(ctx, hermesPythonInterpreter(t, hermesPath), scriptPath)
-	command.Env = append(os.Environ(), "HERMES_HOME="+hermesHome, "NO_COLOR=1")
-	command.Env = slices.DeleteFunc(command.Env, func(entry string) bool {
-		return strings.HasPrefix(entry, "PYTHONPATH=") || strings.HasPrefix(entry, "PYTHONHOME=")
-	})
+	command.Env = hermesEnvironment(os.Environ(), hermesHome)
 
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
@@ -409,6 +275,9 @@ func hermesPythonInterpreter(t *testing.T, hermesPath string) string {
 		}
 		if next == "" {
 			t.Fatalf("launcher %s names no Python interpreter or exec target", current)
+		}
+		if strings.Contains(filepath.Base(next), "python") {
+			return next
 		}
 
 		current = next
@@ -477,6 +346,31 @@ func hermesExecTarget(line string) (string, bool) {
 	}
 
 	return "", false
+}
+
+// TestHermesPythonInterpreterResolvesNativeInterpreter proves the launcher
+// chain resolver accepts a native (non-script) Python interpreter as its
+// terminal hop, which is what macOS virtual environments install, while a
+// shell wrapper leading to it is still traced through its exec target. The
+// synthetic interpreter is only resolved, never executed.
+func TestHermesPythonInterpreterResolvesNativeInterpreter(t *testing.T) {
+	directory := t.TempDir()
+
+	interpreterPath := filepath.Join(directory, "python3")
+	nativeMagic := []byte{0x7f, 'E', 'L', 'F', 0x02, 0x01, 0x01, 0x00}
+	if err := os.WriteFile(interpreterPath, nativeMagic, 0o700); err != nil {
+		t.Fatalf("write native interpreter: %v", err)
+	}
+
+	launcherPath := filepath.Join(directory, "hermes")
+	launcher := "#!/bin/sh\nexec \"" + interpreterPath + "\" -m hermes \"$@\"\n"
+	if err := os.WriteFile(launcherPath, []byte(launcher), 0o700); err != nil {
+		t.Fatalf("write launcher: %v", err)
+	}
+
+	if got := hermesPythonInterpreter(t, launcherPath); got != interpreterPath {
+		t.Fatalf("resolved interpreter %q, want %q", got, interpreterPath)
+	}
 }
 
 // hermesToolNamesAfter collects the tool names Hermes prints in the indented

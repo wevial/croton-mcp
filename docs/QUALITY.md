@@ -1,6 +1,6 @@
 # Quality and security tooling
 
-Croton's GitHub Actions workflow is the canonical verification path. It installs Go 1.26.5 and pins the two externally installed analyzers:
+Croton's GitHub Actions workflow is the canonical verification path. It installs Go 1.26.6 and pins the two externally installed analyzers:
 
 - `honnef.co/go/tools/cmd/staticcheck@v0.7.0` (Staticcheck 2026.1, which supports Go 1.26)
 - `golang.org/x/vuln/cmd/govulncheck@v1.6.0`
