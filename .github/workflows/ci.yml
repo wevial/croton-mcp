@@ -94,23 +94,73 @@ jobs:
         # piped from the network into a shell, so no change at a mutable
         # endpoint can execute here.
         #
-        # Everything the smoke cannot reach through `hermes --version` is
-        # skipped: prompts, the setup wizard, the Playwright browser download,
-        # and the bundled skills. Installation state is confined to a CI
-        # temporary HERMES_HOME, so no credential, profile, or mailbox on the
+        # Pinning the installer is necessary but not sufficient, because on a
+        # machine that has never seen Hermes the installer fetches its own
+        # dependencies from mutable endpoints. Two such paths are reachable on a
+        # fresh runner, and both are closed here:
+        #
+        #   uv — the installer fetches and runs the upstream uv installer script
+        #   from a mutable redirector unless a managed uv already exists at
+        #   $HERMES_HOME/bin/uv, so this step puts one there first, from a
+        #   pinned GitHub release archive whose SHA-256 is verified before
+        #   anything is extracted. The digest is selected from the runner's
+        #   architecture rather than assumed, so an Apple Silicon or an Intel
+        #   runner each check the digest of the archive they actually
+        #   downloaded, and an unrecognized architecture fails the job instead
+        #   of falling through to the mutable installer.
+        #
+        #   the computer-use driver — --skip-computer-use suppresses that
+        #   install, whose only route pipes a third-party raw URL tracking a
+        #   mutable default branch straight into a shell. The smoke never
+        #   touches the computer-use toolset, so nothing is lost by skipping it.
+        #
+        # Everything else the smoke cannot reach through `hermes --version` is
+        # skipped too: prompts, the setup wizard, the Playwright browser
+        # download, and the bundled skills. Installation state is confined to a
+        # CI temporary HERMES_HOME, so no credential, profile, or mailbox on the
         # runner is read or written.
         env:
           HERMES_HOME: ${{ runner.temp }}/hermes-install-home
           HERMES_INSTALLER_URL: https://raw.githubusercontent.com/NousResearch/hermes-agent/f80f453ae0679347e38abc917c7f94f717bf96c5/scripts/install.sh
           HERMES_INSTALLER_SHA256: 458ed1873bec1766ccd723b8a86338fbdf1caff5d43eae45065bc448cafa2dca
+          # https://github.com/astral-sh/uv/releases/tag/0.12.4 — digests as
+          # published in that release's uv-*-apple-darwin.tar.gz.sha256 assets.
+          UV_VERSION: "0.12.4"
+          UV_SHA256_AARCH64_APPLE_DARWIN: 99a913b606194867b43086404412c1afe079547fee72ecfb6af7e7b0dd54b0c6
+          UV_SHA256_X86_64_APPLE_DARWIN: e603f1eb634ca97a2a125539b983891f53235e901511ed10c32c08c86e253ecd
         run: |
           set -euo pipefail
+          case "$(uname -m)" in
+            arm64|aarch64)
+              uv_target=aarch64-apple-darwin
+              uv_sha256="$UV_SHA256_AARCH64_APPLE_DARWIN"
+              ;;
+            x86_64)
+              uv_target=x86_64-apple-darwin
+              uv_sha256="$UV_SHA256_X86_64_APPLE_DARWIN"
+              ;;
+            *)
+              echo "no pinned uv archive for macOS runner architecture $(uname -m)" >&2
+              exit 1
+              ;;
+          esac
+          uv_archive="${{ runner.temp }}/uv-$uv_target.tar.gz"
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            --output "$uv_archive" \
+            "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-$uv_target.tar.gz"
+          echo "$uv_sha256  $uv_archive" | shasum -a 256 --check
+          mkdir -p "$HERMES_HOME/bin"
+          tar -xzf "$uv_archive" -C "$HERMES_HOME/bin" --strip-components 1 \
+            "uv-$uv_target/uv" "uv-$uv_target/uvx"
+          chmod +x "$HERMES_HOME/bin/uv" "$HERMES_HOME/bin/uvx"
+          "$HERMES_HOME/bin/uv" --version
           installer="${{ runner.temp }}/hermes-install.sh"
           curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
             --output "$installer" "$HERMES_INSTALLER_URL"
           echo "$HERMES_INSTALLER_SHA256  $installer" | shasum -a 256 --check
           bash "$installer" \
-            --non-interactive --skip-setup --skip-browser --no-skills \
+            --non-interactive --skip-setup --skip-browser --skip-computer-use \
+            --no-skills \
             --commit f80f453ae0679347e38abc917c7f94f717bf96c5 --force-commit
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.local/bin:$PATH"

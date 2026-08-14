@@ -49,15 +49,31 @@ var requiredDocPhrases = []string{
 // truth about their own configuration file.
 var forbiddenDocPhrases = []string{"Linux-only", "currently Linux"}
 
+// pinnedUVVersion is the uv release the macOS job pre-provisions, and
+// pinnedUVDarwinSHA256 are the SHA-256 digests GitHub publishes alongside that
+// release's two macOS archives. Both digests are required, because the digest
+// the job actually checks is chosen at runtime from the runner's architecture.
+const pinnedUVVersion = `UV_VERSION: "0.12.4"`
+
+var pinnedUVDarwinSHA256 = []string{
+	"99a913b606194867b43086404412c1afe079547fee72ecfb6af7e7b0dd54b0c6",
+	"e603f1eb634ca97a2a125539b983891f53235e901511ed10c32c08c86e253ecd",
+}
+
 // requiredHermesInstallPhrases pin the Hermes CLI onto one immutable installer
 // revision, run the way a clean GitHub runner needs it: the script is fetched
 // from the commit-addressed raw URL to a file, checksum-verified with the
 // shasum binary macOS ships, and only then executed from that verified file
-// with no prompts, no setup wizard, and no browser or bundled-skill downloads.
-// Installation state stays confined to a CI temporary directory. Only the
-// native macOS job sets CROTON_REQUIRE_HERMES=1, so only that job must install
-// this way, or the smoke it demands can never start.
-var requiredHermesInstallPhrases = []string{
+// with no prompts, no setup wizard, and no browser, computer-use, or
+// bundled-skill downloads. Pinning the installer alone is not enough, because
+// on a fresh runner it installs its own dependencies: the job therefore
+// pre-provisions a pinned, checksum-verified uv at $HERMES_HOME/bin/uv, which
+// is exactly where the installer looks before it would otherwise fetch a
+// mutable installer from astral.sh. Installation state stays confined to a CI
+// temporary directory. Only the native macOS job sets CROTON_REQUIRE_HERMES=1,
+// so only that job must install this way, or the smoke it demands can never
+// start.
+var requiredHermesInstallPhrases = append([]string{
 	"https://raw.githubusercontent.com/NousResearch/hermes-agent/f80f453ae0679347e38abc917c7f94f717bf96c5/scripts/install.sh",
 	"shasum -a 256",
 	"458ed1873bec1766ccd723b8a86338fbdf1caff5d43eae45065bc448cafa2dca",
@@ -66,17 +82,27 @@ var requiredHermesInstallPhrases = []string{
 	"--non-interactive",
 	"--skip-setup",
 	"--skip-browser",
+	"--skip-computer-use",
 	"--no-skills",
 	"HERMES_HOME",
 	"hermes --version",
-}
+	pinnedUVVersion,
+	"https://github.com/astral-sh/uv/releases/download/",
+	"aarch64-apple-darwin",
+	"x86_64-apple-darwin",
+	`"$HERMES_HOME/bin/uv" --version`,
+}, pinnedUVDarwinSHA256...)
 
 // forbiddenJobPhrases are install routes a fresh clone cannot take. An
 // undefined repository variable makes the very first CI run fail before the
 // native smoke executes, a host package manager reintroduces the same unpinned
 // dependency a pinned installer removes, and a mutable redirector piped
 // straight into a shell executes whatever that endpoint serves at the moment
-// CI runs, with no revision or checksum to verify.
+// CI runs, with no revision or checksum to verify. The astral.sh and trycua
+// endpoints are the two the pinned Hermes installer would reach for on its own
+// — one for uv, one for the computer-use driver — so naming them here keeps a
+// later edit from handing execution back to a mutable source that the pinned
+// installer's own checksum says nothing about.
 var forbiddenJobPhrases = []string{
 	"HERMES_INSTALL_SPEC",
 	"pipx",
@@ -84,6 +110,9 @@ var forbiddenJobPhrases = []string{
 	"hermes-agent.nousresearch.com/install.sh",
 	"| bash",
 	"bash -s",
+	"astral.sh",
+	"trycua",
+	"cua-driver",
 }
 
 // requiredMacOSJobPhrases are the checks the native macOS CI job must run.
@@ -233,6 +262,68 @@ func TestContinuousIntegrationRunsNativeMacOSChecks(t *testing.T) {
 			t.Errorf("Linux CI job still carries the Hermes requirement %q", phrase)
 		}
 	}
+}
+
+// TestContinuousIntegrationPinsHermesInstallerDependencies proves the two
+// things a substring check alone cannot. First, that the pinned uv is already
+// in place before the Hermes installer runs: the installer skips its own
+// mutable astral.sh download only when $HERMES_HOME/bin/uv exists, so
+// provisioning it afterwards would verify a checksum that no longer decides
+// what executes. Second, that the flag suppressing the mutable trycua driver
+// fetch sits on the installer's own command line, not merely somewhere in the
+// job where a comment would satisfy the phrase check.
+func TestContinuousIntegrationPinsHermesInstallerDependencies(t *testing.T) {
+	t.Parallel()
+
+	macOS := jobContaining(workflowJobs(t), "runs-on: macos-latest")
+	if macOS == "" {
+		t.Fatal("CI defines no native macos-latest job")
+	}
+
+	invocation := strings.Index(macOS, `bash "$installer"`)
+	if invocation < 0 {
+		t.Fatal("macOS CI job never runs the verified Hermes installer")
+	}
+
+	provisioned := strings.Index(macOS, `"$HERMES_HOME/bin/uv" --version`)
+	if provisioned < 0 || provisioned > invocation {
+		t.Error("macOS CI job never proves a pinned uv at $HERMES_HOME/bin/uv before running the Hermes installer")
+	}
+	for _, digest := range pinnedUVDarwinSHA256 {
+		if index := strings.Index(macOS, digest); index < 0 || index > provisioned {
+			t.Errorf("macOS CI job never pins the uv archive digest %q before provisioning uv", digest)
+		}
+	}
+
+	command := installerCommand(macOS[invocation:])
+	for _, flag := range []string{
+		"--non-interactive",
+		"--skip-setup",
+		"--skip-browser",
+		"--skip-computer-use",
+		"--no-skills",
+		"--commit f80f453ae0679347e38abc917c7f94f717bf96c5",
+	} {
+		if !strings.Contains(command, flag) {
+			t.Errorf("Hermes installer command omits %q:\n%s", flag, command)
+		}
+	}
+}
+
+// installerCommand returns the one shell command opening the text, following
+// backslash line continuations so a flag on a later line still counts as part
+// of the same invocation.
+func installerCommand(text string) string {
+	var command strings.Builder
+	for _, line := range strings.Split(text, "\n") {
+		command.WriteString(line)
+		command.WriteString("\n")
+		if !strings.HasSuffix(strings.TrimRight(line, " \t"), `\`) {
+			break
+		}
+	}
+
+	return command.String()
 }
 
 // matchesTarget reports whether one package source compiles for the target
