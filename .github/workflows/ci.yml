@@ -86,6 +86,14 @@ jobs:
         #
         # The official installer is the only route documented for a machine
         # that has never seen Hermes, which is exactly what a GitHub runner is.
+        # It is pinned twice over: the script is fetched from an immutable
+        # commit-addressed raw URL and its SHA-256 is verified before a shell
+        # ever reads it, and the install itself is pinned to the same commit
+        # (--force-commit, because the installer otherwise refuses to move a
+        # fresh clone of a newer default branch back onto the pin). Nothing is
+        # piped from the network into a shell, so no change at a mutable
+        # endpoint can execute here.
+        #
         # Everything the smoke cannot reach through `hermes --version` is
         # skipped: prompts, the setup wizard, the Playwright browser download,
         # and the bundled skills. Installation state is confined to a CI
@@ -93,9 +101,17 @@ jobs:
         # runner is read or written.
         env:
           HERMES_HOME: ${{ runner.temp }}/hermes-install-home
+          HERMES_INSTALLER_URL: https://raw.githubusercontent.com/NousResearch/hermes-agent/f80f453ae0679347e38abc917c7f94f717bf96c5/scripts/install.sh
+          HERMES_INSTALLER_SHA256: 458ed1873bec1766ccd723b8a86338fbdf1caff5d43eae45065bc448cafa2dca
         run: |
-          curl -fsSL https://hermes-agent.nousresearch.com/install.sh \
-            | bash -s -- --non-interactive --skip-setup --skip-browser --no-skills
+          set -euo pipefail
+          installer="${{ runner.temp }}/hermes-install.sh"
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            --output "$installer" "$HERMES_INSTALLER_URL"
+          echo "$HERMES_INSTALLER_SHA256  $installer" | shasum -a 256 --check
+          bash "$installer" \
+            --non-interactive --skip-setup --skip-browser --no-skills \
+            --commit f80f453ae0679347e38abc917c7f94f717bf96c5 --force-commit
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.local/bin:$PATH"
           hermes --version

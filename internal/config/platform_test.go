@@ -49,14 +49,20 @@ var requiredDocPhrases = []string{
 // truth about their own configuration file.
 var forbiddenDocPhrases = []string{"Linux-only", "currently Linux"}
 
-// requiredHermesInstallPhrases pin the Hermes CLI onto the official installer
-// documented by the Hermes Agent skill, run the way a clean GitHub runner needs
-// it: no prompts, no setup wizard, no browser or bundled-skill downloads, and
-// installation state confined to a CI temporary directory. Only the native
-// macOS job sets CROTON_REQUIRE_HERMES=1, so only that job must install this
-// way, or the smoke it demands can never start.
+// requiredHermesInstallPhrases pin the Hermes CLI onto one immutable installer
+// revision, run the way a clean GitHub runner needs it: the script is fetched
+// from the commit-addressed raw URL to a file, checksum-verified with the
+// shasum binary macOS ships, and only then executed from that verified file
+// with no prompts, no setup wizard, and no browser or bundled-skill downloads.
+// Installation state stays confined to a CI temporary directory. Only the
+// native macOS job sets CROTON_REQUIRE_HERMES=1, so only that job must install
+// this way, or the smoke it demands can never start.
 var requiredHermesInstallPhrases = []string{
-	"https://hermes-agent.nousresearch.com/install.sh",
+	"https://raw.githubusercontent.com/NousResearch/hermes-agent/f80f453ae0679347e38abc917c7f94f717bf96c5/scripts/install.sh",
+	"shasum -a 256",
+	"458ed1873bec1766ccd723b8a86338fbdf1caff5d43eae45065bc448cafa2dca",
+	"--commit f80f453ae0679347e38abc917c7f94f717bf96c5",
+	`bash "$installer"`,
 	"--non-interactive",
 	"--skip-setup",
 	"--skip-browser",
@@ -67,12 +73,17 @@ var requiredHermesInstallPhrases = []string{
 
 // forbiddenJobPhrases are install routes a fresh clone cannot take. An
 // undefined repository variable makes the very first CI run fail before the
-// native smoke executes, and a host package manager reintroduces the same
-// unpinned dependency the official installer removes.
+// native smoke executes, a host package manager reintroduces the same unpinned
+// dependency a pinned installer removes, and a mutable redirector piped
+// straight into a shell executes whatever that endpoint serves at the moment
+// CI runs, with no revision or checksum to verify.
 var forbiddenJobPhrases = []string{
 	"HERMES_INSTALL_SPEC",
 	"pipx",
 	"brew install",
+	"hermes-agent.nousresearch.com/install.sh",
+	"| bash",
+	"bash -s",
 }
 
 // requiredMacOSJobPhrases are the checks the native macOS CI job must run.

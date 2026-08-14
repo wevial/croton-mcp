@@ -4,13 +4,16 @@ package config
 
 import (
 	"errors"
+	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
 )
 
 func TestLoadRejectsFIFOWithoutBlocking(t *testing.T) {
-	path := t.TempDir() + "/croton.json"
+	// The FIFO must live on a symlink-free path, or the loader rejects it for
+	// the parent directory rather than for the FIFO this test is about.
+	path := filepath.Join(canonicalTempDir(t), "croton.json")
 	if err := syscall.Mkfifo(path, 0o600); err != nil {
 		t.Fatal(err)
 	}
