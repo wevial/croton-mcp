@@ -1,0 +1,3 @@
+[
+{"uid":"node:file-1","parentUid":"node:root","name":{"ok":true,"value":"notes.txt"},"keyAuthor":{"ok":true,"value":"owner@example.test"},"nameAuthor":{"ok":true,"value":null},"directRole":"admin","ownedBy":{"email":"owner@example.test"},"type":"file","mediaType":"text/plain","isShared":false,"isSharedByUrl":false,"creationTime":"2026-01-01T00:00:00.000Z","modificationTime":"2026-01-02T00:00:00.000Z","totalStorageSize":128,"activeRevision":{"uid":"revision:1","state":"active","creationTime":"2026-01-02T00:00:00.000Z","contentAuthor":{"ok":true,"value":"owner@example.test"},"storageSize":160,"isImported":false,"claimedSize":96,"claimedDigests":{"sha1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sha1Verified":true}},"treeEventScopeId":"scope:1"}
+]

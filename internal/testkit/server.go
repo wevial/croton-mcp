@@ -1,4 +1,4 @@
-// Package testkit provides deterministic, loopback-only IMAP test fixtures.
+// Package testkit provides deterministic IMAP and Proton Drive CLI fixtures.
 package testkit
 
 import (
