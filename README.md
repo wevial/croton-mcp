@@ -6,18 +6,21 @@ Croton is a privacy-first, local stdio [Model Context Protocol](https://modelcon
 
 Early read-only implementation. The executable supports MCP `2026-07-28` by default and the legacy `2025-11-25` initialization flow for older clients. Its local Bridge adapter supports bounded folder, status, search, metadata, and body reads over verified loopback TLS; it does not expose mail mutation operations.
 
-## Croton Drive MCP (unofficial scaffold)
+## Croton Drive MCP (unofficial)
 
-`croton-drive-mcp` is a separate, currently tool-free stdio executable for a
-future read-only wrapper around an operator-installed Proton Drive CLI. Croton
-is an unofficial community project: it is not affiliated with or endorsed by
-Proton AG. It does not use Proton logos or imitate Proton branding.
+`croton-drive-mcp` is a separate stdio executable wrapping an
+operator-installed Proton Drive CLI with two read-only tools:
+`list_drive_entries` and `get_drive_metadata`. Every data command is gated
+behind a successful exact-version CLI handshake and fails closed otherwise.
+Croton is an unofficial community project: it is not affiliated with or
+endorsed by Proton AG. It does not use Proton logos or imitate Proton
+branding.
 
 Drive uses its own `--config` file, process, and MCP server. Its strict JSON
-schema reserves an absolute CLI `binaryPath`, an
-`allowedDownloadDirectories` allowlist, and a `writes.enabled` policy that is
-disabled by default. The scaffold does not invoke the CLI, access credentials,
-or register Drive tools.
+schema requires an absolute CLI `binaryPath` and reserves an
+`allowedDownloadDirectories` allowlist and a `writes.enabled` policy that is
+disabled by default. The server never accesses credentials and registers no
+write-capable tools.
 
 ## Requirements
 

@@ -25,6 +25,7 @@ import (
 	"syscall"
 
 	"github.com/wevial/croton-mcp/internal/config"
+	"github.com/wevial/croton-mcp/internal/drivecli"
 	"github.com/wevial/croton-mcp/internal/drivemcp"
 )
 
@@ -49,9 +50,17 @@ func run(ctx context.Context, arguments []string, stderr io.Writer) error {
 		return errors.New("usage: croton-drive-mcp --config <absolute path>")
 	}
 
-	if _, err := config.LoadDrive(*configPath); err != nil {
+	loaded, err := config.LoadDrive(*configPath)
+	if err != nil {
 		return err
 	}
 
-	return drivemcp.Serve(ctx, drivemcp.New(), drivemcp.NewStdioTransport(os.Stdin, os.Stdout))
+	client, err := drivecli.New(drivecli.Options{BinaryPath: loaded.CLI.BinaryPath})
+	if err != nil {
+		return errors.New("invalid drive CLI configuration")
+	}
+
+	server := drivemcp.New(drivemcp.Options{CLI: client, Audit: drivemcp.NewAuditor(stderr)})
+
+	return drivemcp.Serve(ctx, server, drivemcp.NewStdioTransport(os.Stdin, os.Stdout))
 }

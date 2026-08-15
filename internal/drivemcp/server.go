@@ -20,6 +20,7 @@ import (
 	"io"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/wevial/croton-mcp/internal/drivecli"
 )
 
 const (
@@ -31,22 +32,42 @@ const (
 
 var errServerUnavailable = errors.New("server unavailable")
 
-// Server owns Drive's SDK instance and intentionally has no Mail adapter,
-// credentials, or tool registrations.
-type Server struct {
-	sdk *mcp.Server
+// Options configures Croton Drive's MCP server. A nil CLI keeps every tool
+// registered but failing closed as unavailable.
+type Options struct {
+	CLI   *drivecli.Client
+	Audit *Auditor
 }
 
-// New creates the empty Drive tool catalog for protocol negotiation only.
-func New() *Server {
-	return &Server{sdk: mcp.NewServer(&mcp.Implementation{
-		Name:        "croton-drive-mcp",
-		Title:       "Croton Drive MCP (Unofficial)",
-		Description: unofficialDescription,
-		Version:     version,
-	}, &mcp.ServerOptions{
-		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
-	})}
+// Server owns Drive's SDK instance, the subprocess adapter, and the handshake
+// gate that orders every data command after exact-version negotiation. It
+// intentionally has no Mail adapter or credentials.
+type Server struct {
+	sdk   *mcp.Server
+	cli   *drivecli.Client
+	gate  *handshakeGate
+	audit *Auditor
+}
+
+// New constructs Croton Drive's server exposing only the two read-only tools.
+func New(options Options) *Server {
+	server := &Server{
+		cli:   options.CLI,
+		gate:  newHandshakeGate(),
+		audit: options.Audit,
+		sdk: mcp.NewServer(&mcp.Implementation{
+			Name:        "croton-drive-mcp",
+			Title:       "Croton Drive MCP (Unofficial)",
+			Description: unofficialDescription,
+			Version:     version,
+		}, &mcp.ServerOptions{
+			Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
+		}),
+	}
+
+	registerTools(server)
+
+	return server
 }
 
 // Connect opens one Drive server session without sharing the Mail server.
