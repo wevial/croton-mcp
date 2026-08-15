@@ -61,6 +61,19 @@ func FakeDrive(t *testing.T, scenario string, stdout []byte) string {
 	return path
 }
 
+// DriveFixture returns one frozen Proton Drive golden fixture by file name, so
+// every layer exercises the same recon-approved CLI output shapes.
+func DriveFixture(t *testing.T, name string) []byte {
+	t.Helper()
+
+	contents, err := os.ReadFile(filepath.Join(moduleRoot(t), "internal", "drivecli", "testdata", name))
+	if err != nil {
+		t.Fatalf("read drive fixture %s: %v", name, err)
+	}
+
+	return contents
+}
+
 // RecordedArgv returns the argv the fake CLI last observed, one argument per line.
 func RecordedArgv(t *testing.T, binaryPath string) string {
 	t.Helper()

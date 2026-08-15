@@ -22,11 +22,11 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func TestNewNegotiatesCurrentProtocolWithNoDriveTools(t *testing.T) {
+func TestNewNegotiatesCurrentProtocolWithTheReadOnlyDriveCatalog(t *testing.T) {
 	t.Parallel()
 
 	clientTransport, serverTransport := mcp.NewInMemoryTransports()
-	serverSession, err := New().Connect(context.Background(), serverTransport, nil)
+	serverSession, err := New(Options{}).Connect(context.Background(), serverTransport, nil)
 	if err != nil {
 		t.Fatalf("connect server: %v", err)
 	}
@@ -54,8 +54,17 @@ func TestNewNegotiatesCurrentProtocolWithNoDriveTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list tools: %v", err)
 	}
-	if len(listed.Tools) != 0 {
-		t.Fatalf("Drive tools = %d, want 0", len(listed.Tools))
+	if len(listed.Tools) != 2 {
+		t.Fatalf("Drive tools = %d, want 2", len(listed.Tools))
+	}
+	names := []string{listed.Tools[0].Name, listed.Tools[1].Name}
+	if names[0] != "get_drive_metadata" || names[1] != "list_drive_entries" {
+		t.Fatalf("Drive tool names = %v", names)
+	}
+	for _, tool := range listed.Tools {
+		if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
+			t.Fatalf("tool %q is not marked read-only", tool.Name)
+		}
 	}
 }
 
@@ -63,7 +72,7 @@ func TestNewSupportsLegacyInitialize(t *testing.T) {
 	t.Parallel()
 
 	clientTransport, serverTransport := mcp.NewInMemoryTransports()
-	serverSession, err := New().Connect(context.Background(), serverTransport, nil)
+	serverSession, err := New(Options{}).Connect(context.Background(), serverTransport, nil)
 	if err != nil {
 		t.Fatalf("connect server: %v", err)
 	}
