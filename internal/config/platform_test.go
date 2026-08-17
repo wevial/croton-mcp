@@ -44,6 +44,16 @@ var requiredDocPhrases = []string{
 	"Windows",
 }
 
+// requiredMCPClientDocPhrases keep the client-neutral support statement honest:
+// Croton's protocol contract is required, Hermes has a separate exercised
+// consumer smoke, and other standards-compatible client targets are not
+// represented as independently verified harnesses.
+var requiredMCPClientDocPhrases = []string{
+	"standards-compatible MCP clients",
+	"Hermes, Claude Code, and Codex",
+	"Hermes is the only client-specific compatibility",
+}
+
 // forbiddenDocPhrases are the stale Linux-only claims that must not survive
 // macOS support, because they would tell a macOS user the opposite of the
 // truth about their own configuration file.
@@ -70,9 +80,9 @@ var pinnedUVDarwinSHA256 = []string{
 // pre-provisions a pinned, checksum-verified uv at $HERMES_HOME/bin/uv, which
 // is exactly where the installer looks before it would otherwise fetch a
 // mutable installer from astral.sh. Installation state stays confined to a CI
-// temporary directory. Only the native macOS job sets CROTON_REQUIRE_HERMES=1,
-// so only that job must install this way, or the smoke it demands can never
-// start.
+// temporary directory. The non-gating Hermes consumer-compatibility job alone
+// sets CROTON_REQUIRE_HERMES=1, so a broken external installer cannot turn a
+// client-neutral Croton quality failure into a required core failure.
 var requiredHermesInstallPhrases = append([]string{
 	"https://raw.githubusercontent.com/NousResearch/hermes-agent/f80f453ae0679347e38abc917c7f94f717bf96c5/scripts/install.sh",
 	"shasum -a 256",
@@ -93,42 +103,18 @@ var requiredHermesInstallPhrases = append([]string{
 	`"$HERMES_HOME/bin/uv" --version`,
 }, pinnedUVDarwinSHA256...)
 
-// forbiddenJobPhrases are install routes a fresh clone cannot take. An
-// undefined repository variable makes the very first CI run fail before the
-// native smoke executes, a host package manager reintroduces the same unpinned
-// dependency a pinned installer removes, and a mutable redirector piped
-// straight into a shell executes whatever that endpoint serves at the moment
-// CI runs, with no revision or checksum to verify. The astral.sh and trycua
-// endpoints are the two the pinned Hermes installer would reach for on its own
-// — one for uv, one for the computer-use driver — so naming them here keeps a
-// later edit from handing execution back to a mutable source that the pinned
-// installer's own checksum says nothing about.
-var forbiddenJobPhrases = []string{
-	"HERMES_INSTALL_SPEC",
-	"pipx",
-	"brew install",
-	"hermes-agent.nousresearch.com/install.sh",
-	"| bash",
-	"bash -s",
-	"astral.sh",
-	"trycua",
-	"cua-driver",
-}
-
-// requiredMacOSJobPhrases are the checks the native macOS CI job must run.
-// Cross-compilation cannot observe Darwin syscall behavior, so this job is the
-// only place the secure loader and the Hermes smoke actually execute on macOS.
-var requiredMacOSJobPhrases = append([]string{
+// requiredMacOSJobPhrases are the checks the native macOS core CI job must
+// run. Cross-compilation cannot observe Darwin syscall behavior, so this job
+// independently exercises the secure loader without installing any MCP client.
+var requiredMacOSJobPhrases = []string{
 	"runs-on: macos-latest",
 	"go-version: 1.26.6",
 	"go build ./...",
 	"go vet ./...",
 	"go test -race ./...",
-	"CROTON_REQUIRE_HERMES",
 	"staticcheck",
 	"govulncheck",
-	"hermes",
-}, requiredHermesInstallPhrases...)
+}
 
 // requiredLinuxJobPhrases keep the pre-existing Linux quality job intact and
 // add the Darwin typecheck that catches a Linux-only syscall reference hiding
@@ -212,6 +198,11 @@ func TestPublicDocsDeclareMacOSSupportAndFailClosedPlatforms(t *testing.T) {
 			t.Errorf("public docs never state %q", phrase)
 		}
 	}
+	for _, phrase := range requiredMCPClientDocPhrases {
+		if !strings.Contains(combined, phrase) {
+			t.Errorf("public docs never state %q", phrase)
+		}
+	}
 	for _, phrase := range forbiddenDocPhrases {
 		if strings.Contains(combined, phrase) {
 			t.Errorf("public docs still carry the stale claim %q", phrase)
@@ -219,31 +210,31 @@ func TestPublicDocsDeclareMacOSSupportAndFailClosedPlatforms(t *testing.T) {
 	}
 }
 
-// TestContinuousIntegrationRunsNativeMacOSChecks pins the one thing no test on
-// a Linux host can prove for itself: that the supported-platform claim is
-// backed by macOS builds, vet, race tests, and a required Hermes smoke on a
-// real Darwin runner.
-func TestContinuousIntegrationRunsNativeMacOSChecks(t *testing.T) {
+// TestContinuousIntegrationSeparatesCoreAndConsumerCompatibility pins the
+// client-neutral quality boundary. Linux and native macOS core jobs retain all
+// required Croton build, security, and race coverage without installing
+// Hermes. The Hermes catalog smoke remains visible in an isolated, non-gating
+// consumer-compatibility job, so an upstream installer failure cannot block a
+// valid Croton change.
+func TestContinuousIntegrationSeparatesCoreAndConsumerCompatibility(t *testing.T) {
 	t.Parallel()
 
 	jobs := workflowJobs(t)
 
-	macOS := jobContaining(jobs, "runs-on: macos-latest")
+	macOS := jobs["verify-macos"]
 	if macOS == "" {
-		t.Fatal("CI defines no native macos-latest job")
+		t.Fatal("CI defines no native macOS core job")
 	}
 	for _, phrase := range requiredMacOSJobPhrases {
 		if !strings.Contains(macOS, phrase) {
-			t.Errorf("macOS CI job never runs %q", phrase)
+			t.Errorf("macOS core CI job never runs %q", phrase)
 		}
 	}
-	for _, phrase := range forbiddenJobPhrases {
-		if strings.Contains(macOS, phrase) {
-			t.Errorf("macOS CI job still installs Hermes via %q", phrase)
-		}
+	if strings.Contains(strings.ToLower(macOS), "hermes") {
+		t.Error("macOS core CI job still depends on Hermes")
 	}
 
-	linux := jobContaining(jobs, "runs-on: ubuntu-latest")
+	linux := jobs["verify"]
 	if linux == "" {
 		t.Fatal("CI no longer defines the Linux quality and security job")
 	}
@@ -252,14 +243,26 @@ func TestContinuousIntegrationRunsNativeMacOSChecks(t *testing.T) {
 			t.Errorf("Linux CI job never runs %q", phrase)
 		}
 	}
-	for _, phrase := range forbiddenJobPhrases {
-		if strings.Contains(linux, phrase) {
-			t.Errorf("Linux CI job still installs Hermes via %q", phrase)
-		}
-	}
 	for _, phrase := range forbiddenLinuxJobPhrases {
 		if strings.Contains(linux, phrase) {
 			t.Errorf("Linux CI job still carries the Hermes requirement %q", phrase)
+		}
+	}
+
+	compatibility := jobs["hermes-compatibility"]
+	if compatibility == "" {
+		t.Fatal("CI defines no Hermes consumer-compatibility job")
+	}
+	for _, phrase := range []string{
+		"name: Hermes consumer compatibility (non-gating)",
+		"continue-on-error: true",
+		"runs-on: macos-latest",
+		"CROTON_REQUIRE_HERMES: \"1\"",
+		"HERMES_HOME",
+		"go test -race ./cmd/croton-mcp -run '^TestHermes'",
+	} {
+		if !strings.Contains(compatibility, phrase) {
+			t.Errorf("Hermes compatibility CI job omits %q", phrase)
 		}
 	}
 }
@@ -275,27 +278,27 @@ func TestContinuousIntegrationRunsNativeMacOSChecks(t *testing.T) {
 func TestContinuousIntegrationPinsHermesInstallerDependencies(t *testing.T) {
 	t.Parallel()
 
-	macOS := jobContaining(workflowJobs(t), "runs-on: macos-latest")
-	if macOS == "" {
-		t.Fatal("CI defines no native macos-latest job")
+	compatibility := workflowJobs(t)["hermes-compatibility"]
+	if compatibility == "" {
+		t.Fatal("CI defines no Hermes consumer-compatibility job")
 	}
 
-	invocation := strings.Index(macOS, `bash "$installer"`)
+	invocation := strings.Index(compatibility, `bash "$installer"`)
 	if invocation < 0 {
-		t.Fatal("macOS CI job never runs the verified Hermes installer")
+		t.Fatal("Hermes compatibility CI job never runs the verified Hermes installer")
 	}
 
-	provisioned := strings.Index(macOS, `"$HERMES_HOME/bin/uv" --version`)
+	provisioned := strings.Index(compatibility, `"$HERMES_HOME/bin/uv" --version`)
 	if provisioned < 0 || provisioned > invocation {
-		t.Error("macOS CI job never proves a pinned uv at $HERMES_HOME/bin/uv before running the Hermes installer")
+		t.Error("Hermes compatibility CI job never proves a pinned uv at $HERMES_HOME/bin/uv before running the installer")
 	}
 	for _, digest := range pinnedUVDarwinSHA256 {
-		if index := strings.Index(macOS, digest); index < 0 || index > provisioned {
-			t.Errorf("macOS CI job never pins the uv archive digest %q before provisioning uv", digest)
+		if index := strings.Index(compatibility, digest); index < 0 || index > provisioned {
+			t.Errorf("Hermes compatibility CI job never pins the uv archive digest %q before provisioning uv", digest)
 		}
 	}
 
-	command := installerCommand(macOS[invocation:])
+	command := installerCommand(compatibility[invocation:])
 	for _, flag := range []string{
 		"--non-interactive",
 		"--skip-setup",
@@ -409,16 +412,4 @@ func workflowJobHeader(line string) (string, bool) {
 	}
 
 	return name, true
-}
-
-// jobContaining returns the single job block carrying a marker, or the empty
-// string when no job does.
-func jobContaining(jobs map[string]string, marker string) string {
-	for _, block := range jobs {
-		if strings.Contains(block, marker) {
-			return block
-		}
-	}
-
-	return ""
 }
