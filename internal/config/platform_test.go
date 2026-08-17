@@ -277,8 +277,6 @@ func TestContinuousIntegrationSeparatesCoreAndConsumerCompatibility(t *testing.T
 	}
 	for _, phrase := range []string{
 		"name: Hermes consumer compatibility (non-gating)",
-		"continue-on-error: true",
-		"persist-credentials: false",
 		"runs-on: macos-latest",
 		"CROTON_REQUIRE_HERMES: \"1\"",
 		"HERMES_HOME",
@@ -287,6 +285,13 @@ func TestContinuousIntegrationSeparatesCoreAndConsumerCompatibility(t *testing.T
 		if !strings.Contains(compatibility, phrase) {
 			t.Errorf("Hermes compatibility CI job omits %q", phrase)
 		}
+	}
+	if !strings.Contains(compatibility, "\n    continue-on-error: true\n") {
+		t.Error("Hermes compatibility CI job is not explicitly non-gating at job scope")
+	}
+	const credentiallessCheckout = "      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0\n        with:\n          persist-credentials: false\n"
+	if !strings.Contains(compatibility, credentiallessCheckout) {
+		t.Error("Hermes compatibility checkout does not disable persisted credentials on its own step")
 	}
 }
 
@@ -299,6 +304,7 @@ func TestContainsFoldNormalizesBothOperands(t *testing.T) {
 	}{
 		{text: "HERMES_HOME", phrase: "hermes"},
 		{text: "Brew Install ripgrep", phrase: "brew install"},
+		{text: "hermes_home", phrase: "HERMES"},
 	} {
 		if !containsFold(test.text, test.phrase) {
 			t.Errorf("containsFold(%q, %q) = false, want true", test.text, test.phrase)
