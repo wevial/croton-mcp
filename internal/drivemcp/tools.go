@@ -295,13 +295,40 @@ func runGetDriveMetadata(ctx context.Context, server *Server, arguments json.Raw
 // Member identifiers and link URLs can occur only in this tool result, never
 // in audit records or diagnostics.
 type sharingStatusResult struct {
-	Shared               bool                `json:"shared"`
-	ProtonInvitations    []drivecli.Member   `json:"protonInvitations"`
-	NonProtonInvitations []drivecli.Member   `json:"nonProtonInvitations"`
-	Members              []drivecli.Member   `json:"members"`
-	URLAccess            *drivecli.URLAccess `json:"urlAccess,omitempty"`
-	EditorsCanShare      bool                `json:"editorsCanShare"`
-	Truncated            bool                `json:"truncated,omitempty"`
+	Shared               bool              `json:"shared"`
+	ProtonInvitations    []drivecli.Member `json:"protonInvitations"`
+	NonProtonInvitations []drivecli.Member `json:"nonProtonInvitations"`
+	Members              []drivecli.Member `json:"members"`
+	URLAccess            *sharingURLAccess `json:"urlAccess,omitempty"`
+	EditorsCanShare      bool              `json:"editorsCanShare"`
+	Truncated            bool              `json:"truncated,omitempty"`
+}
+
+// sharingURLAccess is the safe MCP subset of the frozen CLI's public-link
+// object. The adapter type includes CustomPassword for decoding, but a link
+// password is a credential and must remain structurally unreachable to MCP.
+type sharingURLAccess struct {
+	UID                          string `json:"uid"`
+	CreationTime                 string `json:"creationTime"`
+	Role                         string `json:"role"`
+	URL                          string `json:"url"`
+	ExpirationTime               string `json:"expirationTime,omitempty"`
+	NumberOfInitializedDownloads int64  `json:"numberOfInitializedDownloads"`
+}
+
+func mapSharingURLAccess(access *drivecli.URLAccess) *sharingURLAccess {
+	if access == nil {
+		return nil
+	}
+
+	return &sharingURLAccess{
+		UID:                          access.UID,
+		CreationTime:                 access.CreationTime,
+		Role:                         access.Role,
+		URL:                          access.URL,
+		ExpirationTime:               access.ExpirationTime,
+		NumberOfInitializedDownloads: access.NumberOfInitializedDownloads,
+	}
 }
 
 func runGetDriveSharingStatus(ctx context.Context, server *Server, arguments json.RawMessage) (any, string) {
@@ -336,7 +363,7 @@ func runGetDriveSharingStatus(ctx context.Context, server *Server, arguments jso
 	result.Truncated = result.Truncated || truncated
 	result.Members, truncated = boundEntries(status.Info.Members, maxSharingMembers)
 	result.Truncated = result.Truncated || truncated
-	result.URLAccess = status.Info.URLAccess
+	result.URLAccess = mapSharingURLAccess(status.Info.URLAccess)
 	result.EditorsCanShare = status.Info.EditorsCanShare
 
 	return result, ""

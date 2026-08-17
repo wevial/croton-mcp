@@ -391,6 +391,37 @@ func TestGetDriveSharingStatusBoundsMembersAndKeepsAuditPayloadFree(t *testing.T
 	}
 }
 
+func TestEncodeBoundedPreservesSharingStateWhenURLAccessOverflows(t *testing.T) {
+	t.Parallel()
+
+	oversize := &sharingStatusResult{
+		Shared: true,
+		URLAccess: &sharingURLAccess{
+			URL: strings.Repeat("<", maxToolResultBytes),
+		},
+	}
+
+	encoded, truncated, err := encodeBounded(oversize)
+	if err != nil {
+		t.Fatalf("encodeBounded: %v", err)
+	}
+	if !truncated || len(encoded) > maxToolResultBytes {
+		t.Fatalf("truncated = %v, bytes = %d", truncated, len(encoded))
+	}
+
+	var decoded struct {
+		Shared    bool `json:"shared"`
+		Truncated bool `json:"truncated"`
+		URLAccess any  `json:"urlAccess"`
+	}
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("shrunken sharing result is not valid JSON: %v", err)
+	}
+	if !decoded.Shared || !decoded.Truncated || decoded.URLAccess != nil {
+		t.Fatalf("shrunken sharing result = %s", encoded)
+	}
+}
+
 func TestDriveToolsMapAdapterFailuresToStableCodes(t *testing.T) {
 	t.Parallel()
 

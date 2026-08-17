@@ -182,11 +182,15 @@ func TestStdioDriveToolsServeFrozenDataAfterSuccessfulNegotiation(t *testing.T) 
 	if sharingResult.IsError {
 		t.Fatalf("sharing status over stdio failed: %s", driveStdioResultText(t, sharingResult))
 	}
-	if err := json.Unmarshal([]byte(driveStdioResultText(t, sharingResult)), &sharing); err != nil {
+	sharingText := driveStdioResultText(t, sharingResult)
+	if err := json.Unmarshal([]byte(sharingText), &sharing); err != nil {
 		t.Fatalf("decode sharing status result: %v", err)
 	}
 	if !sharing.Shared || len(sharing.ProtonInvitations) != 1 || sharing.ProtonInvitations[0].InviteeEmail != "reader@example.test" {
 		t.Fatalf("stdio sharing status = %+v", sharing)
+	}
+	if strings.Contains(sharingText, "fixture-password") {
+		t.Fatalf("stdio sharing result leaks custom password: %q", sharingText)
 	}
 	if got := testkit.RecordedArgv(t, sharingBinary); got != "sharing\nstatus\n/my-files/Reports\n--json\n" {
 		t.Fatalf("stdio sharing argv = %q", got)
@@ -194,7 +198,7 @@ func TestStdioDriveToolsServeFrozenDataAfterSuccessfulNegotiation(t *testing.T) 
 	if err := sharingSession.Close(); err != nil {
 		t.Fatalf("close sharing session: %v", err)
 	}
-	if audit := sharingStderr.String(); !strings.Contains(audit, `"tool":"get_drive_sharing_status","outcome":"ok"`) || strings.Contains(audit, "reader@example.test") || strings.Contains(audit, "my-files") {
+	if audit := sharingStderr.String(); !strings.Contains(audit, `"tool":"get_drive_sharing_status","outcome":"ok"`) || strings.Contains(audit, "reader@example.test") || strings.Contains(audit, "my-files") || strings.Contains(audit, "fixture-password") {
 		t.Fatalf("stdio sharing audit = %q", audit)
 	}
 }

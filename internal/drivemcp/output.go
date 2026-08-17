@@ -72,6 +72,8 @@ func (result *sharingStatusResult) shrinkForOutput() bool {
 		result.NonProtonInvitations = result.NonProtonInvitations[:len(result.NonProtonInvitations)/2]
 	case len(result.Members) > 0:
 		result.Members = result.Members[:len(result.Members)/2]
+	case result.URLAccess != nil:
+		result.URLAccess = nil
 	default:
 		return false
 	}
