@@ -49,6 +49,18 @@ cannot offer the same guarantees.
 
 The server speaks JSON-RPC over standard input/output. Diagnostics must go to standard error; standard output is protocol-only.
 
+## MCP client compatibility
+
+Croton implements the Model Context Protocol rather than depending on a
+particular client, so standards-compatible MCP clients can connect to its local
+stdio server. Hermes, Claude Code, and Codex are examples of such clients.
+Croton's required CI exercises its client-neutral MCP contract against
+synthetic fixtures; it does not install a client. A separate non-gating Hermes
+consumer-compatibility smoke exercises registration and catalog discovery with
+a throwaway `HERMES_HOME`. Hermes is the only client-specific compatibility
+path currently exercised in CI; Claude Code and Codex compatibility harnesses
+remain intentionally separate from the core contract checks.
+
 ## Use with Hermes
 
 Croton registers with Hermes as a local stdio server exposing six read-only

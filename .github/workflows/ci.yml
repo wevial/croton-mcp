@@ -40,8 +40,8 @@ jobs:
         run: |
           "$GOBIN/staticcheck" ./...
       - name: Race-enabled tests
-        # The Hermes catalog smoke skips itself when the CLI is absent, so this
-        # job stays exactly as broad as it was before macOS support landed.
+        # External client compatibility tests skip when their CLI is absent, so
+        # this required job remains client-neutral while keeping full coverage.
         run: go test -race ./...
       - name: Verify module metadata
         run: |
@@ -51,32 +51,22 @@ jobs:
         run: |
           "$GOBIN/govulncheck" ./...
 
-  verify-macos:
-    name: macOS quality and security checks
+  hermes-compatibility:
+    name: Hermes consumer compatibility (non-gating)
+    continue-on-error: true
     runs-on: macos-latest
     env:
       GOBIN: ${{ github.workspace }}/.bin
       CROTON_REQUIRE_HERMES: "1"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.0.0
         with:
           go-version: 1.26.6
           check-latest: true
           cache: true
-      - name: Verify formatting
-        run: test -z "$(gofmt -l $(git ls-files '*.go'))"
-      - name: Build and vet
-        run: |
-          go build ./...
-          go vet ./...
-      - name: Install pinned analysis tools
-        run: |
-          go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
-          go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
-      - name: Static analysis
-        run: |
-          "$GOBIN/staticcheck" ./...
       - name: Install Hermes CLI
         # The Hermes catalog smoke registers a freshly built Croton against a
         # throwaway HERMES_HOME and a synthetic fixture server; it needs no
@@ -165,9 +155,39 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.local/bin:$PATH"
           hermes --version
+      - name: Hermes consumer compatibility smoke
+        # The consumer smoke installs no production dependency. It observes an
+        # isolated throwaway HERMES_HOME and synthetic fixture only; installer
+        # failures are visible here but cannot gate Croton's core checks.
+        run: go test -race ./cmd/croton-mcp -run '^TestHermes'
+  verify-macos:
+    name: macOS quality and security checks
+    runs-on: macos-latest
+    env:
+      GOBIN: ${{ github.workspace }}/.bin
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.0.0
+        with:
+          go-version: 1.26.6
+          check-latest: true
+          cache: true
+      - name: Verify formatting
+        run: test -z "$(gofmt -l $(git ls-files '*.go'))"
+      - name: Build and vet
+        run: |
+          go build ./...
+          go vet ./...
+      - name: Install pinned analysis tools
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
+          go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+      - name: Static analysis
+        run: |
+          "$GOBIN/staticcheck" ./...
       - name: Race-enabled tests
-        # Darwin secure-configuration tests and the Hermes catalog smoke run
-        # natively here; nothing else in CI executes them on macOS.
+        # Client-neutral MCP contract tests use only Croton and synthetic
+        # fixtures. External client integration tests skip because no CLI is installed.
         run: go test -race ./...
       - name: Check reachable vulnerabilities
         run: |
