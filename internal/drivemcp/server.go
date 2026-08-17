@@ -49,7 +49,7 @@ type Server struct {
 	audit *Auditor
 }
 
-// New constructs Croton Drive's server exposing only the two read-only tools.
+// New constructs Croton Drive's server exposing only read-only tools.
 func New(options Options) *Server {
 	server := &Server{
 		cli:   options.CLI,

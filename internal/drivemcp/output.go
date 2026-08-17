@@ -63,3 +63,19 @@ func (result *listDriveResult) shrinkForOutput() bool {
 	result.Truncated = true
 	return true
 }
+
+func (result *sharingStatusResult) shrinkForOutput() bool {
+	switch {
+	case len(result.ProtonInvitations) >= len(result.NonProtonInvitations) && len(result.ProtonInvitations) >= len(result.Members) && len(result.ProtonInvitations) > 0:
+		result.ProtonInvitations = result.ProtonInvitations[:len(result.ProtonInvitations)/2]
+	case len(result.NonProtonInvitations) >= len(result.Members) && len(result.NonProtonInvitations) > 0:
+		result.NonProtonInvitations = result.NonProtonInvitations[:len(result.NonProtonInvitations)/2]
+	case len(result.Members) > 0:
+		result.Members = result.Members[:len(result.Members)/2]
+	default:
+		return false
+	}
+
+	result.Truncated = true
+	return true
+}

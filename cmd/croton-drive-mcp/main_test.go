@@ -94,7 +94,7 @@ func driveStdioResultText(t *testing.T, result *mcp.CallToolResult) string {
 	return text.Text
 }
 
-func TestStdioInitializesAnIndependentDriveServerWithTwoTools(t *testing.T) {
+func TestStdioInitializesAnIndependentDriveServerWithThreeReadOnlyTools(t *testing.T) {
 	session, stderr := startDriveStdioSession(t, "/opt/proton-drive/proton-drive")
 
 	if got := session.InitializeResult().ProtocolVersion; got != "2026-07-28" {
@@ -104,8 +104,8 @@ func TestStdioInitializesAnIndependentDriveServerWithTwoTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list Drive tools: %v", err)
 	}
-	if len(listed.Tools) != 2 {
-		t.Fatalf("Drive tools = %d, want 2", len(listed.Tools))
+	if len(listed.Tools) != 3 {
+		t.Fatalf("Drive tools = %d, want 3", len(listed.Tools))
 	}
 	if err := session.Close(); err != nil {
 		t.Fatalf("close Drive session: %v", err)
@@ -167,6 +167,35 @@ func TestStdioDriveToolsServeFrozenDataAfterSuccessfulNegotiation(t *testing.T) 
 	}
 	if got := testkit.RecordedArgv(t, infoBinary); got != "filesystem\ninfo\n/my-files/Reports\n--json\n" {
 		t.Fatalf("stdio metadata argv = %q", got)
+	}
+
+	sharingBinary := testkit.FakeDrive(t, "", testkit.DriveFixture(t, "sharing-status.json"))
+	sharingSession, sharingStderr := startDriveStdioSession(t, sharingBinary)
+
+	var sharing struct {
+		Shared            bool `json:"shared"`
+		ProtonInvitations []struct {
+			InviteeEmail string `json:"inviteeEmail"`
+		} `json:"protonInvitations"`
+	}
+	sharingResult := callDriveStdioTool(t, sharingSession, "get_drive_sharing_status", map[string]any{"path": "/my-files/Reports"})
+	if sharingResult.IsError {
+		t.Fatalf("sharing status over stdio failed: %s", driveStdioResultText(t, sharingResult))
+	}
+	if err := json.Unmarshal([]byte(driveStdioResultText(t, sharingResult)), &sharing); err != nil {
+		t.Fatalf("decode sharing status result: %v", err)
+	}
+	if !sharing.Shared || len(sharing.ProtonInvitations) != 1 || sharing.ProtonInvitations[0].InviteeEmail != "reader@example.test" {
+		t.Fatalf("stdio sharing status = %+v", sharing)
+	}
+	if got := testkit.RecordedArgv(t, sharingBinary); got != "sharing\nstatus\n/my-files/Reports\n--json\n" {
+		t.Fatalf("stdio sharing argv = %q", got)
+	}
+	if err := sharingSession.Close(); err != nil {
+		t.Fatalf("close sharing session: %v", err)
+	}
+	if audit := sharingStderr.String(); !strings.Contains(audit, `"tool":"get_drive_sharing_status","outcome":"ok"`) || strings.Contains(audit, "reader@example.test") || strings.Contains(audit, "my-files") {
+		t.Fatalf("stdio sharing audit = %q", audit)
 	}
 }
 

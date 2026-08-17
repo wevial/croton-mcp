@@ -229,6 +229,8 @@ func TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI(t *testing.T) {
 	}
 	requireDriveToolError(t, callDriveTool(t, session, "get_drive_metadata", map[string]any{"path": "../etc"}), "invalid_argument")
 	requireDriveToolError(t, callDriveTool(t, session, "get_drive_metadata", map[string]any{}), "invalid_argument")
+	requireDriveToolError(t, callDriveTool(t, session, "get_drive_sharing_status", map[string]any{"path": "../etc"}), "invalid_argument")
+	requireDriveToolError(t, callDriveTool(t, session, "get_drive_sharing_status", map[string]any{}), "invalid_argument")
 
 	if _, err := os.Stat(filepath.Join(filepath.Dir(binary), "argv")); !os.IsNotExist(err) {
 		t.Fatalf("invalid arguments reached the CLI: stat argv err = %v", err)
@@ -243,8 +245,9 @@ func TestDriveToolsFailClosedWhenNegotiationFails(t *testing.T) {
 
 	requireDriveToolError(t, callDriveTool(t, session, "list_drive_entries", map[string]any{"path": "/my-files"}), "unavailable")
 	requireDriveToolError(t, callDriveTool(t, session, "get_drive_metadata", map[string]any{"path": "/my-files"}), "unavailable")
+	requireDriveToolError(t, callDriveTool(t, session, "get_drive_sharing_status", map[string]any{"path": "/my-files"}), "unavailable")
 
-	// The fake records every invocation: after two refused tool calls the last
+	// The fake records every invocation: after three refused tool calls the last
 	// (and only) command must still be the version handshake, proving no data
 	// command raced past failed negotiation.
 	if got := testkit.RecordedArgv(t, binary); got != "version\n" {
@@ -259,6 +262,7 @@ func TestDriveToolsFailClosedWithoutConfiguredCLI(t *testing.T) {
 
 	requireDriveToolError(t, callDriveTool(t, session, "list_drive_entries", map[string]any{"path": "/my-files"}), "unavailable")
 	requireDriveToolError(t, callDriveTool(t, session, "get_drive_metadata", map[string]any{"path": "/my-files"}), "unavailable")
+	requireDriveToolError(t, callDriveTool(t, session, "get_drive_sharing_status", map[string]any{"path": "/my-files"}), "unavailable")
 }
 
 func TestConcurrentDriveCallsShareOneNegotiationAndAllSucceed(t *testing.T) {
@@ -314,6 +318,76 @@ func TestGetDriveMetadataReturnsTheFrozenNodeObject(t *testing.T) {
 	}
 	if got := testkit.RecordedArgv(t, binary); got != "filesystem\ninfo\n/my-files/Reports\n--json\n" {
 		t.Fatalf("metadata argv = %q", got)
+	}
+}
+
+func TestGetDriveSharingStatusReportsSharedUnsharedAndCommandErrors(t *testing.T) {
+	t.Parallel()
+
+	sharedClient, sharedBinary := newToolTestClient(t, "", testkit.DriveFixture(t, "sharing-status.json"))
+	sharedSession := connectDriveTestClient(t, Options{CLI: sharedClient})
+
+	var shared struct {
+		Shared            bool                `json:"shared"`
+		ProtonInvitations []drivecli.Member   `json:"protonInvitations"`
+		URLAccess         *drivecli.URLAccess `json:"urlAccess"`
+		EditorsCanShare   bool                `json:"editorsCanShare"`
+	}
+	decodeDriveResult(t, callDriveTool(t, sharedSession, "get_drive_sharing_status", map[string]any{"path": "/my-files/Reports"}), &shared)
+	if !shared.Shared || len(shared.ProtonInvitations) != 1 || shared.ProtonInvitations[0].InviteeEmail != "reader@example.test" || shared.URLAccess == nil || shared.URLAccess.URL != "https://drive.proton.test/urls/fixture" || shared.EditorsCanShare {
+		t.Fatalf("shared status = %+v", shared)
+	}
+	if got := testkit.RecordedArgv(t, sharedBinary); got != "sharing\nstatus\n/my-files/Reports\n--json\n" {
+		t.Fatalf("shared status argv = %q", got)
+	}
+
+	unsharedClient, _ := newToolTestClient(t, "unshared", nil)
+	unsharedSession := connectDriveTestClient(t, Options{CLI: unsharedClient})
+	var unshared struct {
+		Shared bool `json:"shared"`
+	}
+	decodeDriveResult(t, callDriveTool(t, unsharedSession, "get_drive_sharing_status", map[string]any{"path": "/my-files/notes.txt"}), &unshared)
+	if unshared.Shared {
+		t.Fatalf("unshared status = %+v", unshared)
+	}
+
+	failingClient, _ := newToolTestClient(t, "nonzero-secret", nil)
+	failingSession := connectDriveTestClient(t, Options{CLI: failingClient})
+	requireDriveToolError(t, callDriveTool(t, failingSession, "get_drive_sharing_status", map[string]any{"path": "/my-files/Reports"}), "unavailable")
+}
+
+func TestGetDriveSharingStatusBoundsMembersAndKeepsAuditPayloadFree(t *testing.T) {
+	t.Parallel()
+
+	members := make([]drivecli.Member, maxSharingMembers+1)
+	for index := range members {
+		members[index] = drivecli.Member{
+			UID:          fmt.Sprintf("member:%d", index),
+			InviteeEmail: fmt.Sprintf("member-%d@example.test", index),
+			Role:         "viewer",
+		}
+	}
+	fixture, err := json.Marshal(drivecli.ShareResult{Members: members})
+	if err != nil {
+		t.Fatalf("marshal sharing fixture: %v", err)
+	}
+
+	var audit bytes.Buffer
+	client, _ := newToolTestClient(t, "", fixture)
+	session := connectDriveTestClient(t, Options{CLI: client, Audit: NewAuditor(&audit)})
+
+	var result sharingStatusResult
+	decodeDriveResult(t, callDriveTool(t, session, "get_drive_sharing_status", map[string]any{"path": "/my-files/confidential"}), &result)
+	if !result.Shared || len(result.Members) != maxSharingMembers || !result.Truncated {
+		t.Fatalf("bounded sharing result = %+v", result)
+	}
+	if got := audit.String(); got != `{"event":"tool_call","tool":"get_drive_sharing_status","outcome":"ok"}`+"\n" {
+		t.Fatalf("sharing audit = %q", got)
+	}
+	for _, leak := range []string{"confidential", "member-0@example.test", "member:0"} {
+		if strings.Contains(audit.String(), leak) {
+			t.Fatalf("sharing audit leaks %q: %q", leak, audit.String())
+		}
 	}
 }
 
