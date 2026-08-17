@@ -40,8 +40,8 @@ jobs:
         run: |
           "$GOBIN/staticcheck" ./...
       - name: Race-enabled tests
-        # The Hermes catalog smoke skips itself when the CLI is absent, so this
-        # job stays exactly as broad as it was before macOS support landed.
+        # External client compatibility tests skip when their CLI is absent, so
+        # this required job remains client-neutral while keeping full coverage.
         run: go test -race ./...
       - name: Verify module metadata
         run: |
@@ -60,6 +60,8 @@ jobs:
       CROTON_REQUIRE_HERMES: "1"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.0.0
         with:
           go-version: 1.26.6

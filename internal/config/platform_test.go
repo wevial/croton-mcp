@@ -131,6 +131,21 @@ var requiredLinuxJobPhrases = []string{
 	"GOOS=darwin",
 }
 
+// forbiddenCoreJobPhrases preserve the broader supply-chain boundary for
+// required jobs. Core verification must not grow an unrelated package-manager
+// install or execute a mutable remote script merely because it avoids naming a
+// particular MCP client.
+var forbiddenCoreJobPhrases = []string{
+	"pipx",
+	"brew install",
+	"hermes-agent.nousresearch.com/install.sh",
+	"| bash",
+	"bash -s",
+	"astral.sh",
+	"trycua",
+	"cua-driver",
+}
+
 // forbiddenLinuxJobPhrases keep macOS support from changing what the Linux job
 // does. The native smoke belongs to the Darwin runner; requiring or installing
 // Hermes on Linux would make an unrelated third-party download a prerequisite
@@ -230,8 +245,10 @@ func TestContinuousIntegrationSeparatesCoreAndConsumerCompatibility(t *testing.T
 			t.Errorf("macOS core CI job never runs %q", phrase)
 		}
 	}
-	if strings.Contains(strings.ToLower(macOS), "hermes") {
-		t.Error("macOS core CI job still depends on Hermes")
+	for _, phrase := range append([]string{"hermes"}, forbiddenCoreJobPhrases...) {
+		if containsFold(macOS, phrase) {
+			t.Errorf("macOS core CI job contains forbidden dependency/install route %q", phrase)
+		}
 	}
 
 	linux := jobs["verify"]
@@ -244,8 +261,13 @@ func TestContinuousIntegrationSeparatesCoreAndConsumerCompatibility(t *testing.T
 		}
 	}
 	for _, phrase := range forbiddenLinuxJobPhrases {
-		if strings.Contains(linux, phrase) {
+		if containsFold(linux, phrase) {
 			t.Errorf("Linux CI job still carries the Hermes requirement %q", phrase)
+		}
+	}
+	for _, phrase := range forbiddenCoreJobPhrases {
+		if containsFold(linux, phrase) {
+			t.Errorf("Linux core CI job contains forbidden install route %q", phrase)
 		}
 	}
 
@@ -256,6 +278,7 @@ func TestContinuousIntegrationSeparatesCoreAndConsumerCompatibility(t *testing.T
 	for _, phrase := range []string{
 		"name: Hermes consumer compatibility (non-gating)",
 		"continue-on-error: true",
+		"persist-credentials: false",
 		"runs-on: macos-latest",
 		"CROTON_REQUIRE_HERMES: \"1\"",
 		"HERMES_HOME",
@@ -263,6 +286,22 @@ func TestContinuousIntegrationSeparatesCoreAndConsumerCompatibility(t *testing.T
 	} {
 		if !strings.Contains(compatibility, phrase) {
 			t.Errorf("Hermes compatibility CI job omits %q", phrase)
+		}
+	}
+}
+
+func TestContainsFoldNormalizesBothOperands(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		text   string
+		phrase string
+	}{
+		{text: "HERMES_HOME", phrase: "hermes"},
+		{text: "Brew Install ripgrep", phrase: "brew install"},
+	} {
+		if !containsFold(test.text, test.phrase) {
+			t.Errorf("containsFold(%q, %q) = false, want true", test.text, test.phrase)
 		}
 	}
 }
@@ -327,6 +366,12 @@ func installerCommand(text string) string {
 	}
 
 	return command.String()
+}
+
+// containsFold reports whether text contains phrase without allowing casing to
+// weaken a workflow boundary assertion.
+func containsFold(text, phrase string) bool {
+	return strings.Contains(strings.ToLower(text), strings.ToLower(phrase))
 }
 
 // matchesTarget reports whether one package source compiles for the target
