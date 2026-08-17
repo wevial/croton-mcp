@@ -381,7 +381,7 @@ func TestGetDriveSharingStatusBoundsMembersAndKeepsAuditPayloadFree(t *testing.T
 	if !result.Shared || len(result.Members) != maxSharingMembers || !result.Truncated {
 		t.Fatalf("bounded sharing result = %+v", result)
 	}
-	if got := audit.String(); got != `{"event":"tool_call","tool":"get_drive_sharing_status","outcome":"ok"}`+"\n" {
+	if got := audit.String(); got != `{"event":"tool_call","tool":"get_drive_sharing_status","outcome":"ok","truncated":true}`+"\n" {
 		t.Fatalf("sharing audit = %q", got)
 	}
 	for _, leak := range []string{"confidential", "member-0@example.test", "member:0"} {

@@ -48,6 +48,13 @@ const (
 // JSON-marshalable result or a stable error code.
 type toolFunc func(ctx context.Context, server *Server, arguments json.RawMessage) (any, string)
 
+// truncationReporter lets bounded result types propagate count-based
+// truncation into metadata-only audit events. Byte-based truncation remains
+// reported by encodeBounded.
+type truncationReporter interface {
+	wasTruncated() bool
+}
+
 type toolDefinition struct {
 	name        string
 	description string
@@ -146,6 +153,9 @@ func makeHandler(server *Server, definition toolDefinition) mcp.ToolHandler {
 			server.audit.ToolCall(definition.name, "error", errInternal, false)
 			return errorResult(errInternal), nil
 		}
+		if reporter, ok := result.(truncationReporter); ok {
+			truncated = truncated || reporter.wasTruncated()
+		}
 
 		server.audit.ToolCall(definition.name, "ok", "", truncated)
 		return &mcp.CallToolResult{
@@ -226,6 +236,8 @@ type listDriveResult struct {
 	Truncated bool                   `json:"truncated,omitempty"`
 }
 
+func (result *listDriveResult) wasTruncated() bool { return result.Truncated }
+
 func runListDriveEntries(ctx context.Context, server *Server, arguments json.RawMessage) (any, string) {
 	var input struct {
 		Path  string `json:"path"`
@@ -303,6 +315,8 @@ type sharingStatusResult struct {
 	EditorsCanShare      bool              `json:"editorsCanShare"`
 	Truncated            bool              `json:"truncated,omitempty"`
 }
+
+func (result *sharingStatusResult) wasTruncated() bool { return result.Truncated }
 
 // sharingURLAccess is the safe MCP subset of the frozen CLI's public-link
 // object. The adapter type includes CustomPassword for decoding, but a link
