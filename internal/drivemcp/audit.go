@@ -75,7 +75,7 @@ func (auditor *Auditor) ToolCall(tool, outcome, code string, truncated bool) {
 
 func sanitizeToolName(tool string) string {
 	switch tool {
-	case "list_drive_entries", "get_drive_metadata":
+	case "list_drive_entries", "get_drive_metadata", "get_drive_sharing_status":
 		return tool
 	default:
 		return "unknown_tool"

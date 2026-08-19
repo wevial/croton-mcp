@@ -22,7 +22,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func TestNewNegotiatesCurrentProtocolWithTheReadOnlyDriveCatalog(t *testing.T) {
+func TestNewNegotiatesCurrentProtocolWithTheThreeReadOnlyDriveTools(t *testing.T) {
 	t.Parallel()
 
 	clientTransport, serverTransport := mcp.NewInMemoryTransports()
@@ -54,11 +54,11 @@ func TestNewNegotiatesCurrentProtocolWithTheReadOnlyDriveCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list tools: %v", err)
 	}
-	if len(listed.Tools) != 2 {
-		t.Fatalf("Drive tools = %d, want 2", len(listed.Tools))
+	if len(listed.Tools) != 3 {
+		t.Fatalf("Drive tools = %d, want 3", len(listed.Tools))
 	}
-	names := []string{listed.Tools[0].Name, listed.Tools[1].Name}
-	if names[0] != "get_drive_metadata" || names[1] != "list_drive_entries" {
+	names := []string{listed.Tools[0].Name, listed.Tools[1].Name, listed.Tools[2].Name}
+	if names[0] != "get_drive_metadata" || names[1] != "get_drive_sharing_status" || names[2] != "list_drive_entries" {
 		t.Fatalf("Drive tool names = %v", names)
 	}
 	for _, tool := range listed.Tools {

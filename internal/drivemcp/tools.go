@@ -29,6 +29,7 @@ import (
 const (
 	maxListEntries     = 200
 	defaultListEntries = 100
+	maxSharingMembers  = 100
 
 	maxToolArgumentsBytes = 24 * 1024
 )
@@ -47,6 +48,13 @@ const (
 // JSON-marshalable result or a stable error code.
 type toolFunc func(ctx context.Context, server *Server, arguments json.RawMessage) (any, string)
 
+// truncationReporter lets bounded result types propagate count-based
+// truncation into metadata-only audit events. Byte-based truncation remains
+// reported by encodeBounded.
+type truncationReporter interface {
+	wasTruncated() bool
+}
+
 type toolDefinition struct {
 	name        string
 	description string
@@ -56,6 +64,14 @@ type toolDefinition struct {
 
 func toolDefinitions() []toolDefinition {
 	return []toolDefinition{
+		{
+			name:        "get_drive_sharing_status",
+			description: "Fetch bounded frozen sharing status for one absolute Proton Drive path.",
+			schema: objectSchema(map[string]json.RawMessage{
+				"path": stringSchema(maxDrivePathBytes),
+			}, []string{"path"}),
+			run: runGetDriveSharingStatus,
+		},
 		{
 			name:        "list_drive_entries",
 			description: "List one absolute Proton Drive path: root sections, synced devices, or bounded folder entries.",
@@ -137,6 +153,9 @@ func makeHandler(server *Server, definition toolDefinition) mcp.ToolHandler {
 			server.audit.ToolCall(definition.name, "error", errInternal, false)
 			return errorResult(errInternal), nil
 		}
+		if reporter, ok := result.(truncationReporter); ok {
+			truncated = truncated || reporter.wasTruncated()
+		}
 
 		server.audit.ToolCall(definition.name, "ok", "", truncated)
 		return &mcp.CallToolResult{
@@ -217,6 +236,8 @@ type listDriveResult struct {
 	Truncated bool                   `json:"truncated,omitempty"`
 }
 
+func (result *listDriveResult) wasTruncated() bool { return result.Truncated }
+
 func runListDriveEntries(ctx context.Context, server *Server, arguments json.RawMessage) (any, string) {
 	var input struct {
 		Path  string `json:"path"`
@@ -280,6 +301,86 @@ func runGetDriveMetadata(ctx context.Context, server *Server, arguments json.Raw
 	}
 
 	return &node, ""
+}
+
+// sharingStatusResult is the bounded MCP mapping of the frozen ShareResult.
+// Member identifiers and link URLs can occur only in this tool result, never
+// in audit records or diagnostics.
+type sharingStatusResult struct {
+	Shared               bool              `json:"shared"`
+	ProtonInvitations    []drivecli.Member `json:"protonInvitations"`
+	NonProtonInvitations []drivecli.Member `json:"nonProtonInvitations"`
+	Members              []drivecli.Member `json:"members"`
+	URLAccess            *sharingURLAccess `json:"urlAccess,omitempty"`
+	EditorsCanShare      bool              `json:"editorsCanShare"`
+	Truncated            bool              `json:"truncated,omitempty"`
+}
+
+func (result *sharingStatusResult) wasTruncated() bool { return result.Truncated }
+
+// sharingURLAccess is the safe MCP subset of the frozen CLI's public-link
+// object. The adapter type includes CustomPassword for decoding, but a link
+// password is a credential and must remain structurally unreachable to MCP.
+type sharingURLAccess struct {
+	UID                          string `json:"uid"`
+	CreationTime                 string `json:"creationTime"`
+	Role                         string `json:"role"`
+	URL                          string `json:"url"`
+	ExpirationTime               string `json:"expirationTime,omitempty"`
+	NumberOfInitializedDownloads int64  `json:"numberOfInitializedDownloads"`
+}
+
+func mapSharingURLAccess(access *drivecli.URLAccess) *sharingURLAccess {
+	if access == nil {
+		return nil
+	}
+
+	return &sharingURLAccess{
+		UID:                          access.UID,
+		CreationTime:                 access.CreationTime,
+		Role:                         access.Role,
+		URL:                          access.URL,
+		ExpirationTime:               access.ExpirationTime,
+		NumberOfInitializedDownloads: access.NumberOfInitializedDownloads,
+	}
+}
+
+func runGetDriveSharingStatus(ctx context.Context, server *Server, arguments json.RawMessage) (any, string) {
+	var input struct {
+		Path string `json:"path"`
+	}
+	if !decodeArguments(arguments, &input) {
+		return nil, errInvalidArgument
+	}
+	if !validDrivePath(input.Path) {
+		return nil, errInvalidArgument
+	}
+
+	if err := server.gate.ensure(ctx, server.cli); err != nil {
+		return nil, mapDriveError(err)
+	}
+
+	status, err := server.cli.SharingStatus(ctx, input.Path)
+	if err != nil {
+		return nil, mapDriveError(err)
+	}
+
+	result := &sharingStatusResult{Shared: status.Shared}
+	if status.Info == nil {
+		return result, ""
+	}
+
+	var truncated bool
+	result.ProtonInvitations, truncated = boundEntries(status.Info.ProtonInvitations, maxSharingMembers)
+	result.Truncated = result.Truncated || truncated
+	result.NonProtonInvitations, truncated = boundEntries(status.Info.NonProtonInvitations, maxSharingMembers)
+	result.Truncated = result.Truncated || truncated
+	result.Members, truncated = boundEntries(status.Info.Members, maxSharingMembers)
+	result.Truncated = result.Truncated || truncated
+	result.URLAccess = mapSharingURLAccess(status.Info.URLAccess)
+	result.EditorsCanShare = status.Info.EditorsCanShare
+
+	return result, ""
 }
 
 // boundEntries keeps the listed shape present even when empty and reports
