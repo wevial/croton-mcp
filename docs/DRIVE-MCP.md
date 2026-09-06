@@ -64,7 +64,7 @@ set to the 1024-byte path bound. The server enforces every bound itself and
 never trusts schema enforcement by the caller, and it is the enforcement that
 the tests witness: `TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`
 pins the closed object (an unknown `surprise` field is rejected), the `type`
-enum (`device` is rejected) and the `limit` range (`0` and `-1` are rejected);
+enum (`device` is rejected) and the `limit` floor (`0` and `-1` are rejected);
 `TestValidDrivePathAcceptsOnlyCanonicalAbsolutePaths` pins the 1024-byte
 `path` bound with the longest accepted and the shortest rejected path. The
 schema text itself (the `additionalProperties`, `maxLength` and `x-maxBytes`
@@ -86,7 +86,7 @@ exact CLI argument vectors they produce.
 ## Arguments
 
 Raw argument objects are capped at 24 KiB and decoded strictly: a missing
-`path`, an empty object, an unknown field, a bad `type`, an out-of-range
+`path`, an empty object, an unknown field, a bad `type`, a zero or negative
 `limit` or a non-canonical path is rejected with `invalid_argument` before the
 CLI is consulted. `TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`
 is the witness: it sends each of those to all three tools, requires
@@ -110,13 +110,15 @@ test sends an oversize argument object; the 24 KiB cap is listed in
   (`TestListDriveEntriesSupportsRootSectionsDevicesAndTypeFilter` pins the
   no-filter argv and the `--type file` argv); any other value such as `device`
   is rejected (`TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`).
-- `limit` (`list_drive_entries`, optional): an integer between 1 and 200,
-  default 100. Zero and negative values are rejected
-  (`TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`); an accepted
-  limit bounds the entries and sets `truncated` when it cuts them
+- `limit` (`list_drive_entries`, optional): a positive integer; the schema
+  publishes `minimum` 1 and `maximum` 200. Zero and negative values are
+  rejected (`TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`); an
+  accepted limit bounds the entries and sets `truncated` when it cuts them
   (`TestListDriveEntriesEnforcesEntryLimitAndSignalsTruncation`, which sends
-  explicit limits of 2 and 3). No test omits `limit` and counts the entries,
-  so the default of 100 is listed in [Not yet witnessed](#not-yet-witnessed).
+  explicit limits of 2 and 3). A value above 200 is not rejected: the server
+  clamps it to 200. No test omits `limit` or sends one above 200, so the
+  default of 100 and the clamp are listed together in
+  [Not yet witnessed](#not-yet-witnessed).
 
 ## Output
 
@@ -129,8 +131,8 @@ cannot shrink further is replaced by `{"truncated":true}`.
 `truncated` is set whenever anything was dropped, by either mechanism:
 
 - byte shrinking under the 100 000 byte cap;
-- the `list_drive_entries` count cap: `limit` entries (default 100, at most
-  200) from the sections, devices, or entries list;
+- the `list_drive_entries` count cap: `limit` entries (default 100, clamped
+  to at most 200) from the sections, devices, or entries list;
 - the `get_drive_sharing_status` count cap: at most 100 members in each of
   `protonInvitations`, `nonProtonInvitations`, and `members`.
 
@@ -251,7 +253,7 @@ non-blank line in the tree.
 | ----- | -------------- |
 | Every input schema is closed (`additionalProperties: false`) and string schemas publish `maxLength` and `x-maxBytes` from the same byte bound. | `internal/drivemcp/tools.go:412`, `internal/drivemcp/tools.go:431` |
 | Raw argument objects are capped at 24 KiB (`maxToolArgumentsBytes = 24 * 1024`), passed to `strictjson.DecodeObject` by `decodeArguments`. | `internal/drivemcp/tools.go:34`, `internal/drivemcp/tools.go:198` |
-| An omitted `limit` defaults to 100 (`defaultListEntries`, passed to `clampLimit` as its fallback). | `internal/drivemcp/tools.go:253` |
+| An omitted `limit` defaults to 100 and a `limit` above 200 is clamped to 200, not rejected (`clampLimit` with `defaultListEntries` as fallback and `maxListEntries` as ceiling). | `internal/drivemcp/tools.go:253`, `internal/drivemcp/tools.go:395` |
 | A wrapped recognized error keeps its code: `mapDriveError` tests context errors with `errors.Is` and adapter codes with `drivecli.CodeOf`, which unwraps with `errors.As`. | `internal/drivemcp/tools.go:205`, `internal/drivemcp/tools.go:212` |
 | The audit sanitizers log an unexpected `tool` as `unknown_tool`, an `outcome` other than `ok` as `error`, and a `code` outside the six-code vocabulary as `internal`. | `internal/drivemcp/audit.go:81`, `internal/drivemcp/audit.go:90`, `internal/drivemcp/audit.go:98` |
 | A method outside the allowlist is answered with JSON-RPC "method not found" by `allowlistMiddleware`. | `internal/drivemcp/tools.go:128` |
