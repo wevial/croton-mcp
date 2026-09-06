@@ -128,9 +128,11 @@ oversize argument object; the cap is listed in
   default 100. Zero and negative values are rejected
   (`TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`); an accepted
   limit bounds the entries and sets `truncated` when it cuts them
-  (`TestListDriveEntriesEnforcesEntryLimitAndSignalsTruncation`). Values
-  above 200 are clamped to 200 by `clampLimit` in `internal/drivemcp/tools.go`;
-  no test sends an over-limit value.
+  (`TestListDriveEntriesEnforcesEntryLimitAndSignalsTruncation`, which sends
+  explicit limits of 2 and 3). Values above 200 are clamped to 200 by
+  `clampLimit` in `internal/drivemcp/tools.go`; no test sends an over-limit
+  value, and no test omits `limit` and counts the entries, so the default of
+  100 is listed in [Not yet witnessed](#not-yet-witnessed) as well.
 
 Witnesses: `TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`
 (relative paths, traversal, empty segments, trailing separators, control
@@ -189,9 +191,13 @@ An error result carries `isError: true` and one JSON text item of the form
   recognize. The unknown-error path is tested; the panic path is not, and is
   listed in [Not yet witnessed](#not-yet-witnessed).
 
-Every adapter failure maps to one of these codes. The mapping unwraps errors,
-so a recognized adapter code or context error keeps its code through wrapping;
-only errors the server does not recognize collapse to `internal`. Either way
+Every adapter failure maps to one of these codes. The mapping unwraps errors
+(`errors.Is` for the context errors, `errors.As` behind `drivecli.CodeOf` for
+adapter codes), so a recognized adapter code or context error keeps its code
+through wrapping; only errors the server does not recognize collapse to
+`internal`. The mapping test passes every recognized error bare and wraps
+only the unknown one, so the "keeps its code through wrapping" half is listed
+in [Not yet witnessed](#not-yet-witnessed). Either way
 no CLI stderr, path, node name, or stack detail can cross the protocol
 boundary. This vocabulary is a subset of the Mail server's:
 Drive has no not-found or stale-id code, because it resolves paths on every
@@ -272,6 +278,9 @@ row's `path:line` to resolve to a non-blank line in the tree.
 | `decodeArguments` passes that cap to `strictjson.DecodeObject`, so an oversize object is `invalid_argument` before the CLI is consulted. | `internal/drivemcp/tools.go:198` |
 | An explicit empty-string `type` means no filter and is not rejected. | `internal/drivemcp/tools.go:250` |
 | A `limit` above 200 is clamped to 200 by `clampLimit`. | `internal/drivemcp/tools.go:395` |
+| An omitted `limit` defaults to 100 (`defaultListEntries`, passed to `clampLimit` as its fallback). | `internal/drivemcp/tools.go:253` |
+| A wrapped context error keeps `canceled` or `timed_out`: `mapDriveError` tests with `errors.Is`. | `internal/drivemcp/tools.go:205` |
+| A wrapped adapter error keeps its mapped code: `mapDriveError` switches on `drivecli.CodeOf`, which unwraps with `errors.As`. | `internal/drivemcp/tools.go:212` |
 | A method outside the allowlist is answered with JSON-RPC "method not found" by `allowlistMiddleware`. | `internal/drivemcp/tools.go:129` |
 | A panicking handler is recovered by `runTool` and reported as `internal` with no stack detail on the protocol stream. | `internal/drivemcp/tools.go:170` |
 | An audit `tool` value outside the three registered names is logged as `unknown_tool`. | `internal/drivemcp/audit.go:76` |
