@@ -9,9 +9,11 @@ Early read-only implementation. The executable supports MCP `2026-07-28` by defa
 ## Croton Drive MCP (unofficial)
 
 `croton-drive-mcp` is a separate stdio executable wrapping an
-operator-installed Proton Drive CLI with two read-only tools:
-`list_drive_entries` and `get_drive_metadata`. Every data command is gated
-behind a successful exact-version CLI handshake and fails closed otherwise.
+operator-installed Proton Drive CLI with three read-only tools:
+`list_drive_entries`, `get_drive_metadata`, and `get_drive_sharing_status`.
+The sharing-status tool reports shares without changing them and never
+returns a public link's password. Every data command is gated behind a
+successful exact-version CLI handshake and fails closed otherwise.
 Croton is an unofficial community project: it is not affiliated with or
 endorsed by Proton AG. It does not use Proton logos or imitate Proton
 branding.
