@@ -69,9 +69,11 @@ enum (`device` is rejected) and the `limit` range (`0` and `-1` are rejected);
 `path` bound with the longest accepted and the shortest rejected path. The
 advertised schema text itself (the `additionalProperties`, `maxLength`,
 `x-maxBytes` and `openWorldHint` keys in the `tools/list` reply) is asserted
-by no test and is read from `toolDefinitions()`, `objectSchema()` and
-`stringSchema()` in `internal/drivemcp/tools.go`; a test over the listed
-schemas is a follow-up outside this page's scope.
+by no Go test; `scripts/verify_docs_drive_mcp.py` pins it instead, requiring
+`objectSchema()` to emit `additionalProperties: false`, `stringSchema()` to
+emit both `maxLength` and `x-maxBytes`, and every definition in
+`toolDefinitions()` to carry `readOnlyHint: true` and `openWorldHint: false`
+in `internal/drivemcp/tools.go`.
 
 | Tool | Purpose | Witness |
 | ---- | ------- | ------- |
@@ -98,9 +100,12 @@ requires `invalid_argument` for each, and proves the CLI was never executed.
 The 24 KiB byte cap and the null, duplicate-key, alias, nesting and
 trailing-value rules are enforced by the shared decoder in
 `internal/strictjson` (`DecodeObject`, called with `maxToolArgumentsBytes`
-from `internal/drivemcp/tools.go`); that package's own tests pin excessive
-nesting, exact duplicate keys and case-folded aliases, and no Drive-level test
-re-asserts them, which is the second half of the same follow-up.
+from `internal/drivemcp/tools.go`). The decoder's own synthetic tests in
+`internal/strictjson` pin excessive nesting, exact duplicate keys,
+case-folded aliases and unknown fields; the Drive-specific facts, that the
+constant is `24 * 1024` and that `decodeArguments` passes it to
+`DecodeObject`, are pinned by `scripts/verify_docs_drive_mcp.py` against the
+source. No Drive-level Go test sends an oversize argument object.
 
 - `path` (every tool, required): at most 1024 bytes, valid UTF-8, no control
   characters, and canonical absolute form only. `/` is accepted; otherwise the
@@ -111,8 +116,14 @@ re-asserts them, which is the second half of the same follow-up.
   root, nested, spaced and Unicode paths that pass and the relative, `.`/`..`,
   double-slash, trailing-slash, flag-shaped, control-character, invalid-UTF-8
   and overlong paths that fail.
-- `type` (`list_drive_entries`, optional): `file` or `folder`; any other value
-  is rejected (`TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`).
+- `type` (`list_drive_entries`, optional): `file` or `folder`. An omitted
+  `type` and an explicit empty string `""` both mean no filter and reach the
+  CLI without a `--type` flag; the handler and the adapter accept `""` even
+  though the published `enum` lists only the two names. Any other value is
+  rejected (`TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`
+  sends `device`). `TestListDriveEntriesSupportsRootSectionsDevicesAndTypeFilter`
+  pins the omitted-`type` argv (no `--type`) and the `file` argv (`--type
+  file`); no test sends the explicit empty string.
 - `limit` (`list_drive_entries`, optional): an integer between 1 and 200,
   default 100. Zero and negative values are rejected
   (`TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`); an accepted

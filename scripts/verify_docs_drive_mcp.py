@@ -45,18 +45,54 @@ def backticked(text):
 
 
 def code_tool_names():
-    source = TOOLS_GO.read_text(encoding="utf-8")
-    start = source.find("func toolDefinitions()")
-    if start < 0:
+    body = code_tool_definitions_body(TOOLS_GO.read_text(encoding="utf-8"))
+    if body is None:
         return None
-    end = source.find("\nfunc ", start + 1)
-    body = source[start:] if end < 0 else source[start:end]
     return set(re.findall(r'name:\s*"([a-z_]+)"', body))
 
 
 def code_error_codes():
     source = TOOLS_GO.read_text(encoding="utf-8")
     return set(re.findall(r'\berr[A-Za-z]+\s*=\s*"([a-z_]+)"', source))
+
+
+# Source facts the page states that no Drive Go test asserts: the published
+# schema keys, the read-only and closed-world hints, and the argument byte cap.
+SOURCE_PINS = (
+    (r'func objectSchema\(', "objectSchema() is declared"),
+    (r'"additionalProperties":\s*false', "objectSchema() emits additionalProperties: false"),
+    (r'func stringSchema\(', "stringSchema() is declared"),
+    (r'"maxLength":`\s*\+\s*maximum\s*\+\s*`,"x-maxBytes":`\s*\+\s*maximum',
+     "stringSchema() emits maxLength and x-maxBytes from the same bound"),
+    (r'maxToolArgumentsBytes\s*=\s*24 \* 1024', "maxToolArgumentsBytes is 24 * 1024"),
+    (r'strictjson\.DecodeObject\(arguments,\s*maxToolArgumentsBytes,', "decodeArguments passes maxToolArgumentsBytes to DecodeObject"),
+)
+
+
+def check_source_pins(failures):
+    source = TOOLS_GO.read_text(encoding="utf-8")
+    for pattern, claim in SOURCE_PINS:
+        if re.search(pattern, source) is None:
+            failures.append(f"{TOOLS_GO}: page claims {claim}, but the source does not match /{pattern}/")
+    # Every definition is registered by one loop that attaches the same annotations.
+    loop = re.search(
+        r"for _, definition := range toolDefinitions\(\) \{(.*?)\n\t\}", source, re.DOTALL
+    )
+    if loop is None:
+        failures.append(f"{TOOLS_GO}: registration loop over toolDefinitions() not found")
+        return
+    if re.search(r"ReadOnlyHint:\s*true", loop.group(1)) is None:
+        failures.append(f"{TOOLS_GO}: registration loop does not set ReadOnlyHint: true")
+    if re.search(r"OpenWorldHint:\s*&falseHint", loop.group(1)) is None or "falseHint := false" not in source:
+        failures.append(f"{TOOLS_GO}: registration loop does not set OpenWorldHint to false")
+
+
+def code_tool_definitions_body(source):
+    start = source.find("func toolDefinitions()")
+    if start < 0:
+        return None
+    end = source.find("\nfunc ", start + 1)
+    return source[start:] if end < 0 else source[start:end]
 
 
 def declared_tests():
@@ -127,6 +163,7 @@ def check_page(failures):
 def main():
     failures = []
     check_page(failures)
+    check_source_pins(failures)
     if failures:
         for failure in failures:
             print(f"FAIL: {failure}", file=sys.stderr)
