@@ -274,12 +274,16 @@ func TestStdioDriveToolsFailClosedWhenNegotiationFails(t *testing.T) {
 }
 
 func TestOversizeDriveStdioFrameFailsClosedWithoutContentLeak(t *testing.T) {
-	// Two stdin sequences: holding stdin open is the discriminating witness
-	// (an unbounded server answers the request on stdout), while closing
-	// stdin right after the frame is the ticket's literal scenario. The SDK
-	// discards a request still in flight when its reader hits EOF, so the
-	// closed variant alone cannot tell a bounded server from an unbounded
-	// one; both are kept so the bound and the exact sequence are covered.
+	// Two stdin sequences. Holding stdin open is the discriminating witness:
+	// an unbounded server answers the request on stdout. Closing stdin right
+	// after the frame is the ticket's literal scenario, but it is not RED
+	// against an unbounded server: once the SDK's read loop exits on EOF it
+	// records the read error and its jsonrpc2 connection refuses every
+	// subsequent write, so the in-flight initialize response is dropped
+	// before it reaches stdout. Measured against the unbounded base
+	// transport, the closed variant passed 30 of 30 runs and the held-open
+	// variant failed 30 of 30. Both are kept: the first proves the bound,
+	// the second covers the exact sequence the criterion names.
 	t.Run("stdin held open", func(t *testing.T) { assertOversizeDriveFrameRejected(t, false) })
 	t.Run("stdin closed after frame", func(t *testing.T) { assertOversizeDriveFrameRejected(t, true) })
 }
