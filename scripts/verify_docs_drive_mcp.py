@@ -15,6 +15,18 @@ TEST_GLOBS = ("internal/drivemcp/*_test.go", "cmd/croton-drive-mcp/*_test.go")
 HEADINGS = ("Running", "Tools", "Arguments", "Output", "Errors", "Audit", "Sharing")
 BOUND_TOKENS = ("24 KiB", "1024", "200", "100 000")
 MIN_CITED_TESTS = 8
+# The witnesses the ticket names for the catalog, invalid-argument, oversize-output,
+# error-mapping, audit and both sharing claims; each must be cited by name.
+REQUIRED_WITNESSES = (
+    "TestNewNegotiatesCurrentProtocolWithTheReadOnlyDriveCatalog",
+    "TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI",
+    "TestEncodeBoundedShrinksOversizeListResultsIntoValidJSON",
+    "TestMapDriveErrorCoversEveryAdapterCode",
+    "TestDriveAuditRecordsOnlyToolNameAndOutcome",
+    "TestGetDriveSharingStatusReportsSharedUnsharedAndCommandErrors",
+    "TestGetDriveSharingStatusBoundsMembersAndKeepsAuditPayloadFree",
+    "TestStdioDriveToolsServeFrozenDataAfterSuccessfulNegotiation",
+)
 TEST_NAME_RE = re.compile(r"Test[A-Za-z0-9_]+")
 
 
@@ -99,6 +111,9 @@ def check_page(failures):
         failures.append(f"{PAGE}: cited test {name!r} is not declared in a tracked Drive _test.go file")
     if len(cited) < MIN_CITED_TESTS:
         failures.append(f"{PAGE}: cites {len(cited)} distinct tests, want at least {MIN_CITED_TESTS}")
+    for name in REQUIRED_WITNESSES:
+        if name not in cited:
+            failures.append(f"{PAGE}: required witness test {name!r} is not cited")
 
     sharing_section = sections["Sharing"]
     if sharing_section is not None and "customPassword" not in sharing_section:

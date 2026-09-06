@@ -145,9 +145,11 @@ An error result carries `isError: true` and one JSON text item of the form
 - `internal`: a panic in the handler or any adapter error the server does not
   recognize.
 
-Every adapter failure maps to one of these codes and unknown or wrapped errors
-collapse to `internal`, so no CLI stderr, path, node name, or stack detail can
-cross the protocol boundary. This vocabulary is a subset of the Mail server's:
+Every adapter failure maps to one of these codes. The mapping unwraps errors,
+so a recognized adapter code or context error keeps its code through wrapping;
+only errors the server does not recognize collapse to `internal`. Either way
+no CLI stderr, path, node name, or stack detail can cross the protocol
+boundary. This vocabulary is a subset of the Mail server's:
 Drive has no not-found or stale-id code, because it resolves paths on every
 call and issues no identifiers of its own.
 
