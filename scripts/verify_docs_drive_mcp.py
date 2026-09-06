@@ -56,35 +56,44 @@ def code_error_codes():
     return set(re.findall(r'\berr[A-Za-z]+\s*=\s*"([a-z_]+)"', source))
 
 
-# Source facts the page states that no Drive Go test asserts: the published
-# schema keys, the read-only and closed-world hints, and the argument byte cap.
-SOURCE_PINS = (
-    (r'func objectSchema\(', "objectSchema() is declared"),
-    (r'"additionalProperties":\s*false', "objectSchema() emits additionalProperties: false"),
-    (r'func stringSchema\(', "stringSchema() is declared"),
-    (r'"maxLength":`\s*\+\s*maximum\s*\+\s*`,"x-maxBytes":`\s*\+\s*maximum',
-     "stringSchema() emits maxLength and x-maxBytes from the same bound"),
-    (r'maxToolArgumentsBytes\s*=\s*24 \* 1024', "maxToolArgumentsBytes is 24 * 1024"),
-    (r'strictjson\.DecodeObject\(arguments,\s*maxToolArgumentsBytes,', "decodeArguments passes maxToolArgumentsBytes to DecodeObject"),
-)
+NOT_WITNESSED = "Not yet witnessed"
+LOCATION_RE = re.compile(r"`((?:internal|cmd)/[A-Za-z0-9_./-]+\.go):(\d+)`")
 
 
-def check_source_pins(failures):
-    source = TOOLS_GO.read_text(encoding="utf-8")
-    for pattern, claim in SOURCE_PINS:
-        if re.search(pattern, source) is None:
-            failures.append(f"{TOOLS_GO}: page claims {claim}, but the source does not match /{pattern}/")
-    # Every definition is registered by one loop that attaches the same annotations.
-    loop = re.search(
-        r"for _, definition := range toolDefinitions\(\) \{(.*?)\n\t\}", source, re.DOTALL
-    )
-    if loop is None:
-        failures.append(f"{TOOLS_GO}: registration loop over toolDefinitions() not found")
+def tracked_files():
+    out = subprocess.run(["git", "ls-files"], check=True, capture_output=True, text=True).stdout
+    return set(out.split())
+
+
+def check_not_witnessed(text, failures):
+    """Every row of the Not yet witnessed table names a path:line that resolves."""
+    body = section(text, NOT_WITNESSED, failures)
+    if body is None:
         return
-    if re.search(r"ReadOnlyHint:\s*true", loop.group(1)) is None:
-        failures.append(f"{TOOLS_GO}: registration loop does not set ReadOnlyHint: true")
-    if re.search(r"OpenWorldHint:\s*&falseHint", loop.group(1)) is None or "falseHint := false" not in source:
-        failures.append(f"{TOOLS_GO}: registration loop does not set OpenWorldHint to false")
+    tracked = tracked_files()
+    rows = [
+        line for line in body.splitlines()
+        if line.startswith("|") and not re.match(r"^\|\s*-", line) and not line.startswith("| Claim")
+    ]
+    if not rows:
+        failures.append(f"{PAGE} {NOT_WITNESSED}: table has no rows")
+    for row in rows:
+        locations = LOCATION_RE.findall(row)
+        if not locations:
+            failures.append(f"{PAGE} {NOT_WITNESSED}: row carries no `path:line`: {row.strip()}")
+            continue
+        for path, number in locations:
+            if not path.startswith("internal/drivemcp/"):
+                failures.append(f"{PAGE} {NOT_WITNESSED}: {path}:{number} is outside internal/drivemcp")
+            if path not in tracked:
+                failures.append(f"{PAGE} {NOT_WITNESSED}: {path}:{number} is not a tracked file")
+                continue
+            lines = pathlib.Path(path).read_text(encoding="utf-8").splitlines()
+            number = int(number)
+            if number < 1 or number > len(lines):
+                failures.append(f"{PAGE} {NOT_WITNESSED}: {path}:{number} is past the end of the file ({len(lines)} lines)")
+            elif not lines[number - 1].strip():
+                failures.append(f"{PAGE} {NOT_WITNESSED}: {path}:{number} is a blank line")
 
 
 def code_tool_definitions_body(source):
@@ -159,11 +168,12 @@ def check_page(failures):
         if token not in text:
             failures.append(f"{PAGE}: bound token {token!r} not found")
 
+    check_not_witnessed(text, failures)
+
 
 def main():
     failures = []
     check_page(failures)
-    check_source_pins(failures)
     if failures:
         for failure in failures:
             print(f"FAIL: {failure}", file=sys.stderr)

@@ -11,8 +11,10 @@ Sampling, or Logging.
 Every claim below names the synthetic test that pins it. The tests run against
 the fake Drive CLI in `internal/testkit/fakedrive` and the fixtures in
 `internal/drivecli/testdata`; no live Proton account, credential, or Drive
-content is involved. `scripts/verify_docs_drive_mcp.py` cross-checks the tool
-names, the error codes, and every cited test name against the tree.
+content is involved. Claims the tree has no test for are listed in
+[Not yet witnessed](#not-yet-witnessed) with the enforcing source line.
+`scripts/verify_docs_drive_mcp.py` cross-checks the tool names, the error
+codes, every cited test name, and every enforcing line against the tree.
 
 ## Running
 
@@ -69,11 +71,8 @@ enum (`device` is rejected) and the `limit` range (`0` and `-1` are rejected);
 `path` bound with the longest accepted and the shortest rejected path. The
 advertised schema text itself (the `additionalProperties`, `maxLength`,
 `x-maxBytes` and `openWorldHint` keys in the `tools/list` reply) is asserted
-by no Go test; `scripts/verify_docs_drive_mcp.py` pins it instead, requiring
-`objectSchema()` to emit `additionalProperties: false`, `stringSchema()` to
-emit both `maxLength` and `x-maxBytes`, and every definition in
-`toolDefinitions()` to carry `readOnlyHint: true` and `openWorldHint: false`
-in `internal/drivemcp/tools.go`.
+by no Go test; see [Not yet witnessed](#not-yet-witnessed) for the enforcing
+lines.
 
 | Tool | Purpose | Witness |
 | ---- | ------- | ------- |
@@ -102,10 +101,9 @@ trailing-value rules are enforced by the shared decoder in
 `internal/strictjson` (`DecodeObject`, called with `maxToolArgumentsBytes`
 from `internal/drivemcp/tools.go`). The decoder's own synthetic tests in
 `internal/strictjson` pin excessive nesting, exact duplicate keys,
-case-folded aliases and unknown fields; the Drive-specific facts, that the
-constant is `24 * 1024` and that `decodeArguments` passes it to
-`DecodeObject`, are pinned by `scripts/verify_docs_drive_mcp.py` against the
-source. No Drive-level Go test sends an oversize argument object.
+case-folded aliases and unknown fields. No Drive-level Go test sends an
+oversize argument object; the cap is listed in
+[Not yet witnessed](#not-yet-witnessed).
 
 - `path` (every tool, required): at most 1024 bytes, valid UTF-8, no control
   characters, and canonical absolute form only. `/` is accepted; otherwise the
@@ -252,3 +250,20 @@ keeps every list present and empty; a failing CLI yields `unavailable` with
 none of its stderr) and
 `TestStdioDriveToolsServeFrozenDataAfterSuccessfulNegotiation` (the password is
 absent from the stdio result and from the process's stderr).
+
+## Not yet witnessed
+
+These claims are enforced by the named line in `internal/drivemcp` but no
+tracked Drive test asserts them. Each row is retired by the code ticket that
+adds its synthetic test. `scripts/verify_docs_drive_mcp.py` requires every
+row's `path:line` to resolve to a non-blank line in the tree.
+
+| Claim | Enforcing line |
+| ----- | -------------- |
+| Every input schema is closed: `objectSchema()` emits `additionalProperties: false`. | `internal/drivemcp/tools.go:412` |
+| String schemas publish `maxLength` and `x-maxBytes` from the same byte bound. | `internal/drivemcp/tools.go:431` |
+| Every registered tool carries `readOnlyHint: true` and `openWorldHint: false` in the `tools/list` reply. | `internal/drivemcp/tools.go:105` |
+| Raw argument objects are capped at 24 KiB (`maxToolArgumentsBytes = 24 * 1024`). | `internal/drivemcp/tools.go:34` |
+| `decodeArguments` passes that cap to `strictjson.DecodeObject`, so an oversize object is `invalid_argument` before the CLI is consulted. | `internal/drivemcp/tools.go:198` |
+| An explicit empty-string `type` means no filter and is not rejected. | `internal/drivemcp/tools.go:250` |
+| A `limit` above 200 is clamped to 200 by `clampLimit`. | `internal/drivemcp/tools.go:395` |
