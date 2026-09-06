@@ -14,6 +14,8 @@ operator-installed Proton Drive CLI with three read-only tools:
 The sharing-status tool reports shares without changing them and never
 returns a public link's password. Every data command is gated behind a
 successful exact-version CLI handshake and fails closed otherwise.
+The tool contract, bounds, error codes, and audit line are documented in
+[docs/DRIVE-MCP.md](docs/DRIVE-MCP.md).
 Croton is an unofficial community project: it is not affiliated with or
 endorsed by Proton AG. It does not use Proton logos or imitate Proton
 branding.
