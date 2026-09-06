@@ -59,7 +59,7 @@ def code_error_codes():
 NOT_WITNESSED = "Not yet witnessed"
 # The closed list of claims the tree has no synthetic test for; a page needing
 # an eighth row drops the sentence instead.
-EXPECTED_NOT_WITNESSED_ROWS = 7
+EXPECTED_NOT_WITNESSED_ROWS = 5
 LOCATION_RE = re.compile(r"`((?:internal|cmd)/[A-Za-z0-9_./-]+\.go):(\d+)`")
 
 

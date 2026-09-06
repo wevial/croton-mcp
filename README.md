@@ -90,6 +90,7 @@ for prerequisites, verification, the exact tool names, and removal.
 - `internal/mcpserver`: Mail MCP server
 - `internal/drivemcp`: Drive MCP server
 - `internal/drivecli`: bounded Drive CLI subprocess adapter
+- `internal/stdioframe`: the bounded newline-framed stdio reader both servers share
 - `internal/strictjson`: strict JSON decoding
 - `internal/testkit`: synthetic loopback IMAP server and fake-Drive builder for tests
 - `internal/testkit/fakedrive`: the fake Proton Drive CLI executable for tests
