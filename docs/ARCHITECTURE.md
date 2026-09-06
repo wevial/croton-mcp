@@ -1,15 +1,16 @@
 # Architecture
 
 Croton is two stdio Model Context Protocol (MCP) executables over two
-independent adapters. They share only a secure configuration opener and a
-strict JSON decoder. This page is the map: the process shapes with their trust
+independent adapters. They share only a secure configuration opener, a
+strict JSON decoder, and one bounded stdio frame limiter. This page is the map: the process shapes with their trust
 chains, every package with its role and what it must never do, where each
 statement of the product vision is realized in the tree, and what deliberately
 lives outside the module.
 
 Tool contracts live in [docs/MCP.md](MCP.md) (Mail) and in the README's Drive
-section; deployment steps live in [docs/DEPLOYMENT.md](DEPLOYMENT.md). This
-page does not restate them.
+section; trust boundaries and residual risks live in
+[docs/THREAT_MODEL.md](THREAT_MODEL.md); deployment steps live in
+[docs/DEPLOYMENT.md](DEPLOYMENT.md). This page does not restate them.
 
 ## Product form
 
@@ -26,13 +27,16 @@ page does not restate them.
 ## Processes
 
 Each process is one chain from an MCP client to one Proton service. The two
-chains share no adapter, credential path, or gate.
+chains share no adapter, credential path, or gate. Both enter through the same
+bounded frame reader in `internal/stdioframe`, so neither can diverge on what
+a stdio frame is.
 
 ### `croton-mcp` (Mail)
 
 ```mermaid
 flowchart LR
-    client[MCP client] -->|stdio JSON-RPC| server[internal/mcpserver]
+    client[MCP client] -->|stdio JSON-RPC| frame[internal/stdioframe]
+    frame -->|one bounded JSON object per frame| server[internal/mcpserver]
     server --> adapter[bridge.Adapter]
     adapter -->|loopback TLS, pinned leaf or SPKI| bridgeproc[Proton Mail Bridge]
     adapter -.->|credentialCommand, on first operation| helper[Credential helper]
@@ -51,7 +55,8 @@ rejected. The six tools are listed in [docs/MCP.md](MCP.md#tools).
 
 ```mermaid
 flowchart LR
-    client[MCP client] -->|stdio JSON-RPC| server[internal/drivemcp]
+    client[MCP client] -->|stdio JSON-RPC| frame[internal/stdioframe]
+    frame -->|one bounded JSON object per frame| server[internal/drivemcp]
     server --> adapter[internal/drivecli Client]
     adapter -->|version handshake gate| handshake{pinned CLI version?}
     handshake -->|match| cli[Proton Drive CLI subprocess]
@@ -97,6 +102,7 @@ never cross. The role column follows the package doc comments.
 | `internal/drivecli` | Bounded Proton Drive CLI subprocess adapter; `Client` is the fail-closed boundary that runs only the frozen allowlist after an exact-version handshake. | Run a command line outside `AllowedCommandLines()`, skip the handshake, or handle Proton credentials. |
 | `internal/drivemcp` | Croton Drive's independently runnable MCP server and its three-tool catalog. | Register a write-capable or download tool, share an adapter with Mail, or return a public link's password. |
 | `internal/mcpserver` | Croton's Mail MCP server: the six-tool catalog, bounded argument decoding, and the stdio transport. | Register a mutating tool, expose attachment bytes, or add Roots, Sampling, or MCP Logging. |
+| `internal/stdioframe` | The bounded newline-delimited stdio transport shared by every Croton executable: each inbound frame is proven to be one strictly decoded JSON object within the 64 KiB ceiling before the SDK sees it. | Pass an oversize or ambiguous frame to the SDK, close standard output, or write anything but JSON-RPC to it. |
 | `internal/strictjson` | Bounded, unambiguous JSON decoding shared by both servers. | Accept duplicate keys, trailing values, or unbounded input. |
 | `internal/testkit` | Deterministic IMAP and Proton Drive CLI fixtures: a synthetic loopback IMAP server and the fake-Drive builder. | Contain live account material, or be imported by non-test code. |
 | `internal/testkit/fakedrive` | The credential-free Proton Drive CLI stand-in executable for tests. | Contact a network or hold real credentials. |
@@ -108,7 +114,7 @@ boundary exists in the tree but nothing ships behind it, with no date.
 
 | Statement | Where |
 | --- | --- |
-| Local `stdio` MCP servers usable by standards-compatible clients | `cmd/croton-mcp`, `cmd/croton-drive-mcp`; stdout is protocol-only, diagnostics go to stderr; client-neutral contract exercised in CI against synthetic fixtures. |
+| Local `stdio` MCP servers usable by standards-compatible clients | `cmd/croton-mcp`, `cmd/croton-drive-mcp` over the shared `internal/stdioframe` transport; stdout is protocol-only, diagnostics go to stderr; client-neutral contract exercised in CI against synthetic fixtures. |
 | Mail and Drive `separately runnable` with separate configuration, credentials or authentication boundaries, and tool registries | Two executables; `config.Load` and `config.LoadDrive` decode separate schemas; Mail authenticates via `credentialCommand` in `bridge`, Drive via the CLI's own store behind the `internal/drivecli` handshake; catalogs in `internal/mcpserver` and `internal/drivemcp/tools.go`. |
 | Go implementation with a reusable, `MCP-neutral` Mail Bridge adapter | `bridge` imports no MCP types; `internal/mcpserver` is its only in-tree consumer. |
 | Independent, `unofficial` community project | README's Drive section and the non-affiliation statement; no Proton logos or branding in the tree. |
