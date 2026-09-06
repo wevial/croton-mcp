@@ -38,18 +38,46 @@ def subsections(text):
     return [(parts[i].strip(), parts[i + 1]) for i in range(1, len(parts), 2)]
 
 
+FENCE = re.compile(r"^(`{3,}|~{3,})(.*)$")
+
+
+def fence_marker(line):
+    """Return (character, length, info string) when a line opens or closes a code fence."""
+    m = FENCE.match(line.strip())
+    if m is None:
+        return None
+    marker, info = m.group(1), m.group(2).strip()
+    if marker[0] == "`" and "`" in info:
+        return None  # CommonMark: a backtick fence's info string may not contain backticks
+    return marker[0], len(marker), info
+
+
 def check_mermaid(name, body, failures):
+    """Require a real, top-level ```mermaid fence: not nested inside another code fence."""
     lines = body.splitlines()
-    opening = next((i for i, l in enumerate(lines) if re.match(r"^```mermaid\s*$", l)), None)
+    fence = None  # (character, length) of the currently open fence, per CommonMark
+    opening = None
+    for i, line in enumerate(lines):
+        marker = fence_marker(line)
+        if marker is None:
+            continue
+        char, length, info = marker
+        if fence is None:
+            if char == "`" and length == 3 and info == "mermaid":
+                opening = i
+                break
+            fence = (char, length)
+        elif char == fence[0] and length >= fence[1] and not info:
+            fence = None
     if opening is None:
-        failures.append(f"{DOC} {name}: no ```mermaid fence")
+        failures.append(f"{DOC} {name}: no top-level ```mermaid fence (a fence inside another fence is literal text)")
         return
     inner = []
     closed = False
     for line in lines[opening + 1 :]:
         if line.startswith("#"):
             break
-        if re.match(r"^```\s*$", line):
+        if re.match(r"^`{3,}\s*$", line):
             closed = True
             break
         inner.append(line)
@@ -83,13 +111,13 @@ def table_rows(sec):
     fence = None  # (character, length) of the open fence, per CommonMark
     for line in sec.splitlines():
         stripped = line.strip()
-        m = re.match(r"^(`{3,}|~{3,})", stripped)
-        if m:
-            marker = m.group(1)
+        marker = fence_marker(line)
+        if marker is not None:
+            char, length, info = marker
             if fence is None:
-                fence = (marker[0], len(marker))
+                fence = (char, length)
                 continue
-            if marker[0] == fence[0] and len(marker) >= fence[1]:
+            if char == fence[0] and length >= fence[1] and not info:
                 fence = None
                 continue
         if fence is not None or not stripped.startswith("|"):
