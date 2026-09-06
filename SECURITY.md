@@ -16,7 +16,7 @@ Use synthetic, non-identifying fixtures. Route diagnostics to standard error and
 
 ## Threat model
 
-`docs/THREAT_MODEL.md` states the assets Croton protects, the attackers it assumes, where each trust boundary is enforced in the tree, the residual risks the code admits, and what is out of scope. Check security-relevant changes against it.
+[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) states the assets Croton protects, the attackers it assumes, where each trust boundary is enforced in the tree, the residual risks the code admits, and what is out of scope. Check security-relevant changes against it.
 
 ## Supported versions
 

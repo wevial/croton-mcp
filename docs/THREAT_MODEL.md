@@ -111,8 +111,12 @@ attempted.
 
 **What it does not guarantee.** Croton does not authenticate the helper: whoever
 controls the configuration file controls which program runs. Process-group
-teardown is Linux-specific; other Unix platforms get the timeout without the
-group kill. As `README.md` states, a single accepted transport replay opens a
+teardown exists only where the tree implements it: Linux in
+`bridge/credentials_process_linux.go` and macOS and FreeBSD in
+`bridge/credentials_process_unix.go`. On any other platform
+`bridge/credentials_process_other.go` reports the group kill as unsupported and
+`isSafeCredentialCommand` rejects every credential command, so no helper runs
+without teardown. As `README.md` states, a single accepted transport replay opens a
 fresh session and may invoke the helper one more time, so helpers must be
 idempotent.
 
