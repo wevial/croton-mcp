@@ -10,7 +10,7 @@ stderr.
 Every claim below names the synthetic test that pins it. The tests run against
 the fake Drive CLI in `internal/testkit/fakedrive` and the fixtures in
 `internal/drivecli/testdata`; no live Proton account, credential, or Drive
-content is involved. The seven claims the tree has no test for are listed in
+content is involved. The five claims the tree has no test for are listed in
 [Not yet witnessed](#not-yet-witnessed) with their enforcing source lines; the
 page states nothing beyond the cited tests and that table.
 `scripts/verify_docs_drive_mcp.py` cross-checks the tool names, the error
@@ -67,9 +67,10 @@ pins the closed object (an unknown `surprise` field is rejected), the `type`
 enum (`device` is rejected) and the `limit` floor (`0` and `-1` are rejected);
 `TestValidDrivePathAcceptsOnlyCanonicalAbsolutePaths` pins the 1024-byte
 `path` bound with the longest accepted and the shortest rejected path. The
-schema text itself (the `additionalProperties`, `maxLength` and `x-maxBytes`
-keys in the `tools/list` reply) is asserted by no Go test; see
-[Not yet witnessed](#not-yet-witnessed).
+schema text itself is asserted by `TestDriveToolSchemasAreClosedAndBounded`:
+every input schema is closed, every free-text string carries equal
+`maxLength` and `x-maxBytes`, and the `type` enum publishes exactly `file`
+and `folder`.
 
 | Tool | Purpose | Witness |
 | ---- | ------- | ------- |
@@ -89,10 +90,11 @@ Raw argument objects are capped at 24 KiB and decoded strictly: a missing
 `path`, an empty object, an unknown field, a bad `type`, a zero or negative
 `limit` or a non-canonical path is rejected with `invalid_argument` before the
 CLI is consulted. `TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`
-is the witness: it sends each of those to all three tools, requires
-`invalid_argument` for each, and proves the CLI was never executed. No Drive
-test sends an oversize argument object; the 24 KiB cap is listed in
-[Not yet witnessed](#not-yet-witnessed).
+is the witness: it sends that table to `list_drive_entries`, covers the
+metadata and sharing tools for malformed and missing paths, requires
+`invalid_argument` for each, and proves the CLI was never executed.
+`TestDriveToolsRejectOversizeRawArgumentsWithoutExecutingTheCLI` sends an
+object one byte over the 24 KiB cap and proves the same.
 
 - `path` (every tool, required): at most 1024 bytes, valid UTF-8, no control
   characters, and canonical absolute form only. `/` is accepted; otherwise the
@@ -104,12 +106,15 @@ test sends an oversize argument object; the 24 KiB cap is listed in
   double-slash, trailing-slash, flag-shaped, control-character, invalid-UTF-8
   and overlong paths that fail.
 - `type` (`list_drive_entries`, optional): `file` or `folder`. The published
-  schema enumerates only those two values, but both the handler and the CLI
-  adapter also accept an explicit `""`: an omitted `type` and `type: ""` each
-  mean no filter and reach the CLI without a `--type` flag
-  (`TestListDriveEntriesSupportsRootSectionsDevicesAndTypeFilter` pins the
-  no-filter argv and the `--type file` argv); any other value such as `device`
-  is rejected (`TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`).
+  schema enumerates only those two values, so a client that validates
+  arguments against the advertised schema omits `type` to mean no filter. The
+  server is more lenient than its schema: it also accepts an explicit `""`,
+  which it treats exactly like an omitted `type` and forwards without a
+  `--type` flag (`TestListDriveEntriesTreatsEmptyTypeAsNoFilter`;
+  `TestListDriveEntriesSupportsRootSectionsDevicesAndTypeFilter` pins the
+  no-filter and `--type file` argv). That leniency is not part of the
+  advertised contract. Any other value such as `device` is rejected
+  (`TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`).
 - `limit` (`list_drive_entries`, optional): a positive integer; the schema
   publishes `minimum` 1 and `maximum` 200. Zero and negative values are
   rejected (`TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`); an
@@ -243,16 +248,16 @@ absent from the stdio result and from the process's stderr).
 
 ## Not yet witnessed
 
-These seven claims are enforced by the named lines in `internal/drivemcp` but
+These five claims are enforced by the named lines in `internal/drivemcp` but
 no tracked Drive test asserts them. Each row is retired by the code ticket
-that adds its synthetic test. `scripts/verify_docs_drive_mcp.py` requires
-exactly these seven rows and requires every `path:line` to resolve to a
-non-blank line in the tree.
+that adds its synthetic test; the closed-schema and argument-cap rows were
+retired by `TestDriveToolSchemasAreClosedAndBounded` and
+`TestDriveToolsRejectOversizeRawArgumentsWithoutExecutingTheCLI`.
+`scripts/verify_docs_drive_mcp.py` requires exactly these five rows and
+requires every `path:line` to resolve to a non-blank line in the tree.
 
 | Claim | Enforcing line |
 | ----- | -------------- |
-| Every input schema is closed (`additionalProperties: false`) and string schemas publish `maxLength` and `x-maxBytes` from the same byte bound. | `internal/drivemcp/tools.go:412`, `internal/drivemcp/tools.go:431` |
-| Raw argument objects are capped at 24 KiB (`maxToolArgumentsBytes = 24 * 1024`), passed to `strictjson.DecodeObject` by `decodeArguments`. | `internal/drivemcp/tools.go:34`, `internal/drivemcp/tools.go:198` |
 | An omitted `limit` defaults to 100 and a `limit` above 200 is clamped to 200, not rejected (`clampLimit` with `defaultListEntries` as fallback and `maxListEntries` as ceiling). | `internal/drivemcp/tools.go:253`, `internal/drivemcp/tools.go:395` |
 | A wrapped recognized error keeps its code: `mapDriveError` tests context errors with `errors.Is` and adapter codes with `drivecli.CodeOf`, which unwraps with `errors.As`. | `internal/drivemcp/tools.go:205`, `internal/drivemcp/tools.go:212` |
 | The audit sanitizers log an unexpected `tool` as `unknown_tool`, an `outcome` other than `ok` as `error`, and a `code` outside the six-code vocabulary as `internal`. | `internal/drivemcp/audit.go:81`, `internal/drivemcp/audit.go:90`, `internal/drivemcp/audit.go:98` |
