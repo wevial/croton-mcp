@@ -28,7 +28,7 @@ def section(text, title, failures):
         failures.append(f"{DOC}: heading '## {title}' not found")
         return None
     rest = text[match.end():]
-    nxt = re.search(r"^## ", rest, re.MULTILINE)
+    nxt = re.search(r"^#{1,2} ", rest, re.MULTILINE)
     return rest if nxt is None else rest[: nxt.start()]
 
 
@@ -78,10 +78,15 @@ def check_processes(text, failures):
 
 
 def table_rows(sec):
+    """Collect table rows from a section, ignoring anything inside a code fence."""
     rows = []
+    fenced = False
     for line in sec.splitlines():
         stripped = line.strip()
-        if not stripped.startswith("|"):
+        if stripped.startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced or not stripped.startswith("|"):
             continue
         cells = [c.strip() for c in stripped.strip("|").split("|")]
         if all(re.fullmatch(r":?-{3,}:?", c) for c in cells if c):
