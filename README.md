@@ -93,7 +93,7 @@ for prerequisites, verification, the exact tool names, and removal.
 - `internal/strictjson`: strict JSON decoding
 - `internal/testkit`: synthetic loopback IMAP server and fake-Drive builder for tests
 - `internal/testkit/fakedrive`: the fake Proton Drive CLI executable for tests
-- `docs/ARCHITECTURE.md`: the two servers, the packages behind them, and where the product vision lives in the tree
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): the two servers, the packages behind them, and where the product vision lives in the tree
 - `docs/DEPENDENCIES.md`: reviewed dependency choices and adoption constraints
 
 ## Security and privacy
