@@ -48,7 +48,9 @@ initialization flow. A fail-closed method allowlist admits only `initialize`,
 `notifications/initialized`, `notifications/cancelled`, and
 `notifications/progress` notifications; every other method is answered with
 JSON-RPC "method not found". Every data command is gated behind one exact
-version handshake with the CLI; until it succeeds, tools fail closed.
+version handshake with the CLI; until it succeeds, tools fail closed. No Go
+test sends a method outside the allowlist; the rejection is listed in
+[Not yet witnessed](#not-yet-witnessed).
 
 Witnesses: `TestStdioInitializesAnIndependentDriveServerWithThreeReadOnlyTools`
 (stdio startup, protocol version, catalog, clean stderr) and
@@ -184,7 +186,8 @@ An error result carries `isError: true` and one JSON text item of the form
   output was malformed or truncated, the command exited nonzero, or it reported
   that authentication is required.
 - `internal`: a panic in the handler or any adapter error the server does not
-  recognize.
+  recognize. The unknown-error path is tested; the panic path is not, and is
+  listed in [Not yet witnessed](#not-yet-witnessed).
 
 Every adapter failure maps to one of these codes. The mapping unwraps errors,
 so a recognized adapter code or context error keeps its code through wrapping;
@@ -220,7 +223,9 @@ The tool name, outcome, and code are each re-validated against fixed sets
 before logging, so an unexpected upstream value becomes `unknown_tool`,
 `error`, or `internal` rather than reaching the log. Caller arguments, Drive
 paths, node names, addresses, CLI output, and error text never appear. A clean
-protocol startup writes nothing to stderr.
+protocol startup writes nothing to stderr. The cited tests feed the auditor
+only expected values; the sanitizers' handling of unexpected ones is asserted
+by no Go test and is listed in [Not yet witnessed](#not-yet-witnessed).
 
 Witnesses: `TestDriveAuditRecordsOnlyToolNameAndOutcome` (the exact `ok` and
 `error` lines; no path, name, or address leaks),
@@ -267,3 +272,8 @@ row's `path:line` to resolve to a non-blank line in the tree.
 | `decodeArguments` passes that cap to `strictjson.DecodeObject`, so an oversize object is `invalid_argument` before the CLI is consulted. | `internal/drivemcp/tools.go:198` |
 | An explicit empty-string `type` means no filter and is not rejected. | `internal/drivemcp/tools.go:250` |
 | A `limit` above 200 is clamped to 200 by `clampLimit`. | `internal/drivemcp/tools.go:395` |
+| A method outside the allowlist is answered with JSON-RPC "method not found" by `allowlistMiddleware`. | `internal/drivemcp/tools.go:129` |
+| A panicking handler is recovered by `runTool` and reported as `internal` with no stack detail on the protocol stream. | `internal/drivemcp/tools.go:170` |
+| An audit `tool` value outside the three registered names is logged as `unknown_tool`. | `internal/drivemcp/audit.go:76` |
+| An audit `outcome` other than `ok` is logged as `error`. | `internal/drivemcp/audit.go:85` |
+| An audit `code` outside the six-code vocabulary is logged as `internal`. | `internal/drivemcp/audit.go:93` |
