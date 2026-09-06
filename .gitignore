@@ -10,3 +10,6 @@ coverage.html
 .env
 .vscode/
 .idea/
+
+# Factory review records stay private to the writer host.
+FINDINGS.md
