@@ -79,12 +79,16 @@ for prerequisites, verification, the exact tool names, and removal.
 
 ## Layout
 
-- `cmd/croton-mcp`: stdio executable
-- `cmd/croton-drive-mcp`: independent Drive stdio executable scaffold
-- `internal/config`: secure configuration boundary for separate Mail and Drive schemas
-- `internal/drivemcp`: independent, currently empty Drive MCP server
-- `bridge`: narrow, bounded read-only IMAP adapter boundary
-- `internal/mcpserver`: MCP server construction
+- `cmd/croton-mcp`: Mail stdio executable
+- `cmd/croton-drive-mcp`: Drive stdio executable
+- `bridge`: read-only IMAP adapter over Proton Mail Bridge
+- `internal/config`: secure configuration opener for the separate Mail and Drive schemas
+- `internal/mcpserver`: Mail MCP server
+- `internal/drivemcp`: Drive MCP server
+- `internal/drivecli`: bounded Drive CLI subprocess adapter
+- `internal/strictjson`: strict JSON decoding
+- `internal/testkit`: synthetic loopback IMAP server and fake-Drive builder for tests
+- `internal/testkit/fakedrive`: the fake Proton Drive CLI executable for tests
 - `docs/DEPENDENCIES.md`: reviewed dependency choices and adoption constraints
 
 ## Security and privacy
