@@ -354,6 +354,15 @@ func TestDriveToolSchemasAreClosedAndBounded(t *testing.T) {
 				if len(bounds.Enum) != 2 || bounds.Enum[0] != "file" || bounds.Enum[1] != "folder" {
 					t.Fatalf("%s.%s: enum = %q, want [file folder]", definition.name, property, bounds.Enum)
 				}
+				// enumSchema() publishes type and enum only: the enum members
+				// already bound the value, so no length annotations are added.
+				var keys map[string]json.RawMessage
+				if err := json.Unmarshal(raw, &keys); err != nil {
+					t.Fatalf("%s.%s: property schema is not an object: %v", definition.name, property, err)
+				}
+				if _, ok := keys["type"]; len(keys) != 2 || !ok {
+					t.Fatalf("%s.%s: enum schema must publish exactly type and enum: %s", definition.name, property, raw)
+				}
 				sawTypeEnum = true
 				continue
 			}
