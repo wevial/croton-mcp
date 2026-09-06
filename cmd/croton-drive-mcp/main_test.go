@@ -182,9 +182,11 @@ func TestStdioDriveToolsServeFrozenDataAfterSuccessfulNegotiation(t *testing.T) 
 	sharingSession, sharingStderr := startDriveStdioSession(t, sharingBinary)
 
 	var sharing struct {
-		Shared            bool              `json:"shared"`
-		ProtonInvitations []json.RawMessage `json:"protonInvitations"`
-		URLAccess         *struct {
+		Shared            bool `json:"shared"`
+		ProtonInvitations []struct {
+			InviteeEmail string `json:"inviteeEmail"`
+		} `json:"protonInvitations"`
+		URLAccess *struct {
 			URL string `json:"url"`
 		} `json:"urlAccess"`
 		EditorsCanShare bool `json:"editorsCanShare"`
@@ -197,7 +199,7 @@ func TestStdioDriveToolsServeFrozenDataAfterSuccessfulNegotiation(t *testing.T) 
 	if err := json.Unmarshal([]byte(sharingText), &sharing); err != nil {
 		t.Fatalf("decode sharing result: %v", err)
 	}
-	if !sharing.Shared || len(sharing.ProtonInvitations) != 1 || sharing.URLAccess == nil || sharing.URLAccess.URL != "https://drive.proton.test/urls/fixture" || sharing.EditorsCanShare {
+	if !sharing.Shared || len(sharing.ProtonInvitations) != 1 || sharing.ProtonInvitations[0].InviteeEmail != "reader@example.test" || sharing.URLAccess == nil || sharing.URLAccess.URL != "https://drive.proton.test/urls/fixture" || sharing.EditorsCanShare {
 		t.Fatalf("stdio sharing result = %s", sharingText)
 	}
 	if strings.Contains(sharingText, "fixture-password") {
