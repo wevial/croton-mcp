@@ -45,8 +45,16 @@ func TestMain(m *testing.M) {
 func driveCommand(t *testing.T, binaryPath string, stderr *bytes.Buffer) (*exec.Cmd, string) {
 	t.Helper()
 
+	return driveCommandWithConfig(t, map[string]any{"cli": map[string]string{"binaryPath": binaryPath}}, stderr)
+}
+
+// driveCommandWithConfig writes the given configuration document and returns
+// the production executable's command with stderr captured.
+func driveCommandWithConfig(t *testing.T, document map[string]any, stderr *bytes.Buffer) (*exec.Cmd, string) {
+	t.Helper()
+
 	configPath := filepath.Join(canonicalTempDir(t), "croton-drive.json")
-	encoded, err := json.Marshal(map[string]any{"cli": map[string]string{"binaryPath": binaryPath}})
+	encoded, err := json.Marshal(document)
 	if err != nil {
 		t.Fatalf("encode config: %v", err)
 	}
@@ -70,8 +78,17 @@ func driveCommand(t *testing.T, binaryPath string, stderr *bytes.Buffer) (*exec.
 func startDriveStdioSession(t *testing.T, binaryPath string) (*mcp.ClientSession, *bytes.Buffer) {
 	t.Helper()
 
+	return startDriveStdioSessionWithConfig(t, map[string]any{"cli": map[string]string{"binaryPath": binaryPath}})
+}
+
+// startDriveStdioSessionWithConfig spawns the production executable over stdio
+// against the given configuration document and returns the client session
+// plus captured stderr.
+func startDriveStdioSessionWithConfig(t *testing.T, document map[string]any) (*mcp.ClientSession, *bytes.Buffer) {
+	t.Helper()
+
 	stderr := &bytes.Buffer{}
-	command, _ := driveCommand(t, binaryPath, stderr)
+	command, _ := driveCommandWithConfig(t, document, stderr)
 	client := mcp.NewClient(&mcp.Implementation{Name: "croton-drive-stdio-test", Version: "0.0.0"}, nil)
 	session, err := client.Connect(context.Background(), &mcp.CommandTransport{Command: command}, nil)
 	if err != nil {
@@ -133,6 +150,88 @@ func TestStdioInitializesAnIndependentDriveServerWithThreeReadOnlyTools(t *testi
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("clean protocol startup wrote diagnostics: %q", stderr.String())
+	}
+}
+
+func TestRunRefusesEnabledWritePolicyBeforeTouchingTheCLI(t *testing.T) {
+	binary := testkit.FakeDrive(t, "", testkit.DriveFixture(t, "list-my-files.json"))
+	argvPath := filepath.Join(filepath.Dir(binary), "argv")
+
+	var stderr bytes.Buffer
+	command, _ := driveCommandWithConfig(t, map[string]any{
+		"cli":    map[string]string{"binaryPath": binary},
+		"writes": map[string]any{"enabled": true},
+	}, &stderr)
+	var stdout bytes.Buffer
+	command.Stdout = &stdout
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		t.Fatalf("stdin pipe: %v", err)
+	}
+	defer func() { _ = stdin.Close() }()
+	if err := command.Start(); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+
+	// stdin stays open: a server that wrongly proceeds to serve blocks on it
+	// until the deadline below fires instead of exiting cleanly on EOF.
+	done := make(chan error, 1)
+	go func() { done <- command.Wait() }()
+	select {
+	case err := <-done:
+		exitError, ok := err.(*exec.ExitError)
+		if !ok || exitError.ExitCode() == 0 {
+			t.Fatalf("exit status = %v, want nonzero exit", err)
+		}
+	case <-time.After(5 * time.Second):
+		_ = command.Process.Kill()
+		t.Fatal("server did not refuse the enabled write policy within 5s")
+	}
+
+	if stdout.Len() != 0 {
+		t.Fatalf("refusal produced stdout: %q", stdout.String())
+	}
+	if got := stderr.String(); got != "croton-drive-mcp: writes.enabled is not supported\n" {
+		t.Fatalf("stderr = %q, want static write-policy refusal", got)
+	}
+	if _, err := os.Stat(argvPath); !os.IsNotExist(err) {
+		t.Fatalf("refusal executed the Drive CLI: argv stat = %v", err)
+	}
+}
+
+func TestStdioDriveWritePolicyDisabledPreservesReadOnlyCatalog(t *testing.T) {
+	documents := map[string]map[string]any{
+		"omitted": {"cli": map[string]string{"binaryPath": "/opt/proton-drive/proton-drive"}},
+		"explicit-false": {
+			"cli":    map[string]string{"binaryPath": "/opt/proton-drive/proton-drive"},
+			"writes": map[string]any{"enabled": false},
+		},
+	}
+	for name, document := range documents {
+		t.Run(name, func(t *testing.T) {
+			session, stderr := startDriveStdioSessionWithConfig(t, document)
+
+			if got := session.InitializeResult().ProtocolVersion; got != "2026-07-28" {
+				t.Fatalf("negotiated protocol = %q, want 2026-07-28", got)
+			}
+			listed, err := session.ListTools(context.Background(), &mcp.ListToolsParams{})
+			if err != nil {
+				t.Fatalf("list Drive tools: %v", err)
+			}
+			names := make([]string, 0, len(listed.Tools))
+			for _, tool := range listed.Tools {
+				names = append(names, tool.Name)
+			}
+			if strings.Join(names, ",") != "get_drive_metadata,get_drive_sharing_status,list_drive_entries" {
+				t.Fatalf("Drive tool names = %v, want the read-only catalog", names)
+			}
+			if err := session.Close(); err != nil {
+				t.Fatalf("close Drive session: %v", err)
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("clean protocol startup wrote diagnostics: %q", stderr.String())
+			}
+		})
 	}
 }
 

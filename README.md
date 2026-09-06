@@ -23,8 +23,10 @@ branding.
 Drive uses its own `--config` file, process, and MCP server. Its strict JSON
 schema requires an absolute CLI `binaryPath` and reserves an
 `allowedDownloadDirectories` allowlist and a `writes.enabled` policy that is
-disabled by default. The server never accesses credentials and registers no
-write-capable tools.
+disabled by default. Until a write capability exists, a configuration that
+sets `writes.enabled` to true is refused at startup rather than ignored: the
+server exits with a static diagnostic before executing the CLI. The server
+never accesses credentials and registers no write-capable tools.
 
 ## Requirements
 
