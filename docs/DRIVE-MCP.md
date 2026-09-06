@@ -60,10 +60,18 @@ schema. The `path` schema publishes both the character `maxLength` and the
 authoritative `x-maxBytes` annotation, each set to the 1024-byte path bound;
 the `type` schema is a plain string `enum` and `limit` an integer range. The
 server enforces every bound itself and never trusts schema enforcement by the
-caller. The catalog tests pin the tool count, the names and `readOnlyHint`;
-`openWorldHint`, the closed schemas and the string annotations are not
-asserted by any test and are read from `toolDefinitions()`, `objectSchema()`
-and `stringSchema()` in `internal/drivemcp/tools.go`.
+caller, and it is the enforcement that the tests witness:
+`TestNewNegotiatesCurrentProtocolWithTheReadOnlyDriveCatalog` pins the count,
+the names and `readOnlyHint`; `TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`
+pins the closed object (an unknown `surprise` field is rejected), the `type`
+enum (`device` is rejected) and the `limit` range (`0` and `-1` are rejected);
+`TestValidDrivePathAcceptsOnlyCanonicalAbsolutePaths` pins the 1024-byte
+`path` bound with the longest accepted and the shortest rejected path. The
+advertised schema text itself (the `additionalProperties`, `maxLength`,
+`x-maxBytes` and `openWorldHint` keys in the `tools/list` reply) is asserted
+by no test and is read from `toolDefinitions()`, `objectSchema()` and
+`stringSchema()` in `internal/drivemcp/tools.go`; a test over the listed
+schemas is a follow-up outside this page's scope.
 
 | Tool | Purpose | Witness |
 | ---- | ------- | ------- |
@@ -82,22 +90,36 @@ exact CLI argument vectors they produce.
 Raw argument objects are capped at 24 KiB and decoded strictly: non-objects,
 nulls, unknown fields, duplicate or case-folded-alias fields, excessive
 nesting, and trailing JSON values are all rejected with `invalid_argument`
-before the CLI is consulted. The Drive tests pin the unknown-field and
-value-level rejections; the byte cap, the null, duplicate-key, alias, nesting
-and trailing-value rules come from the shared decoder in
+before the CLI is consulted.
+`TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI` is the Drive
+witness: it sends a missing `path`, an empty object, an unknown field, a bad
+`type`, out-of-range `limit` values and non-canonical paths to all three tools,
+requires `invalid_argument` for each, and proves the CLI was never executed.
+The 24 KiB byte cap and the null, duplicate-key, alias, nesting and
+trailing-value rules are enforced by the shared decoder in
 `internal/strictjson` (`DecodeObject`, called with `maxToolArgumentsBytes`
-from `internal/drivemcp/tools.go`), whose own package tests pin excessive
-nesting, exact duplicate keys and case-folded aliases.
+from `internal/drivemcp/tools.go`); that package's own tests pin excessive
+nesting, exact duplicate keys and case-folded aliases, and no Drive-level test
+re-asserts them, which is the second half of the same follow-up.
 
 - `path` (every tool, required): at most 1024 bytes, valid UTF-8, no control
   characters, and canonical absolute form only. `/` is accepted; otherwise the
   path is `/`-joined non-empty segments with no `.` or `..` segment and no
   trailing separator. An accepted path is never flag-shaped and reaches the
-  CLI as exactly one argument.
-- `type` (`list_drive_entries`, optional): `file` or `folder`.
+  CLI as exactly one argument. Witness:
+  `TestValidDrivePathAcceptsOnlyCanonicalAbsolutePaths`, a table over the
+  root, nested, spaced and Unicode paths that pass and the relative, `.`/`..`,
+  double-slash, trailing-slash, flag-shaped, control-character, invalid-UTF-8
+  and overlong paths that fail.
+- `type` (`list_drive_entries`, optional): `file` or `folder`; any other value
+  is rejected (`TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`).
 - `limit` (`list_drive_entries`, optional): an integer between 1 and 200,
-  default 100. Values above 200 are clamped to 200; zero and negative values
-  are rejected.
+  default 100. Zero and negative values are rejected
+  (`TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`); an accepted
+  limit bounds the entries and sets `truncated` when it cuts them
+  (`TestListDriveEntriesEnforcesEntryLimitAndSignalsTruncation`). Values
+  above 200 are clamped to 200 by `clampLimit` in `internal/drivemcp/tools.go`;
+  no test sends an over-limit value.
 
 Witnesses: `TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`
 (relative paths, traversal, empty segments, trailing separators, control
