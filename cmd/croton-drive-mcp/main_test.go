@@ -94,7 +94,7 @@ func driveStdioResultText(t *testing.T, result *mcp.CallToolResult) string {
 	return text.Text
 }
 
-func TestStdioInitializesAnIndependentDriveServerWithTwoTools(t *testing.T) {
+func TestStdioInitializesAnIndependentDriveServerWithThreeReadOnlyTools(t *testing.T) {
 	session, stderr := startDriveStdioSession(t, "/opt/proton-drive/proton-drive")
 
 	if got := session.InitializeResult().ProtocolVersion; got != "2026-07-28" {
@@ -104,8 +104,17 @@ func TestStdioInitializesAnIndependentDriveServerWithTwoTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list Drive tools: %v", err)
 	}
-	if len(listed.Tools) != 2 {
-		t.Fatalf("Drive tools = %d, want 2", len(listed.Tools))
+	if len(listed.Tools) != 3 {
+		t.Fatalf("Drive tools = %d, want 3", len(listed.Tools))
+	}
+	names := []string{listed.Tools[0].Name, listed.Tools[1].Name, listed.Tools[2].Name}
+	if names[0] != "get_drive_metadata" || names[1] != "get_drive_sharing_status" || names[2] != "list_drive_entries" {
+		t.Fatalf("Drive tool names = %v", names)
+	}
+	for _, tool := range listed.Tools {
+		if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
+			t.Fatalf("tool %q is not marked read-only", tool.Name)
+		}
 	}
 	if err := session.Close(); err != nil {
 		t.Fatalf("close Drive session: %v", err)
@@ -167,6 +176,47 @@ func TestStdioDriveToolsServeFrozenDataAfterSuccessfulNegotiation(t *testing.T) 
 	}
 	if got := testkit.RecordedArgv(t, infoBinary); got != "filesystem\ninfo\n/my-files/Reports\n--json\n" {
 		t.Fatalf("stdio metadata argv = %q", got)
+	}
+
+	sharingBinary := testkit.FakeDrive(t, "", testkit.DriveFixture(t, "sharing-status.json"))
+	sharingSession, sharingStderr := startDriveStdioSession(t, sharingBinary)
+
+	var sharing struct {
+		Shared            bool              `json:"shared"`
+		ProtonInvitations []json.RawMessage `json:"protonInvitations"`
+		URLAccess         *struct {
+			URL string `json:"url"`
+		} `json:"urlAccess"`
+		EditorsCanShare bool `json:"editorsCanShare"`
+	}
+	sharingResult := callDriveStdioTool(t, sharingSession, "get_drive_sharing_status", map[string]any{"path": "/my-files/Reports"})
+	if sharingResult.IsError {
+		t.Fatalf("sharing status over stdio failed: %s", driveStdioResultText(t, sharingResult))
+	}
+	sharingText := driveStdioResultText(t, sharingResult)
+	if err := json.Unmarshal([]byte(sharingText), &sharing); err != nil {
+		t.Fatalf("decode sharing result: %v", err)
+	}
+	if !sharing.Shared || len(sharing.ProtonInvitations) != 1 || sharing.URLAccess == nil || sharing.URLAccess.URL != "https://drive.proton.test/urls/fixture" || sharing.EditorsCanShare {
+		t.Fatalf("stdio sharing result = %s", sharingText)
+	}
+	if strings.Contains(sharingText, "fixture-password") {
+		t.Fatalf("stdio sharing result leaks the public-link password: %s", sharingText)
+	}
+	if got := testkit.RecordedArgv(t, sharingBinary); got != "sharing\nstatus\n/my-files/Reports\n--json\n" {
+		t.Fatalf("stdio sharing argv = %q", got)
+	}
+	if err := sharingSession.Close(); err != nil {
+		t.Fatalf("close sharing session: %v", err)
+	}
+	audit := sharingStderr.String()
+	if !strings.Contains(audit, `"tool":"get_drive_sharing_status","outcome":"ok"`) {
+		t.Fatalf("stdio sharing audit = %q", audit)
+	}
+	for _, leak := range []string{"example.test", "my-files", "Reports", "fixture-password"} {
+		if strings.Contains(audit, leak) {
+			t.Fatalf("stdio sharing audit leaks %q: %q", leak, audit)
+		}
 	}
 }
 

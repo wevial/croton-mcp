@@ -229,6 +229,8 @@ func TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI(t *testing.T) {
 	}
 	requireDriveToolError(t, callDriveTool(t, session, "get_drive_metadata", map[string]any{"path": "../etc"}), "invalid_argument")
 	requireDriveToolError(t, callDriveTool(t, session, "get_drive_metadata", map[string]any{}), "invalid_argument")
+	requireDriveToolError(t, callDriveTool(t, session, "get_drive_sharing_status", map[string]any{"path": "/my-files/../shared-by-me"}), "invalid_argument")
+	requireDriveToolError(t, callDriveTool(t, session, "get_drive_sharing_status", map[string]any{}), "invalid_argument")
 
 	if _, err := os.Stat(filepath.Join(filepath.Dir(binary), "argv")); !os.IsNotExist(err) {
 		t.Fatalf("invalid arguments reached the CLI: stat argv err = %v", err)
@@ -243,8 +245,9 @@ func TestDriveToolsFailClosedWhenNegotiationFails(t *testing.T) {
 
 	requireDriveToolError(t, callDriveTool(t, session, "list_drive_entries", map[string]any{"path": "/my-files"}), "unavailable")
 	requireDriveToolError(t, callDriveTool(t, session, "get_drive_metadata", map[string]any{"path": "/my-files"}), "unavailable")
+	requireDriveToolError(t, callDriveTool(t, session, "get_drive_sharing_status", map[string]any{"path": "/my-files"}), "unavailable")
 
-	// The fake records every invocation: after two refused tool calls the last
+	// The fake records every invocation: after three refused tool calls the last
 	// (and only) command must still be the version handshake, proving no data
 	// command raced past failed negotiation.
 	if got := testkit.RecordedArgv(t, binary); got != "version\n" {
@@ -259,6 +262,7 @@ func TestDriveToolsFailClosedWithoutConfiguredCLI(t *testing.T) {
 
 	requireDriveToolError(t, callDriveTool(t, session, "list_drive_entries", map[string]any{"path": "/my-files"}), "unavailable")
 	requireDriveToolError(t, callDriveTool(t, session, "get_drive_metadata", map[string]any{"path": "/my-files"}), "unavailable")
+	requireDriveToolError(t, callDriveTool(t, session, "get_drive_sharing_status", map[string]any{"path": "/my-files"}), "unavailable")
 }
 
 func TestConcurrentDriveCallsShareOneNegotiationAndAllSucceed(t *testing.T) {
@@ -417,5 +421,142 @@ func TestEncodeBoundedShrinksOversizeListResultsIntoValidJSON(t *testing.T) {
 	encoded, truncated, err = encodeBounded(&unshrinkable)
 	if err != nil || !truncated || string(encoded) != `{"truncated":true}` {
 		t.Fatalf("fallback output = %q, truncated %v, err %v", encoded, truncated, err)
+	}
+}
+
+func sharingMemberJSON(index int) string {
+	return fmt.Sprintf(`{"uid":"invite:%d","invitationTime":"2026-01-04T00:00:00.000Z","addedByEmail":{"ok":true,"value":"owner@example.test"},"inviteeEmail":"member-%d@example.test","role":"viewer"}`, index, index)
+}
+
+func sharingMemberListJSON(count int) string {
+	members := make([]string, 0, count)
+	for index := range count {
+		members = append(members, sharingMemberJSON(index))
+	}
+
+	return "[" + strings.Join(members, ",") + "]"
+}
+
+func TestGetDriveSharingStatusReportsSharedUnsharedAndCommandErrors(t *testing.T) {
+	t.Parallel()
+
+	sharedClient, sharedBinary := newToolTestClient(t, "", testkit.DriveFixture(t, "sharing-status.json"))
+	sharedSession := connectDriveTestClient(t, Options{CLI: sharedClient})
+
+	sharedResult := callDriveTool(t, sharedSession, "get_drive_sharing_status", map[string]any{"path": "/my-files/Reports"})
+	var shared sharingStatusResult
+	decodeDriveResult(t, sharedResult, &shared)
+	if !shared.Shared || shared.Truncated || shared.EditorsCanShare {
+		t.Fatalf("shared result = %+v", shared)
+	}
+	if len(shared.ProtonInvitations) != 1 || shared.ProtonInvitations[0].InviteeEmail != "reader@example.test" {
+		t.Fatalf("proton invitations = %+v", shared.ProtonInvitations)
+	}
+	if len(shared.NonProtonInvitations) != 0 || len(shared.Members) != 0 {
+		t.Fatalf("empty lists = %+v / %+v", shared.NonProtonInvitations, shared.Members)
+	}
+	if shared.URLAccess == nil || shared.URLAccess.URL != "https://drive.proton.test/urls/fixture" {
+		t.Fatalf("url access = %+v", shared.URLAccess)
+	}
+	if raw := driveResultText(t, sharedResult); strings.Contains(raw, "fixture-password") || strings.Contains(raw, "customPassword") {
+		t.Fatalf("sharing result leaks the public-link password: %s", raw)
+	}
+	if got := testkit.RecordedArgv(t, sharedBinary); got != "sharing\nstatus\n/my-files/Reports\n--json\n" {
+		t.Fatalf("sharing argv = %q", got)
+	}
+
+	unsharedClient, _ := newToolTestClient(t, "unshared", nil)
+	unsharedSession := connectDriveTestClient(t, Options{CLI: unsharedClient})
+
+	unsharedResult := callDriveTool(t, unsharedSession, "get_drive_sharing_status", map[string]any{"path": "/my-files/Reports"})
+	var unshared sharingStatusResult
+	decodeDriveResult(t, unsharedResult, &unshared)
+	if unshared.Shared || unshared.URLAccess != nil || unshared.Truncated {
+		t.Fatalf("unshared result = %+v", unshared)
+	}
+	if unshared.ProtonInvitations == nil || unshared.NonProtonInvitations == nil || unshared.Members == nil {
+		t.Fatalf("unshared lists must be present: %s", driveResultText(t, unsharedResult))
+	}
+	if len(unshared.ProtonInvitations) != 0 || len(unshared.NonProtonInvitations) != 0 || len(unshared.Members) != 0 {
+		t.Fatalf("unshared lists must be empty: %s", driveResultText(t, unsharedResult))
+	}
+
+	failingClient, _ := newToolTestClient(t, "nonzero-secret", nil)
+	failingSession := connectDriveTestClient(t, Options{CLI: failingClient})
+
+	failingResult := callDriveTool(t, failingSession, "get_drive_sharing_status", map[string]any{"path": "/my-files/Reports"})
+	requireDriveToolError(t, failingResult, "unavailable")
+	if raw := driveResultText(t, failingResult); strings.Contains(raw, "hunter2") || strings.Contains(raw, "account.test") || strings.Contains(raw, "download failed") {
+		t.Fatalf("sharing error leaks CLI stderr: %s", raw)
+	}
+}
+
+func TestGetDriveSharingStatusBoundsMembersAndKeepsAuditPayloadFree(t *testing.T) {
+	t.Parallel()
+
+	overfull := []byte(`{"protonInvitations":` + sharingMemberListJSON(maxSharingMembers+1) +
+		`,"nonProtonInvitations":` + sharingMemberListJSON(maxSharingMembers+1) +
+		`,"members":` + sharingMemberListJSON(maxSharingMembers+1) +
+		`,"editorsCanShare":true}`)
+
+	var audit bytes.Buffer
+	client, _ := newToolTestClient(t, "", overfull)
+	session := connectDriveTestClient(t, Options{CLI: client, Audit: NewAuditor(&audit)})
+
+	var decoded sharingStatusResult
+	decodeDriveResult(t, callDriveTool(t, session, "get_drive_sharing_status", map[string]any{"path": "/my-files/Reports"}), &decoded)
+	if !decoded.Shared || !decoded.Truncated || !decoded.EditorsCanShare || decoded.URLAccess != nil {
+		t.Fatalf("bounded result = shared %v truncated %v editorsCanShare %v urlAccess %+v", decoded.Shared, decoded.Truncated, decoded.EditorsCanShare, decoded.URLAccess)
+	}
+	if len(decoded.ProtonInvitations) != maxSharingMembers {
+		t.Fatalf("proton invitations = %d, want %d", len(decoded.ProtonInvitations), maxSharingMembers)
+	}
+	if len(decoded.NonProtonInvitations) != maxSharingMembers {
+		t.Fatalf("non-Proton invitations = %d, want %d", len(decoded.NonProtonInvitations), maxSharingMembers)
+	}
+	if len(decoded.Members) != maxSharingMembers {
+		t.Fatalf("members = %d, want %d", len(decoded.Members), maxSharingMembers)
+	}
+
+	if got := strings.TrimSpace(audit.String()); got != `{"event":"tool_call","tool":"get_drive_sharing_status","outcome":"ok","truncated":true}` {
+		t.Fatalf("audit line = %q", got)
+	}
+	for _, leak := range []string{"my-files", "Reports", "invite:", "example.test", "member-"} {
+		if strings.Contains(audit.String(), leak) {
+			t.Fatalf("audit output leaks %q: %q", leak, audit.String())
+		}
+	}
+}
+
+func TestEncodeBoundedPreservesSharingStateWhenURLAccessOverflows(t *testing.T) {
+	t.Parallel()
+
+	oversize := &sharingStatusResult{
+		Shared:               true,
+		ProtonInvitations:    []drivecli.Member{{UID: "invite:1", InviteeEmail: "reader@example.test", Role: "viewer"}},
+		NonProtonInvitations: []drivecli.Member{},
+		Members:              []drivecli.Member{},
+		URLAccess: &sharingURLAccess{
+			UID: "url:1",
+			URL: "https://drive.proton.test/urls/" + strings.Repeat("u", maxToolResultBytes),
+		},
+	}
+
+	encoded, truncated, err := encodeBounded(oversize)
+	if err != nil {
+		t.Fatalf("encodeBounded: %v", err)
+	}
+	if !truncated || len(encoded) > maxToolResultBytes {
+		t.Fatalf("truncated = %v, bytes = %d", truncated, len(encoded))
+	}
+	var decoded sharingStatusResult
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("shrunken output is not valid JSON: %v", err)
+	}
+	if !decoded.Shared || !decoded.Truncated || decoded.URLAccess != nil {
+		t.Fatalf("shrunken result = shared %v truncated %v urlAccess %+v", decoded.Shared, decoded.Truncated, decoded.URLAccess)
+	}
+	if strings.Contains(string(encoded), `"urlAccess"`) {
+		t.Fatalf("shrunken output still carries urlAccess: %d bytes", len(encoded))
 	}
 }

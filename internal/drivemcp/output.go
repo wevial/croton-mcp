@@ -13,7 +13,11 @@
 
 package drivemcp
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/wevial/croton-mcp/internal/drivecli"
+)
 
 // maxToolResultBytes caps every serialized tool result at the same output
 // budget as the Mail server's tool surface.
@@ -56,6 +60,29 @@ func (result *listDriveResult) shrinkForOutput() bool {
 		result.Devices = result.Devices[:len(result.Devices)/2]
 	case len(result.Sections) > 0:
 		result.Sections = result.Sections[:len(result.Sections)/2]
+	default:
+		return false
+	}
+
+	result.Truncated = true
+	return true
+}
+
+// shrinkForOutput halves the largest sharing list first and drops the public
+// link last, so shared stays truthful in every shrunken output.
+func (result *sharingStatusResult) shrinkForOutput() bool {
+	largest := &result.ProtonInvitations
+	for _, list := range []*[]drivecli.Member{&result.NonProtonInvitations, &result.Members} {
+		if len(*list) > len(*largest) {
+			largest = list
+		}
+	}
+
+	switch {
+	case len(*largest) > 0:
+		*largest = (*largest)[:len(*largest)/2]
+	case result.URLAccess != nil:
+		result.URLAccess = nil
 	default:
 		return false
 	}
