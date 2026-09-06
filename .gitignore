@@ -13,3 +13,4 @@ coverage.html
 
 # Factory review records stay private to the writer host.
 FINDINGS.md
+__pycache__/
