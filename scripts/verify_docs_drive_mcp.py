@@ -57,6 +57,9 @@ def code_error_codes():
 
 
 NOT_WITNESSED = "Not yet witnessed"
+# The closed list of claims the tree has no synthetic test for; a page needing
+# an eighth row drops the sentence instead.
+EXPECTED_NOT_WITNESSED_ROWS = 7
 LOCATION_RE = re.compile(r"`((?:internal|cmd)/[A-Za-z0-9_./-]+\.go):(\d+)`")
 
 
@@ -66,7 +69,7 @@ def tracked_files():
 
 
 def check_not_witnessed(text, failures):
-    """Every row of the Not yet witnessed table names a path:line that resolves."""
+    """The Not yet witnessed table has exactly the expected rows, each naming a path:line that resolves."""
     body = section(text, NOT_WITNESSED, failures)
     if body is None:
         return
@@ -75,8 +78,8 @@ def check_not_witnessed(text, failures):
         line for line in body.splitlines()
         if line.startswith("|") and not re.match(r"^\|\s*-", line) and not line.startswith("| Claim")
     ]
-    if not rows:
-        failures.append(f"{PAGE} {NOT_WITNESSED}: table has no rows")
+    if len(rows) != EXPECTED_NOT_WITNESSED_ROWS:
+        failures.append(f"{PAGE} {NOT_WITNESSED}: table has {len(rows)} rows, want exactly {EXPECTED_NOT_WITNESSED_ROWS}")
     for row in rows:
         locations = LOCATION_RE.findall(row)
         if not locations:
