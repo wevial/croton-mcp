@@ -7,7 +7,7 @@ a fail-closed method allowlist rejects everything except initialization,
 discovery, ping, and the tool methods.
 
 This page covers the Mail server only. The separate Drive executable,
-`croton-drive-mcp`, has its own contract in [DRIVE-MCP.md](DRIVE-MCP.md);
+`croton-drive-mcp`, has its own contract in [docs/DRIVE-MCP.md](DRIVE-MCP.md);
 its bounds, error vocabulary, and always-on audit stream differ from those
 described here, and every claim there names the test that pins it.
 
