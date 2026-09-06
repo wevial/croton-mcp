@@ -85,16 +85,12 @@ exact CLI argument vectors they produce.
 
 ## Arguments
 
-Raw argument objects are capped at 24 KiB and decoded strictly: non-objects,
-unknown fields, duplicate or case-folded-alias fields, excessive nesting, and
-trailing JSON values are rejected with `invalid_argument` before the CLI is
-consulted. `TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI` is the
-Drive witness: it sends a missing `path`, an empty object, an unknown field, a
-bad `type`, out-of-range `limit` values and non-canonical paths to all three
-tools, requires `invalid_argument` for each, and proves the CLI was never
-executed. The byte cap and the duplicate-key, alias, nesting and
-trailing-value rules are enforced by the shared decoder in
-`internal/strictjson`, whose own synthetic tests pin them. No Drive-level Go
+Raw argument objects are capped at 24 KiB and decoded strictly: a missing
+`path`, an empty object, an unknown field, a bad `type`, an out-of-range
+`limit` or a non-canonical path is rejected with `invalid_argument` before the
+CLI is consulted. `TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`
+is the witness: it sends each of those to all three tools, requires
+`invalid_argument` for each, and proves the CLI was never executed. No Drive
 test sends an oversize argument object; the 24 KiB cap is listed in
 [Not yet witnessed](#not-yet-witnessed).
 
@@ -107,11 +103,13 @@ test sends an oversize argument object; the 24 KiB cap is listed in
   root, nested, spaced and Unicode paths that pass and the relative, `.`/`..`,
   double-slash, trailing-slash, flag-shaped, control-character, invalid-UTF-8
   and overlong paths that fail.
-- `type` (`list_drive_entries`, optional): `file` or `folder`. An omitted
-  `type` means no filter and reaches the CLI without a `--type` flag
+- `type` (`list_drive_entries`, optional): `file` or `folder`. The published
+  schema enumerates only those two values, but both the handler and the CLI
+  adapter also accept an explicit `""`: an omitted `type` and `type: ""` each
+  mean no filter and reach the CLI without a `--type` flag
   (`TestListDriveEntriesSupportsRootSectionsDevicesAndTypeFilter` pins the
-  omitted-`type` argv and the `--type file` argv); `device` is rejected
-  (`TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`).
+  no-filter argv and the `--type file` argv); any other value such as `device`
+  is rejected (`TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`).
 - `limit` (`list_drive_entries`, optional): an integer between 1 and 200,
   default 100. Zero and negative values are rejected
   (`TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`); an accepted
