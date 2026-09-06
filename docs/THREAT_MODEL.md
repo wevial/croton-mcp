@@ -12,7 +12,11 @@ and the statements that are easiest to get wrong.
 Croton ships two separate local executables, `cmd/croton-mcp` for Proton Mail
 Bridge and `cmd/croton-drive-mcp` for the Proton Drive CLI. They share no
 process, configuration file or credential, which is the first boundary of the
-model: a defect in one surface does not reach the other.
+model. The separation is one of code and configuration, not of privilege: both
+executables, and every child they spawn, run as the person invoking them, so a
+compromised Drive CLI holds the same operating-system access as that person,
+including access to the Mail configuration file. Croton does not enforce
+compromise isolation between the two surfaces.
 
 ## Assets
 
@@ -102,14 +106,17 @@ absolute argv with no shell, in a scrubbed environment, with a 64 KiB output
 cap and a timeout, parses a strict JSON object and zeroes the credential bytes
 when the session ends. `bridge/credentials_process_linux.go` places the helper
 in its own process group and kills the whole group on cancellation, so a
-helper that spawns children cannot outlive its budget.
+helper's direct children in that group are torn down with it.
 
 **How it fails closed.** A relative command, output over the cap, output that
 is not exactly the expected object, or a helper that exceeds its timeout all
 fail the session; the partial output buffer is discarded and no login is
 attempted.
 
-**What it does not guarantee.** Croton does not authenticate the helper: whoever
+**What it does not guarantee.** Process-group teardown kills only the group
+the helper was started in. A descendant that creates its own session or process
+group escapes that kill and can outlive the budget; Croton does not track or
+confine such descendants. Croton does not authenticate the helper: whoever
 controls the configuration file controls which program runs. Process-group
 teardown exists only where the tree implements it: Linux in
 `bridge/credentials_process_linux.go` and macOS and FreeBSD in
