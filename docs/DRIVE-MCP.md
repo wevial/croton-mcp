@@ -56,9 +56,14 @@ Witnesses: `TestStdioInitializesAnIndependentDriveServerWithThreeReadOnlyTools`
 
 Exactly three read-only tools are registered, each with `readOnlyHint: true`,
 `openWorldHint: false`, and a closed (`additionalProperties: false`) input
-schema. String schemas publish both the character `maxLength` and the
-authoritative `x-maxBytes` annotation; the server enforces every bound itself
-and never trusts schema enforcement by the caller.
+schema. The `path` schema publishes both the character `maxLength` and the
+authoritative `x-maxBytes` annotation, each set to the 1024-byte path bound;
+the `type` schema is a plain string `enum` and `limit` an integer range. The
+server enforces every bound itself and never trusts schema enforcement by the
+caller. The catalog tests pin the tool count, the names and `readOnlyHint`;
+`openWorldHint`, the closed schemas and the string annotations are not
+asserted by any test and are read from `toolDefinitions()`, `objectSchema()`
+and `stringSchema()` in `internal/drivemcp/tools.go`.
 
 | Tool | Purpose | Witness |
 | ---- | ------- | ------- |
@@ -77,7 +82,12 @@ exact CLI argument vectors they produce.
 Raw argument objects are capped at 24 KiB and decoded strictly: non-objects,
 nulls, unknown fields, duplicate or case-folded-alias fields, excessive
 nesting, and trailing JSON values are all rejected with `invalid_argument`
-before the CLI is consulted.
+before the CLI is consulted. The Drive tests pin the unknown-field and
+value-level rejections; the byte cap, the null, duplicate-key, alias, nesting
+and trailing-value rules come from the shared decoder in
+`internal/strictjson` (`DecodeObject`, called with `maxToolArgumentsBytes`
+from `internal/drivemcp/tools.go`), whose own package tests pin excessive
+nesting, exact duplicate keys and case-folded aliases.
 
 - `path` (every tool, required): at most 1024 bytes, valid UTF-8, no control
   characters, and canonical absolute form only. `/` is accepted; otherwise the
