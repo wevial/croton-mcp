@@ -25,7 +25,7 @@ def section(text, heading_re, name, failures):
     match = re.search(heading_re, text, re.MULTILINE)
     if match is None:
         failures.append(f"{name}: heading matching {heading_re!r} not found")
-        return ""
+        return None
     rest = text[match.end():]
     nxt = re.search(r"^## ", rest, re.MULTILINE)
     return rest if nxt is None else rest[: nxt.start()]
@@ -37,20 +37,28 @@ def check_readme(failures):
         if phrase in text:
             failures.append(f"README.md: stale phrase {phrase!r} present")
     layout = section(text, r"^## Layout\s*$", "README.md", failures)
+    if layout is None:
+        return
     bullets = {}
     for m in re.finditer(r"^- `([^`]+)`:(.*)$", layout, re.MULTILINE):
-        bullets[m.group(1)] = m.group(2).strip()
+        bullets.setdefault(m.group(1), []).append(m.group(2).strip())
     for d in go_package_dirs():
-        if d not in bullets:
+        roles = bullets.get(d, [])
+        if not roles:
             failures.append(f"README.md Layout: no bullet for package directory {d!r}")
-        elif not bullets[d]:
+            continue
+        if len(roles) > 1:
+            failures.append(
+                f"README.md Layout: {len(roles)} bullets for package directory {d!r}, expected one"
+            )
+        if not all(roles):
             failures.append(f"README.md Layout: bullet for {d!r} has an empty role")
 
 
 def check_dependencies(failures):
     text = pathlib.Path("docs/DEPENDENCIES.md").read_text(encoding="utf-8")
     sec = section(text, r"^## .*go-imap.*$", "docs/DEPENDENCIES.md", failures)
-    if not sec:
+    if sec is None:
         return
     if "`bridge`" not in sec:
         failures.append("docs/DEPENDENCIES.md go-imap section: does not name `bridge`")
