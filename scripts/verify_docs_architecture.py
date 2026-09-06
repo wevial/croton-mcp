@@ -78,15 +78,21 @@ def check_processes(text, failures):
 
 
 def table_rows(sec):
-    """Collect table rows from a section, ignoring anything inside a code fence."""
+    """Collect table rows from a section, ignoring anything inside a backtick or tilde code fence."""
     rows = []
-    fenced = False
+    fence = None  # (character, length) of the open fence, per CommonMark
     for line in sec.splitlines():
         stripped = line.strip()
-        if stripped.startswith("```"):
-            fenced = not fenced
-            continue
-        if fenced or not stripped.startswith("|"):
+        m = re.match(r"^(`{3,}|~{3,})", stripped)
+        if m:
+            marker = m.group(1)
+            if fence is None:
+                fence = (marker[0], len(marker))
+                continue
+            if marker[0] == fence[0] and len(marker) >= fence[1]:
+                fence = None
+                continue
+        if fence is not None or not stripped.startswith("|"):
             continue
         cells = [c.strip() for c in stripped.strip("|").split("|")]
         if all(re.fullmatch(r":?-{3,}:?", c) for c in cells if c):
