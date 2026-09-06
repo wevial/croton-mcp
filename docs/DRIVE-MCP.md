@@ -5,14 +5,14 @@ read-only MCP server over stdio. It is a separate executable, process, and
 configuration from the Mail server described in [MCP.md](MCP.md); nothing in
 the Mail contract carries over unless this page says so. Stdout carries
 protocol frames only; all diagnostics, including the audit stream, go to
-stderr. There is no network listener and no MCP resources, prompts, Roots,
-Sampling, or Logging.
+stderr.
 
 Every claim below names the synthetic test that pins it. The tests run against
 the fake Drive CLI in `internal/testkit/fakedrive` and the fixtures in
 `internal/drivecli/testdata`; no live Proton account, credential, or Drive
-content is involved. Claims the tree has no test for are listed in
-[Not yet witnessed](#not-yet-witnessed) with the enforcing source line.
+content is involved. The seven claims the tree has no test for are listed in
+[Not yet witnessed](#not-yet-witnessed) with their enforcing source lines; the
+page states nothing beyond the cited tests and that table.
 `scripts/verify_docs_drive_mcp.py` cross-checks the tool names, the error
 codes, every cited test name, and every enforcing line against the tree.
 
@@ -23,9 +23,7 @@ croton-drive-mcp --config /absolute/path/to/croton-drive.json
 ```
 
 The configuration file goes through the same secure loader as the Mail
-executable (absolute, symlink-free, owner-only regular file; bounded JSON with
-unknown, null, duplicate, and case-folded-alias fields rejected). Its strict
-schema has three keys:
+executable (see [MCP.md](MCP.md)). Its strict schema has three keys:
 
 ```json
 {
@@ -35,12 +33,10 @@ schema has three keys:
 }
 ```
 
-`cli.binaryPath` must be absolute. `allowedDownloadDirectories` and
-`writes.enabled` are reserved: the server registers no download or write
-tools, and `writes.enabled` is `false` by Go's zero value. The file carries no
-credentials and the server never reads any; authentication is the CLI's own
-concern, and a CLI that reports it needs authentication surfaces as
-`unavailable`.
+`allowedDownloadDirectories` and `writes.enabled` are reserved: the server
+registers no download or write tools. The file carries no credentials and the
+server never reads any; authentication is the CLI's own concern, and a CLI
+that reports it needs authentication surfaces as `unavailable`.
 
 The server targets MCP `2026-07-28` and accepts the legacy `2025-11-25`
 initialization flow. A fail-closed method allowlist admits only `initialize`,
@@ -48,33 +44,32 @@ initialization flow. A fail-closed method allowlist admits only `initialize`,
 `notifications/initialized`, `notifications/cancelled`, and
 `notifications/progress` notifications; every other method is answered with
 JSON-RPC "method not found". Every data command is gated behind one exact
-version handshake with the CLI; until it succeeds, tools fail closed. No Go
-test sends a method outside the allowlist; the rejection is listed in
+version handshake with the CLI; until it succeeds, tools fail closed with
+`unavailable` and the CLI sees nothing but the `version` command. No Go test
+sends a method outside the allowlist; the rejection is listed in
 [Not yet witnessed](#not-yet-witnessed).
 
 Witnesses: `TestStdioInitializesAnIndependentDriveServerWithThreeReadOnlyTools`
-(stdio startup, protocol version, catalog, clean stderr) and
-`TestNewSupportsLegacyInitialize` (legacy negotiation).
+(stdio startup, protocol version, catalog, clean stderr),
+`TestNewSupportsLegacyInitialize` (legacy negotiation), and
+`TestStdioDriveToolsFailClosedWhenNegotiationFails` (fail-closed handshake
+over stdio).
 
 ## Tools
 
-Exactly three read-only tools are registered, each with `readOnlyHint: true`,
-`openWorldHint: false`, and a closed (`additionalProperties: false`) input
-schema. The `path` schema publishes both the character `maxLength` and the
-authoritative `x-maxBytes` annotation, each set to the 1024-byte path bound;
-the `type` schema is a plain string `enum` and `limit` an integer range. The
-server enforces every bound itself and never trusts schema enforcement by the
-caller, and it is the enforcement that the tests witness:
-`TestNewNegotiatesCurrentProtocolWithTheReadOnlyDriveCatalog` pins the count,
-the names and `readOnlyHint`; `TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`
+Exactly three read-only tools are registered, each with `readOnlyHint: true`.
+Each input schema is closed (`additionalProperties: false`); the `path` schema
+publishes both the character `maxLength` and the `x-maxBytes` annotation, each
+set to the 1024-byte path bound. The server enforces every bound itself and
+never trusts schema enforcement by the caller, and it is the enforcement that
+the tests witness: `TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`
 pins the closed object (an unknown `surprise` field is rejected), the `type`
 enum (`device` is rejected) and the `limit` range (`0` and `-1` are rejected);
 `TestValidDrivePathAcceptsOnlyCanonicalAbsolutePaths` pins the 1024-byte
 `path` bound with the longest accepted and the shortest rejected path. The
-advertised schema text itself (the `additionalProperties`, `maxLength`,
-`x-maxBytes` and `openWorldHint` keys in the `tools/list` reply) is asserted
-by no Go test; see [Not yet witnessed](#not-yet-witnessed) for the enforcing
-lines.
+schema text itself (the `additionalProperties`, `maxLength` and `x-maxBytes`
+keys in the `tools/list` reply) is asserted by no Go test; see
+[Not yet witnessed](#not-yet-witnessed).
 
 | Tool | Purpose | Witness |
 | ---- | ------- | ------- |
@@ -91,20 +86,16 @@ exact CLI argument vectors they produce.
 ## Arguments
 
 Raw argument objects are capped at 24 KiB and decoded strictly: non-objects,
-nulls, unknown fields, duplicate or case-folded-alias fields, excessive
-nesting, and trailing JSON values are all rejected with `invalid_argument`
-before the CLI is consulted.
-`TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI` is the Drive
-witness: it sends a missing `path`, an empty object, an unknown field, a bad
-`type`, out-of-range `limit` values and non-canonical paths to all three tools,
-requires `invalid_argument` for each, and proves the CLI was never executed.
-The 24 KiB byte cap and the null, duplicate-key, alias, nesting and
+unknown fields, duplicate or case-folded-alias fields, excessive nesting, and
+trailing JSON values are rejected with `invalid_argument` before the CLI is
+consulted. `TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI` is the
+Drive witness: it sends a missing `path`, an empty object, an unknown field, a
+bad `type`, out-of-range `limit` values and non-canonical paths to all three
+tools, requires `invalid_argument` for each, and proves the CLI was never
+executed. The byte cap and the duplicate-key, alias, nesting and
 trailing-value rules are enforced by the shared decoder in
-`internal/strictjson` (`DecodeObject`, called with `maxToolArgumentsBytes`
-from `internal/drivemcp/tools.go`). The decoder's own synthetic tests in
-`internal/strictjson` pin excessive nesting, exact duplicate keys,
-case-folded aliases and unknown fields. No Drive-level Go test sends an
-oversize argument object; the cap is listed in
+`internal/strictjson`, whose own synthetic tests pin them. No Drive-level Go
+test sends an oversize argument object; the 24 KiB cap is listed in
 [Not yet witnessed](#not-yet-witnessed).
 
 - `path` (every tool, required): at most 1024 bytes, valid UTF-8, no control
@@ -117,28 +108,17 @@ oversize argument object; the cap is listed in
   double-slash, trailing-slash, flag-shaped, control-character, invalid-UTF-8
   and overlong paths that fail.
 - `type` (`list_drive_entries`, optional): `file` or `folder`. An omitted
-  `type` and an explicit empty string `""` both mean no filter and reach the
-  CLI without a `--type` flag; the handler and the adapter accept `""` even
-  though the published `enum` lists only the two names. Any other value is
-  rejected (`TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`
-  sends `device`). `TestListDriveEntriesSupportsRootSectionsDevicesAndTypeFilter`
-  pins the omitted-`type` argv (no `--type`) and the `file` argv (`--type
-  file`); no test sends the explicit empty string.
+  `type` means no filter and reaches the CLI without a `--type` flag
+  (`TestListDriveEntriesSupportsRootSectionsDevicesAndTypeFilter` pins the
+  omitted-`type` argv and the `--type file` argv); `device` is rejected
+  (`TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`).
 - `limit` (`list_drive_entries`, optional): an integer between 1 and 200,
   default 100. Zero and negative values are rejected
   (`TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`); an accepted
   limit bounds the entries and sets `truncated` when it cuts them
   (`TestListDriveEntriesEnforcesEntryLimitAndSignalsTruncation`, which sends
-  explicit limits of 2 and 3). Values above 200 are clamped to 200 by
-  `clampLimit` in `internal/drivemcp/tools.go`; no test sends an over-limit
-  value, and no test omits `limit` and counts the entries, so the default of
-  100 is listed in [Not yet witnessed](#not-yet-witnessed) as well.
-
-Witnesses: `TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI`
-(relative paths, traversal, empty segments, trailing separators, control
-characters, bad `type`, non-positive `limit`, unknown fields, and missing
-`path` all return `invalid_argument` and never spawn the CLI) and
-`TestValidDrivePathAcceptsOnlyCanonicalAbsolutePaths` (the path grammar).
+  explicit limits of 2 and 3). No test omits `limit` and counts the entries,
+  so the default of 100 is listed in [Not yet witnessed](#not-yet-witnessed).
 
 ## Output
 
@@ -170,7 +150,8 @@ Witnesses: `TestEncodeBoundedShrinksOversizeListResultsIntoValidJSON`
 fallback), `TestListDriveEntriesEnforcesEntryLimitAndSignalsTruncation` (the
 `limit` cap sets `truncated`),
 `TestListDriveEntriesReturnsFrozenNodeShapesAfterNegotiation` (frozen list
-shape), `TestGetDriveSharingStatusBoundsMembersAndKeepsAuditPayloadFree` (the
+shape), `TestGetDriveMetadataReturnsTheFrozenNodeObject` (the unchanged node
+object), `TestGetDriveSharingStatusBoundsMembersAndKeepsAuditPayloadFree` (the
 per-list sharing cap), and
 `TestEncodeBoundedPreservesSharingStateWhenURLAccessOverflows` (public link
 dropped last).
@@ -191,17 +172,13 @@ An error result carries `isError: true` and one JSON text item of the form
   recognize. The unknown-error path is tested; the panic path is not, and is
   listed in [Not yet witnessed](#not-yet-witnessed).
 
-Every adapter failure maps to one of these codes. The mapping unwraps errors
-(`errors.Is` for the context errors, `errors.As` behind `drivecli.CodeOf` for
-adapter codes), so a recognized adapter code or context error keeps its code
-through wrapping; only errors the server does not recognize collapse to
-`internal`. The mapping test passes every recognized error bare and wraps
-only the unknown one, so the "keeps its code through wrapping" half is listed
-in [Not yet witnessed](#not-yet-witnessed). Either way
-no CLI stderr, path, node name, or stack detail can cross the protocol
-boundary. This vocabulary is a subset of the Mail server's:
-Drive has no not-found or stale-id code, because it resolves paths on every
-call and issues no identifiers of its own.
+Every adapter failure maps to one of these codes; errors the server does not
+recognize collapse to `internal`, so no CLI stderr, path, node name, or stack
+detail can cross the protocol boundary. The mapping test passes every
+recognized error bare and wraps only the unknown one, so "a recognized code
+survives wrapping" is listed in [Not yet witnessed](#not-yet-witnessed). This
+vocabulary is a subset of the Mail server's: Drive has no not-found or
+stale-id code.
 
 Witnesses: `TestMapDriveErrorCoversEveryAdapterCode` (every adapter code,
 context cancellation, deadline expiry, and an unknown wrapped error),
@@ -230,15 +207,17 @@ before logging, so an unexpected upstream value becomes `unknown_tool`,
 `error`, or `internal` rather than reaching the log. Caller arguments, Drive
 paths, node names, addresses, CLI output, and error text never appear. A clean
 protocol startup writes nothing to stderr. The cited tests feed the auditor
-only expected values; the sanitizers' handling of unexpected ones is asserted
-by no Go test and is listed in [Not yet witnessed](#not-yet-witnessed).
+only expected values; the sanitizers' handling of unexpected ones is listed in
+[Not yet witnessed](#not-yet-witnessed).
 
 Witnesses: `TestDriveAuditRecordsOnlyToolNameAndOutcome` (the exact `ok` and
 `error` lines; no path, name, or address leaks),
 `TestGetDriveSharingStatusBoundsMembersAndKeepsAuditPayloadFree` (the
-`truncated` line; no member data leaks), and
+`truncated` line; no member data leaks),
 `TestStdioDriveToolsServeFrozenDataAfterSuccessfulNegotiation` (the line
-reaches the real process's stderr).
+reaches the real process's stderr), and
+`TestStdioInitializesAnIndependentDriveServerWithThreeReadOnlyTools` (clean
+startup writes nothing).
 
 ## Sharing
 
@@ -264,25 +243,18 @@ absent from the stdio result and from the process's stderr).
 
 ## Not yet witnessed
 
-These claims are enforced by the named line in `internal/drivemcp` but no
-tracked Drive test asserts them. Each row is retired by the code ticket that
-adds its synthetic test. `scripts/verify_docs_drive_mcp.py` requires every
-row's `path:line` to resolve to a non-blank line in the tree.
+These seven claims are enforced by the named lines in `internal/drivemcp` but
+no tracked Drive test asserts them. Each row is retired by the code ticket
+that adds its synthetic test. `scripts/verify_docs_drive_mcp.py` requires
+exactly these seven rows and requires every `path:line` to resolve to a
+non-blank line in the tree.
 
 | Claim | Enforcing line |
 | ----- | -------------- |
-| Every input schema is closed: `objectSchema()` emits `additionalProperties: false`. | `internal/drivemcp/tools.go:412` |
-| String schemas publish `maxLength` and `x-maxBytes` from the same byte bound. | `internal/drivemcp/tools.go:431` |
-| Every registered tool carries `readOnlyHint: true` and `openWorldHint: false` in the `tools/list` reply. | `internal/drivemcp/tools.go:105` |
-| Raw argument objects are capped at 24 KiB (`maxToolArgumentsBytes = 24 * 1024`). | `internal/drivemcp/tools.go:34` |
-| `decodeArguments` passes that cap to `strictjson.DecodeObject`, so an oversize object is `invalid_argument` before the CLI is consulted. | `internal/drivemcp/tools.go:198` |
-| An explicit empty-string `type` means no filter and is not rejected. | `internal/drivemcp/tools.go:250` |
-| A `limit` above 200 is clamped to 200 by `clampLimit`. | `internal/drivemcp/tools.go:395` |
+| Every input schema is closed (`additionalProperties: false`) and string schemas publish `maxLength` and `x-maxBytes` from the same byte bound. | `internal/drivemcp/tools.go:412`, `internal/drivemcp/tools.go:431` |
+| Raw argument objects are capped at 24 KiB (`maxToolArgumentsBytes = 24 * 1024`), passed to `strictjson.DecodeObject` by `decodeArguments`. | `internal/drivemcp/tools.go:34`, `internal/drivemcp/tools.go:198` |
 | An omitted `limit` defaults to 100 (`defaultListEntries`, passed to `clampLimit` as its fallback). | `internal/drivemcp/tools.go:253` |
-| A wrapped context error keeps `canceled` or `timed_out`: `mapDriveError` tests with `errors.Is`. | `internal/drivemcp/tools.go:205` |
-| A wrapped adapter error keeps its mapped code: `mapDriveError` switches on `drivecli.CodeOf`, which unwraps with `errors.As`. | `internal/drivemcp/tools.go:212` |
-| A method outside the allowlist is answered with JSON-RPC "method not found" by `allowlistMiddleware`. | `internal/drivemcp/tools.go:129` |
+| A wrapped recognized error keeps its code: `mapDriveError` tests context errors with `errors.Is` and adapter codes with `drivecli.CodeOf`, which unwraps with `errors.As`. | `internal/drivemcp/tools.go:205`, `internal/drivemcp/tools.go:212` |
+| The audit sanitizers log an unexpected `tool` as `unknown_tool`, an `outcome` other than `ok` as `error`, and a `code` outside the six-code vocabulary as `internal`. | `internal/drivemcp/audit.go:81`, `internal/drivemcp/audit.go:90`, `internal/drivemcp/audit.go:98` |
+| A method outside the allowlist is answered with JSON-RPC "method not found" by `allowlistMiddleware`. | `internal/drivemcp/tools.go:128` |
 | A panicking handler is recovered by `runTool` and reported as `internal` with no stack detail on the protocol stream. | `internal/drivemcp/tools.go:170` |
-| An audit `tool` value outside the three registered names is logged as `unknown_tool`. | `internal/drivemcp/audit.go:76` |
-| An audit `outcome` other than `ok` is logged as `error`. | `internal/drivemcp/audit.go:85` |
-| An audit `code` outside the six-code vocabulary is logged as `internal`. | `internal/drivemcp/audit.go:93` |
