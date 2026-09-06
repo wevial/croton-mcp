@@ -14,6 +14,10 @@ Croton handles mail-adjacent workflows. Contributors must never commit, paste in
 
 Use synthetic, non-identifying fixtures. Route diagnostics to standard error and keep standard output reserved for MCP JSON-RPC.
 
+## Threat model
+
+`docs/THREAT_MODEL.md` states the assets Croton protects, the attackers it assumes, where each trust boundary is enforced in the tree, the residual risks the code admits, and what is out of scope. Check security-relevant changes against it.
+
 ## Supported versions
 
 Before the first release, security fixes are made on the default development branch. Released-version support windows will be documented here.

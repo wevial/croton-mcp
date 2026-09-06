@@ -98,7 +98,9 @@ for prerequisites, verification, the exact tool names, and removal.
 
 ## Security and privacy
 
-See [SECURITY.md](SECURITY.md). Never commit credentials, account identifiers, mailbox contents, or unredacted protocol logs.
+See [SECURITY.md](SECURITY.md) and the threat model in
+[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), which names the assets, trust
+boundaries, residual risks and what Croton does not defend against. Never commit credentials, account identifiers, mailbox contents, or unredacted protocol logs.
 
 A single accepted transport replay opens a fresh authenticated session and may invoke the configured credential helper one additional time. Credential helpers should therefore be idempotent and free of unrelated side effects.
 
