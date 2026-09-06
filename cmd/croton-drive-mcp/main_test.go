@@ -17,11 +17,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/wevial/croton-mcp/internal/testkit"
@@ -38,9 +40,9 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// startDriveStdioSession spawns the production executable over stdio against
-// one CLI binary path and returns the client session plus captured stderr.
-func startDriveStdioSession(t *testing.T, binaryPath string) (*mcp.ClientSession, *bytes.Buffer) {
+// driveCommand writes a valid configuration naming one CLI binary path and
+// returns the production executable's command with stderr captured.
+func driveCommand(t *testing.T, binaryPath string, stderr *bytes.Buffer) (*exec.Cmd, string) {
 	t.Helper()
 
 	configPath := filepath.Join(canonicalTempDir(t), "croton-drive.json")
@@ -56,10 +58,20 @@ func startDriveStdioSession(t *testing.T, binaryPath string) (*mcp.ClientSession
 		t.Fatalf("resolve test executable: %v", err)
 	}
 
-	stderr := &bytes.Buffer{}
 	command := exec.Command(executable, "--config", configPath)
 	command.Env = append(os.Environ(), runDriveMainEnv+"=1")
 	command.Stderr = stderr
+
+	return command, configPath
+}
+
+// startDriveStdioSession spawns the production executable over stdio against
+// one CLI binary path and returns the client session plus captured stderr.
+func startDriveStdioSession(t *testing.T, binaryPath string) (*mcp.ClientSession, *bytes.Buffer) {
+	t.Helper()
+
+	stderr := &bytes.Buffer{}
+	command, _ := driveCommand(t, binaryPath, stderr)
 	client := mcp.NewClient(&mcp.Implementation{Name: "croton-drive-stdio-test", Version: "0.0.0"}, nil)
 	session, err := client.Connect(context.Background(), &mcp.CommandTransport{Command: command}, nil)
 	if err != nil {
@@ -259,6 +271,74 @@ func TestStdioDriveToolsFailClosedWhenNegotiationFails(t *testing.T) {
 	if audit := stderr.String(); strings.Contains(audit, "my-files") || strings.Contains(audit, binary) {
 		t.Fatalf("stderr leaks request or CLI details: %q", audit)
 	}
+}
+
+func TestOversizeDriveStdioFrameFailsClosedWithoutContentLeak(t *testing.T) {
+	const (
+		secret     = "secret-user@drive.test-hunter2"
+		binaryPath = "/opt/proton-drive/proton-drive"
+	)
+
+	var stderr bytes.Buffer
+	command, configPath := driveCommand(t, binaryPath, &stderr)
+	var stdout bytes.Buffer
+	command.Stdout = &stdout
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		t.Fatalf("stdin pipe: %v", err)
+	}
+	if err := command.Start(); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+
+	prefix := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2026-07-28","capabilities":{},"clientInfo":{"name":"oversize-fixture","version":"0","title":"`
+	suffix := `"}}}` + "\n"
+	frame := prefix + strings.Repeat("S", 64*1024-len(prefix)-len(suffix)-len(secret)+1) + secret + suffix
+	if len(frame) <= 64*1024 {
+		t.Fatalf("frame length = %d, want more than 64 KiB", len(frame))
+	}
+	// stdin stays open until the process has exited: the SDK discards any
+	// request still in flight when its reader hits EOF, so closing stdin
+	// first would hide an unbounded server's answer and prove nothing.
+	t.Cleanup(func() { _ = stdin.Close() })
+	if _, err := io.WriteString(stdin, frame); err != nil {
+		t.Fatalf("write oversize frame: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- command.Wait() }()
+	select {
+	case err := <-done:
+		var exitError *exec.ExitError
+		if err == nil || !isExitCode(err, 1, &exitError) {
+			t.Fatalf("exit status = %v, want exit code 1", err)
+		}
+	case <-time.After(5 * time.Second):
+		_ = command.Process.Kill()
+		<-done
+		t.Fatalf("server did not reject oversize frame within 5s (stdout: %.120q)", stdout.String())
+	}
+
+	if stdout.Len() != 0 {
+		t.Fatalf("oversize frame produced stdout: %q", stdout.String())
+	}
+	diagnostics := stderr.String()
+	for _, leak := range []string{secret, "drive.test", configPath, binaryPath} {
+		if strings.Contains(diagnostics, leak) {
+			t.Fatalf("oversize frame leaked content %q: %q", leak, diagnostics)
+		}
+	}
+	if got := strings.TrimSpace(diagnostics); got != "croton-drive-mcp: server unavailable" {
+		t.Fatalf("stderr = %q, want static server failure", got)
+	}
+}
+
+func isExitCode(err error, want int, target **exec.ExitError) bool {
+	if exitError, ok := err.(*exec.ExitError); ok {
+		*target = exitError
+		return exitError.ExitCode() == want
+	}
+	return false
 }
 
 func canonicalTempDir(t *testing.T) string {
