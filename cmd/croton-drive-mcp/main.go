@@ -29,6 +29,11 @@ import (
 	"github.com/wevial/croton-mcp/internal/drivemcp"
 )
 
+// errWritesEnabled is the static refusal for a configuration that enables the
+// reserved Drive write policy before any write capability exists. Its text is
+// fixed at compile time and carries nothing from the configuration file.
+var errWritesEnabled = errors.New("writes.enabled is not supported")
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
@@ -53,6 +58,9 @@ func run(ctx context.Context, arguments []string, stderr io.Writer) error {
 	loaded, err := config.LoadDrive(*configPath)
 	if err != nil {
 		return err
+	}
+	if loaded.Writes.Enabled {
+		return errWritesEnabled
 	}
 
 	client, err := drivecli.New(drivecli.Options{BinaryPath: loaded.CLI.BinaryPath})
