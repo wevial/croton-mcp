@@ -93,11 +93,14 @@ for prerequisites, verification, the exact tool names, and removal.
 - `internal/strictjson`: strict JSON decoding
 - `internal/testkit`: synthetic loopback IMAP server and fake-Drive builder for tests
 - `internal/testkit/fakedrive`: the fake Proton Drive CLI executable for tests
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): the two servers, the packages behind them, and where the product vision lives in the tree
 - `docs/DEPENDENCIES.md`: reviewed dependency choices and adoption constraints
 
 ## Security and privacy
 
-See [SECURITY.md](SECURITY.md). Never commit credentials, account identifiers, mailbox contents, or unredacted protocol logs.
+See [SECURITY.md](SECURITY.md) and the threat model in
+[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), which names the assets, trust
+boundaries, residual risks and what Croton does not defend against. Never commit credentials, account identifiers, mailbox contents, or unredacted protocol logs.
 
 A single accepted transport replay opens a fresh authenticated session and may invoke the configured credential helper one additional time. Credential helpers should therefore be idempotent and free of unrelated side effects.
 

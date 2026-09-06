@@ -21,6 +21,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/wevial/croton-mcp/internal/drivecli"
+	"github.com/wevial/croton-mcp/internal/stdioframe"
 )
 
 const (
@@ -86,14 +87,9 @@ func Serve(ctx context.Context, server *Server, transport mcp.Transport) error {
 	return errServerUnavailable
 }
 
-// NewStdioTransport keeps the Drive executable's standard output exclusively
-// for SDK JSON-RPC frames; startup diagnostics are emitted by its command layer.
+// NewStdioTransport creates the Drive executable's bounded stdio transport,
+// the same frame guard Mail uses. Standard output stays exclusively for SDK
+// JSON-RPC frames; startup diagnostics are emitted by its command layer.
 func NewStdioTransport(stdin io.ReadCloser, stdout io.Writer) mcp.Transport {
-	return &mcp.IOTransport{Reader: stdin, Writer: nopWriteCloser{Writer: stdout}}
+	return stdioframe.NewTransport(stdin, stdout)
 }
-
-type nopWriteCloser struct {
-	io.Writer
-}
-
-func (nopWriteCloser) Close() error { return nil }
