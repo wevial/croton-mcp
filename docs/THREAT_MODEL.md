@@ -205,23 +205,25 @@ always valid JSON (`internal/mcpserver/output.go`,
 lines use a fixed vocabulary; `docs/MCP.md` states the Mail output, error and
 audit contracts and this document does not restate them.
 
-Inbound frame size is bounded on the Mail side only. `internal/mcpserver/stdio.go`
-wraps standard input in a bounded frame reader with a 64 KiB limit that is
-installed before the SDK sees a byte, and additionally rejects frames that
-alias protocol fields. `internal/drivemcp/server.go` returns the SDK's plain
-`IOTransport` with no frame bound, so the Drive executable relies on the
-argument cap alone once the SDK has read a frame.
+Inbound frame size is bounded identically in both executables. The shared
+limiter in `internal/stdioframe/stdioframe.go` wraps standard input in a
+bounded frame reader with a 64 KiB limit that is installed before the SDK sees
+a byte, requires each frame to be one strictly decoded JSON object, and rejects
+frames whose protocol fields alias one another by case. Mail installs it
+through `internal/mcpserver/stdio.go` and Drive through
+`internal/drivemcp/server.go`; neither executable hands the SDK a plain
+`IOTransport` over raw standard input.
 
 **How it fails closed.** An unlisted method, oversize arguments, an argument
-object with unknown or duplicated fields or a frame over the Mail bound
-produce a fixed error or close the transport; no partial result and no
-underlying error text reach standard output.
+object with unknown or duplicated fields, or a frame over the bound in either
+executable, produce a fixed error or close the transport; no partial result and
+no underlying error text reach standard output.
 
 **What it does not guarantee.** The surface limits what a client can request
 and how much it receives. It does not make the client trustworthy: anything a
-tool legitimately returns is disclosed to that client. Drive stdio frames are
-unbounded until the frame-bound ticket lands, so a client can make the Drive
-process buffer an arbitrarily large single frame.
+tool legitimately returns is disclosed to that client. The frame bound limits
+one frame at a time; it does not rate-limit a client that sends many valid
+frames, and neither executable throttles tool calls.
 
 ### Audit and diagnostic stream
 
@@ -254,9 +256,9 @@ Risks the code already admits and this model records rather than hides:
 - **go-imap is a pre-release dependency.** `docs/DEPENDENCIES.md` records why it
   was adopted and the constraints on its use. Its parser sits behind the Bridge
   boundary and processes untrusted peer output.
-- **Drive stdio frames are unbounded.** Only the Mail executable installs the
-  64 KiB frame guard; Drive's SDK transport reads whole frames without a limit
-  until its own ticket lands.
+- **The frame bound is the only inbound rate control.** Both executables
+  install the shared 64 KiB frame guard, but nothing limits how many valid
+  frames a client sends or how fast, so a client can keep the process busy.
 - **The version banner does not authenticate a swapped executable.** A
   replaced CLI that prints the pinned banner passes the handshake.
 - **Drive downloads and writes are reserved and not shipped.** The
