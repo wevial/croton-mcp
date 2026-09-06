@@ -29,6 +29,7 @@ import (
 const (
 	maxListEntries     = 200
 	defaultListEntries = 100
+	maxSharingMembers  = 100
 
 	maxToolArgumentsBytes = 24 * 1024
 )
@@ -42,6 +43,12 @@ const (
 	errUnavailable     = "unavailable"
 	errInternal        = "internal"
 )
+
+// truncating results report count-based truncation they applied themselves,
+// so the audit line reflects every dropped entry and not only byte overflow.
+type truncating interface {
+	wasTruncated() bool
+}
 
 // toolFunc validates raw arguments authoritatively and returns either a
 // JSON-marshalable result or a stable error code.
@@ -73,6 +80,14 @@ func toolDefinitions() []toolDefinition {
 				"path": stringSchema(maxDrivePathBytes),
 			}, []string{"path"}),
 			run: runGetDriveMetadata,
+		},
+		{
+			name:        "get_drive_sharing_status",
+			description: "Report whether one absolute Proton Drive path is shared, with bounded invitation and member lists and its public link, never its password.",
+			schema: objectSchema(map[string]json.RawMessage{
+				"path": stringSchema(maxDrivePathBytes),
+			}, []string{"path"}),
+			run: runGetDriveSharingStatus,
 		},
 	}
 }
@@ -136,6 +151,9 @@ func makeHandler(server *Server, definition toolDefinition) mcp.ToolHandler {
 		if encodeErr != nil {
 			server.audit.ToolCall(definition.name, "error", errInternal, false)
 			return errorResult(errInternal), nil
+		}
+		if bounded, ok := result.(truncating); ok && bounded.wasTruncated() {
+			truncated = true
 		}
 
 		server.audit.ToolCall(definition.name, "ok", "", truncated)
@@ -280,6 +298,85 @@ func runGetDriveMetadata(ctx context.Context, server *Server, arguments json.Raw
 	}
 
 	return &node, ""
+}
+
+// sharingURLAccess mirrors drivecli.URLAccess without a password field, so the
+// public link's custom password is unreachable by construction.
+type sharingURLAccess struct {
+	UID                          string `json:"uid"`
+	CreationTime                 string `json:"creationTime"`
+	Role                         string `json:"role"`
+	URL                          string `json:"url"`
+	ExpirationTime               string `json:"expirationTime,omitempty"`
+	NumberOfInitializedDownloads int64  `json:"numberOfInitializedDownloads"`
+}
+
+// sharingStatusResult is the tool's frozen sharing view: the three lists stay
+// present (empty when unshared) and each is bounded by maxSharingMembers.
+type sharingStatusResult struct {
+	Shared               bool              `json:"shared"`
+	ProtonInvitations    []drivecli.Member `json:"protonInvitations"`
+	NonProtonInvitations []drivecli.Member `json:"nonProtonInvitations"`
+	Members              []drivecli.Member `json:"members"`
+	URLAccess            *sharingURLAccess `json:"urlAccess,omitempty"`
+	EditorsCanShare      bool              `json:"editorsCanShare"`
+	Truncated            bool              `json:"truncated,omitempty"`
+}
+
+func (result *listDriveResult) wasTruncated() bool { return result.Truncated }
+
+func (result *sharingStatusResult) wasTruncated() bool { return result.Truncated }
+
+func runGetDriveSharingStatus(ctx context.Context, server *Server, arguments json.RawMessage) (any, string) {
+	var input struct {
+		Path string `json:"path"`
+	}
+	if !decodeArguments(arguments, &input) {
+		return nil, errInvalidArgument
+	}
+	if !validDrivePath(input.Path) {
+		return nil, errInvalidArgument
+	}
+
+	if err := server.gate.ensure(ctx, server.cli); err != nil {
+		return nil, mapDriveError(err)
+	}
+
+	status, err := server.cli.SharingStatus(ctx, input.Path)
+	if err != nil {
+		return nil, mapDriveError(err)
+	}
+
+	return mapSharingStatus(status), ""
+}
+
+// mapSharingStatus copies the adapter's sharing object into the MCP-side
+// shape, bounding every list and dropping the public-link password.
+func mapSharingStatus(status drivecli.SharingStatus) *sharingStatusResult {
+	result := &sharingStatusResult{Shared: status.Shared && status.Info != nil}
+	info := status.Info
+	if info == nil {
+		info = &drivecli.ShareResult{}
+	}
+
+	var protonTruncated, nonProtonTruncated, membersTruncated bool
+	result.ProtonInvitations, protonTruncated = boundEntries(info.ProtonInvitations, maxSharingMembers)
+	result.NonProtonInvitations, nonProtonTruncated = boundEntries(info.NonProtonInvitations, maxSharingMembers)
+	result.Members, membersTruncated = boundEntries(info.Members, maxSharingMembers)
+	result.Truncated = protonTruncated || nonProtonTruncated || membersTruncated
+	result.EditorsCanShare = info.EditorsCanShare
+	if info.URLAccess != nil {
+		result.URLAccess = &sharingURLAccess{
+			UID:                          info.URLAccess.UID,
+			CreationTime:                 info.URLAccess.CreationTime,
+			Role:                         info.URLAccess.Role,
+			URL:                          info.URLAccess.URL,
+			ExpirationTime:               info.URLAccess.ExpirationTime,
+			NumberOfInitializedDownloads: info.URLAccess.NumberOfInitializedDownloads,
+		}
+	}
+
+	return result
 }
 
 // boundEntries keeps the listed shape present even when empty and reports
