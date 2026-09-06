@@ -10,8 +10,8 @@ For `2026-07-28`, Croton relies on the SDK's per-request protocol metadata and r
 
 ## `github.com/emersion/go-imap/v2`
 
-Croton uses this package in the narrow, package-private read-only IMAP facade
-at the pinned `v2.0.0-beta.8` release. Due diligence on 2026-08-05 found:
+Croton uses this package only in the `bridge` package, the narrow read-only
+IMAP adapter, at the pinned `v2.0.0-beta.8` release. Due diligence on 2026-08-05 found:
 
 - the upstream default branch is `v2`, is active (last push reported 2026-07-02), and the repository is not archived;
 - the published v2 package version is `v2.0.0-beta.8` (2025-12-16), and upstream explicitly describes v2 as still in development;

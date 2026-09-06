@@ -1,6 +1,6 @@
 # Croton Agent Guide
 
-Croton is a local, read-only MCP server for Proton Mail Bridge.
+Croton ships two local, read-only MCP servers: `croton-mcp` for Proton Mail Bridge and `croton-drive-mcp` for Proton Drive.
 
 ## Invariants
 
