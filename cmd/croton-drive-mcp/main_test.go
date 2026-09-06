@@ -185,6 +185,7 @@ func TestRunRefusesEnabledWritePolicyBeforeTouchingTheCLI(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		_ = command.Process.Kill()
+		<-done
 		t.Fatal("server did not refuse the enabled write policy within 5s")
 	}
 
