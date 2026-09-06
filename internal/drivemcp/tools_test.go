@@ -237,6 +237,168 @@ func TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI(t *testing.T) {
 	}
 }
 
+// oversizeDriveArguments builds a raw argument object of exactly size bytes:
+// a valid path plus one padding string, so that only the byte cap decides.
+func oversizeDriveArguments(t *testing.T, size int) json.RawMessage {
+	t.Helper()
+
+	prefix := `{"path":"/my-files","pad":"`
+	suffix := `"}`
+	if size <= len(prefix)+len(suffix) {
+		t.Fatalf("size %d cannot hold the argument envelope", size)
+	}
+	arguments := json.RawMessage(prefix + strings.Repeat("p", size-len(prefix)-len(suffix)) + suffix)
+	if len(arguments) != size {
+		t.Fatalf("built %d argument bytes, want %d", len(arguments), size)
+	}
+
+	return arguments
+}
+
+func TestDriveToolsRejectOversizeRawArgumentsWithoutExecutingTheCLI(t *testing.T) {
+	t.Parallel()
+
+	// The cap itself: the same object is accepted at exactly the cap and
+	// rejected one byte over it, so the rejection below is the byte bound and
+	// not the unknown-field rule.
+	var padded struct {
+		Path string `json:"path"`
+		Pad  string `json:"pad"`
+	}
+	if !decodeArguments(oversizeDriveArguments(t, maxToolArgumentsBytes), &padded) {
+		t.Fatalf("an object of exactly %d bytes must decode", maxToolArgumentsBytes)
+	}
+	if decodeArguments(oversizeDriveArguments(t, maxToolArgumentsBytes+1), &padded) {
+		t.Fatalf("an object of %d bytes must be rejected", maxToolArgumentsBytes+1)
+	}
+
+	var audit bytes.Buffer
+	client, binary := newToolTestClient(t, "", testkit.DriveFixture(t, "list-my-files.json"))
+	session := connectDriveTestClient(t, Options{CLI: client, Audit: NewAuditor(&audit)})
+
+	oversize := oversizeDriveArguments(t, maxToolArgumentsBytes+1)
+	padding := strings.Repeat("p", 64)
+	for _, definition := range toolDefinitions() {
+		result := callDriveTool(t, session, definition.name, oversize)
+		requireDriveToolError(t, result, "invalid_argument")
+		if raw := driveResultText(t, result); strings.Contains(raw, padding) || strings.Contains(raw, "my-files") {
+			t.Fatalf("%s error result leaks the arguments: %d bytes", definition.name, len(raw))
+		}
+	}
+
+	if _, err := os.Stat(filepath.Join(filepath.Dir(binary), "argv")); !os.IsNotExist(err) {
+		t.Fatalf("oversize arguments reached the CLI: stat argv err = %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(audit.String()), "\n")
+	if len(lines) != len(toolDefinitions()) {
+		t.Fatalf("audit lines = %d, want %d: %q", len(lines), len(toolDefinitions()), audit.String())
+	}
+	for index, definition := range toolDefinitions() {
+		want := `{"event":"tool_call","tool":"` + definition.name + `","outcome":"error","code":"invalid_argument"}`
+		if lines[index] != want {
+			t.Fatalf("audit line %d = %q, want %q", index, lines[index], want)
+		}
+	}
+	if strings.Contains(audit.String(), padding) || strings.Contains(audit.String(), "my-files") {
+		t.Fatalf("audit output leaks the arguments: %q", audit.String())
+	}
+}
+
+func TestDriveToolSchemasAreClosedAndBounded(t *testing.T) {
+	t.Parallel()
+
+	definitions := toolDefinitions()
+	if len(definitions) == 0 {
+		t.Fatal("no tool definitions to walk")
+	}
+
+	sawTypeEnum := false
+	for _, definition := range definitions {
+		var schema struct {
+			Type                 string                     `json:"type"`
+			AdditionalProperties *bool                      `json:"additionalProperties"`
+			Properties           map[string]json.RawMessage `json:"properties"`
+		}
+		if err := json.Unmarshal(definition.schema, &schema); err != nil {
+			t.Fatalf("%s: schema is not valid JSON: %v", definition.name, err)
+		}
+		if schema.Type != "object" {
+			t.Fatalf("%s: schema type = %q, want object", definition.name, schema.Type)
+		}
+		if schema.AdditionalProperties == nil || *schema.AdditionalProperties {
+			t.Fatalf("%s: schema is not closed: %s", definition.name, definition.schema)
+		}
+		if len(schema.Properties) == 0 {
+			t.Fatalf("%s: schema publishes no properties: %s", definition.name, definition.schema)
+		}
+
+		for property, raw := range schema.Properties {
+			var bounds struct {
+				Type      string   `json:"type"`
+				MaxLength *int     `json:"maxLength"`
+				MaxBytes  *int     `json:"x-maxBytes"`
+				Enum      []string `json:"enum"`
+			}
+			if err := json.Unmarshal(raw, &bounds); err != nil {
+				t.Fatalf("%s.%s: property schema is not valid JSON: %v", definition.name, property, err)
+			}
+			if bounds.Type != "string" {
+				continue
+			}
+
+			if bounds.Enum != nil {
+				if definition.name != "list_drive_entries" || property != "type" {
+					t.Fatalf("%s.%s: unexpected enum string property: %s", definition.name, property, raw)
+				}
+				if len(bounds.Enum) != 2 || bounds.Enum[0] != "file" || bounds.Enum[1] != "folder" {
+					t.Fatalf("%s.%s: enum = %q, want [file folder]", definition.name, property, bounds.Enum)
+				}
+				sawTypeEnum = true
+				continue
+			}
+
+			if bounds.MaxLength == nil || bounds.MaxBytes == nil {
+				t.Fatalf("%s.%s: string schema lacks maxLength or x-maxBytes: %s", definition.name, property, raw)
+			}
+			if *bounds.MaxLength <= 0 || *bounds.MaxLength != *bounds.MaxBytes {
+				t.Fatalf("%s.%s: maxLength = %d, x-maxBytes = %d, want equal and positive", definition.name, property, *bounds.MaxLength, *bounds.MaxBytes)
+			}
+		}
+	}
+	if !sawTypeEnum {
+		t.Fatal("list_drive_entries.type enum was not found")
+	}
+}
+
+func TestListDriveEntriesTreatsEmptyTypeAsNoFilter(t *testing.T) {
+	t.Parallel()
+
+	unfilteredClient, unfilteredBinary := newToolTestClient(t, "", testkit.DriveFixture(t, "list-my-files.json"))
+	unfilteredSession := connectDriveTestClient(t, Options{CLI: unfilteredClient})
+	unfiltered := callDriveTool(t, unfilteredSession, "list_drive_entries", map[string]any{"path": "/my-files"})
+	decodeDriveResult(t, unfiltered, &listDriveResult{})
+	if got := testkit.RecordedArgv(t, unfilteredBinary); got != "filesystem\nlist\n/my-files\n--json\n" {
+		t.Fatalf("unfiltered argv = %q", got)
+	}
+
+	emptyClient, emptyBinary := newToolTestClient(t, "", testkit.DriveFixture(t, "list-my-files.json"))
+	emptySession := connectDriveTestClient(t, Options{CLI: emptyClient})
+	empty := callDriveTool(t, emptySession, "list_drive_entries", map[string]any{"path": "/my-files", "type": ""})
+
+	var decoded listDriveResult
+	decodeDriveResult(t, empty, &decoded)
+	if decoded.Path != "/my-files" || len(decoded.Entries) != 1 || decoded.Entries[0].UID != "node:file-1" || decoded.Truncated {
+		t.Fatalf("empty-type result = %+v", decoded)
+	}
+	if got := testkit.RecordedArgv(t, emptyBinary); got != "filesystem\nlist\n/my-files\n--json\n" {
+		t.Fatalf("empty-type argv carries a type filter: %q", got)
+	}
+	if got, want := driveResultText(t, empty), driveResultText(t, unfiltered); got != want {
+		t.Fatalf("empty-type result = %s, want the unfiltered result %s", got, want)
+	}
+}
+
 func TestDriveToolsFailClosedWhenNegotiationFails(t *testing.T) {
 	t.Parallel()
 
