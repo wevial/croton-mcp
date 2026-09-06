@@ -274,6 +274,19 @@ func TestStdioDriveToolsFailClosedWhenNegotiationFails(t *testing.T) {
 }
 
 func TestOversizeDriveStdioFrameFailsClosedWithoutContentLeak(t *testing.T) {
+	// Two stdin sequences: holding stdin open is the discriminating witness
+	// (an unbounded server answers the request on stdout), while closing
+	// stdin right after the frame is the ticket's literal scenario. The SDK
+	// discards a request still in flight when its reader hits EOF, so the
+	// closed variant alone cannot tell a bounded server from an unbounded
+	// one; both are kept so the bound and the exact sequence are covered.
+	t.Run("stdin held open", func(t *testing.T) { assertOversizeDriveFrameRejected(t, false) })
+	t.Run("stdin closed after frame", func(t *testing.T) { assertOversizeDriveFrameRejected(t, true) })
+}
+
+func assertOversizeDriveFrameRejected(t *testing.T, closeStdin bool) {
+	t.Helper()
+
 	const (
 		secret     = "secret-user@drive.test-hunter2"
 		binaryPath = "/opt/proton-drive/proton-drive"
@@ -290,6 +303,7 @@ func TestOversizeDriveStdioFrameFailsClosedWithoutContentLeak(t *testing.T) {
 	if err := command.Start(); err != nil {
 		t.Fatalf("start server: %v", err)
 	}
+	t.Cleanup(func() { _ = stdin.Close() })
 
 	prefix := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2026-07-28","capabilities":{},"clientInfo":{"name":"oversize-fixture","version":"0","title":"`
 	suffix := `"}}}` + "\n"
@@ -297,12 +311,12 @@ func TestOversizeDriveStdioFrameFailsClosedWithoutContentLeak(t *testing.T) {
 	if len(frame) <= 64*1024 {
 		t.Fatalf("frame length = %d, want more than 64 KiB", len(frame))
 	}
-	// stdin stays open until the process has exited: the SDK discards any
-	// request still in flight when its reader hits EOF, so closing stdin
-	// first would hide an unbounded server's answer and prove nothing.
-	t.Cleanup(func() { _ = stdin.Close() })
-	if _, err := io.WriteString(stdin, frame); err != nil {
-		t.Fatalf("write oversize frame: %v", err)
+	_, writeErr := io.WriteString(stdin, frame)
+	if closeStdin {
+		_ = stdin.Close()
+	}
+	if writeErr != nil {
+		t.Fatalf("write oversize frame: %v", writeErr)
 	}
 
 	done := make(chan error, 1)
