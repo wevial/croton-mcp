@@ -10,7 +10,7 @@ stderr.
 Every claim below names the synthetic test that pins it. The tests run against
 the fake Drive CLI in `internal/testkit/fakedrive` and the fixtures in
 `internal/drivecli/testdata`; no live Proton account, credential, or Drive
-content is involved. The five claims the tree has no test for are listed in
+content is involved. The two claims the tree has no test for are listed in
 [Not yet witnessed](#not-yet-witnessed) with their enforcing source lines; the
 page states nothing beyond the cited tests and that table.
 `scripts/verify_docs_drive_mcp.py` cross-checks the tool names, the error
@@ -121,9 +121,10 @@ object one byte over the 24 KiB cap and proves the same.
   accepted limit bounds the entries and sets `truncated` when it cuts them
   (`TestListDriveEntriesEnforcesEntryLimitAndSignalsTruncation`, which sends
   explicit limits of 2 and 3). A value above 200 is not rejected: the server
-  clamps it to 200. No test omits `limit` or sends one above 200, so the
-  default of 100 and the clamp are listed together in
-  [Not yet witnessed](#not-yet-witnessed).
+  clamps it to 200. `TestListEntriesClampsTheLimit` pins the default of 100
+  and the clamp with omitted, 200 and 201 limits: all calls succeed and
+  return 100, 200 and 200 entries from a 201-entry fixture. It also pins the
+  recorded CLI argv, which carries no limit; the MCP server bounds the result.
 
 ## Output
 
@@ -179,11 +180,10 @@ An error result carries `isError: true` and one JSON text item of the form
 
 Every adapter failure maps to one of these codes; errors the server does not
 recognize collapse to `internal`, so no CLI stderr, path, node name, or stack
-detail can cross the protocol boundary. The mapping test passes every
-recognized error bare and wraps only the unknown one, so "a recognized code
-survives wrapping" is listed in [Not yet witnessed](#not-yet-witnessed). This
-vocabulary is a subset of the Mail server's: Drive has no not-found or
-stale-id code.
+detail can cross the protocol boundary. Recognized adapter errors and context
+deadline errors keep their codes through wrapping
+(`TestMapDriveErrorKeepsTheCodeThroughWrapping`). This vocabulary is a subset
+of the Mail server's: Drive has no not-found or stale-id code.
 
 Witnesses: `TestMapDriveErrorCoversEveryAdapterCode` (every adapter code,
 context cancellation, deadline expiry, and an unknown wrapped error),
@@ -211,9 +211,9 @@ The tool name, outcome, and code are each re-validated against fixed sets
 before logging, so an unexpected upstream value becomes `unknown_tool`,
 `error`, or `internal` rather than reaching the log. Caller arguments, Drive
 paths, node names, addresses, CLI output, and error text never appear. A clean
-protocol startup writes nothing to stderr. The cited tests feed the auditor
-only expected values; the sanitizers' handling of unexpected ones is listed in
-[Not yet witnessed](#not-yet-witnessed).
+protocol startup writes nothing to stderr.
+`TestAuditSanitizersFallBackToTheVocabulary` pins all three fallbacks in the
+emitted audit line.
 
 Witnesses: `TestDriveAuditRecordsOnlyToolNameAndOutcome` (the exact `ok` and
 `error` lines; no path, name, or address leaks),
@@ -248,18 +248,18 @@ absent from the stdio result and from the process's stderr).
 
 ## Not yet witnessed
 
-These five claims are enforced by the named lines in `internal/drivemcp` but
+These two claims are enforced by the named lines in `internal/drivemcp` but
 no tracked Drive test asserts them. Each row is retired by the code ticket
 that adds its synthetic test; the closed-schema and argument-cap rows were
 retired by `TestDriveToolSchemasAreClosedAndBounded` and
-`TestDriveToolsRejectOversizeRawArgumentsWithoutExecutingTheCLI`.
-`scripts/verify_docs_drive_mcp.py` requires exactly these five rows and
+`TestDriveToolsRejectOversizeRawArgumentsWithoutExecutingTheCLI`; the
+entry-limit, wrapped-error and audit-sanitizer rows were retired by
+`TestListEntriesClampsTheLimit`, `TestMapDriveErrorKeepsTheCodeThroughWrapping`
+and `TestAuditSanitizersFallBackToTheVocabulary`.
+`scripts/verify_docs_drive_mcp.py` requires exactly these two rows and
 requires every `path:line` to resolve to a non-blank line in the tree.
 
 | Claim | Enforcing line |
 | ----- | -------------- |
-| An omitted `limit` defaults to 100 and a `limit` above 200 is clamped to 200, not rejected (`clampLimit` with `defaultListEntries` as fallback and `maxListEntries` as ceiling). | `internal/drivemcp/tools.go:253`, `internal/drivemcp/tools.go:395` |
-| A wrapped recognized error keeps its code: `mapDriveError` tests context errors with `errors.Is` and adapter codes with `drivecli.CodeOf`, which unwraps with `errors.As`. | `internal/drivemcp/tools.go:205`, `internal/drivemcp/tools.go:212` |
-| The audit sanitizers log an unexpected `tool` as `unknown_tool`, an `outcome` other than `ok` as `error`, and a `code` outside the six-code vocabulary as `internal`. | `internal/drivemcp/audit.go:81`, `internal/drivemcp/audit.go:90`, `internal/drivemcp/audit.go:98` |
 | A method outside the allowlist is answered with JSON-RPC "method not found" by `allowlistMiddleware`. | `internal/drivemcp/tools.go:128` |
 | A panicking handler is recovered by `runTool` and reported as `internal` with no stack detail on the protocol stream. | `internal/drivemcp/tools.go:170` |
