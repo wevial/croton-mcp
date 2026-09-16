@@ -221,6 +221,32 @@ class MailDesignTests(unittest.TestCase):
             self.reject(RECORD.replace(row, f"<!--\n{row}\n-->"), f"invalid {operation} row")
         self.reject(RECORD, "missing proposed Mail design link", f"<!-- {MCP} -->")
 
+    def test_literal_comment_openers_in_code_preserve_later_sections(self):
+        for example in (
+            "```html\n<!--\n```\n",
+            "~~~~html\n<!--\n~~~~\n",
+            "A literal `<!--` opener.\n",
+            "A literal `` `<!-- `` opener.\n",
+            "A multiline `literal\n<!--` opener.\n",
+            "```html <!--\nexample\n```\n",
+        ):
+            with self.subTest(example=example):
+                self.assertEqual(self.check(example + RECORD, example + MCP), [])
+
+    def test_real_comments_after_literal_openers_still_hide_requirements(self):
+        statement = verifier.REQUIREMENTS["Invariant"]["no authorization"]
+        for example in ("```html\n<!--\n```\n", "Literal `<!--`.\n"):
+            with self.subTest(example=example):
+                changed = RECORD.replace(statement, f"<!-- {statement} -->")
+                self.reject(example + changed, "Invariant: missing no authorization")
+                self.reject(RECORD, "missing proposed Mail design link", example + f"<!-- {MCP} -->")
+
+    def test_code_markers_inside_real_comments_do_not_escape_comments(self):
+        for marker in ("```", "~~~~", "`"):
+            with self.subTest(marker=marker):
+                self.reject(f"<!--\n{marker}\n{RECORD}\n-->", "headings:")
+                self.assertEqual(self.check(f"<!--\n{marker}\n-->\n" + RECORD), [])
+
     def test_missing_file_and_cli_diagnostics(self):
         self.check()
         self.doc.unlink()

@@ -12,7 +12,7 @@ import pathlib
 import re
 import sys
 
-from verify_docs_architecture import parse, table_rows
+from verify_docs_architecture import fence_marker, parse, table_rows
 
 DOC = pathlib.Path("docs/design/0002-mail-mutation.md")
 MCP = pathlib.Path("docs/MCP.md")
@@ -66,9 +66,54 @@ STATUS_CONTEXT = (
 
 
 def visible_lines(text):
-    # Preserve line boundaries so hiding comments cannot manufacture table rows.
-    text = re.sub(r"<!--.*?(?:-->|\Z)", lambda m: "\n" * m[0].count("\n"), text, flags=re.S)
-    return parse(text)
+    """Strip real comments while preserving literal comment markers in code."""
+    visible = []
+    fence = None
+    offset = 0
+    while offset < len(text):
+        if offset == 0 or text[offset - 1] == "\n":
+            end = text.find("\n", offset)
+            end = len(text) if end == -1 else end + 1
+            raw = text[offset:end]
+            marker = fence_marker(raw)
+            if fence is not None or marker is not None:
+                if fence is None:
+                    fence = marker
+                elif marker is not None and marker[0] == fence[0] and marker[1] >= fence[1] and not marker[2]:
+                    fence = None
+
+                visible.append(raw)
+                offset = end
+                continue
+
+        if text.startswith("<!--", offset):
+            end = text.find("-->", offset + 4)
+            end = len(text) if end == -1 else end + 3
+            # Preserve boundaries so hidden comments cannot manufacture rows.
+            visible.append("\n" * text[offset:end].count("\n"))
+            offset = end
+            continue
+
+        if text[offset] == "\\" and offset + 1 < len(text) and text[offset + 1] in "`\\":
+            visible.append(text[offset:offset + 2])
+            offset += 2
+            continue
+
+        if text[offset] == "`":
+            opener = re.match(r"`+", text[offset:])[0]
+            end = offset + len(opener)
+            closer = re.search(r"(?<!`)" + opener + r"(?!`)", text[end:])
+            if closer is not None:
+                end += closer.end()
+
+            visible.append(text[offset:end])
+            offset = end
+            continue
+
+        visible.append(text[offset])
+        offset += 1
+
+    return parse("".join(visible))
 
 
 def normalize(text):
