@@ -36,17 +36,35 @@ local download confinement and write approval are reserved and not shipped.
 
 These primitives bind resolution and I/O to objects; they do not freeze the
 directory namespace. In particular, neither `openat2` nor `openat` prevents a
-directory from being renamed outside the allowed tree after opening. The future
-implementation must also prevent an adversary from relocating the destination
-or its ancestors throughout writing and publication, or refuse that destination
-before writing. A post-write path check or advisory lock is not that guarantee.
-If the environment cannot enforce it, downloads there remain unavailable.
+directory from being renamed outside the allowed tree after opening.
+
+**Pre-write refusal gate:** this record approves no relocation-protection
+backend on either Linux or macOS. An implementation following this record must
+treat lifetime confinement as unsupported on both platforms, even when all the
+resolution primitives above succeed. It must refuse every download before
+creating directories or temporary files, opening output for writing or
+truncation, starting the CLI download, or publishing output. Detect the missing
+protection by the absence of a design-approved platform backend in the
+implementation; do not infer support from a successful path lookup or probe
+rename. This is an unconditional unsupported result for the mechanisms specified
+here, not a runtime attempt to discover whether an attacker is present.
+
+Enabling either platform requires a successor design that names an enforceable
+relocation-prevention protocol, defines its acquisition and failure conditions,
+and holds protection from before the first output mutation through final
+publication. It must cover the destination file, destination directory, and
+ancestors, including relocation of the allowed root. Permission snapshots,
+post-write path checks, advisory locks, and a user's assertion that a directory
+is safe do not satisfy this gate. Until that protocol is specified and
+implemented, downloads remain unavailable on Linux and macOS.
 
 ## Decision
 
 Choose descriptor-bound confinement: Linux uses the constrained `openat2`
 operation above; macOS uses component-wise, no-follow `openat`. Carry the opened
-authority through all I/O instead of reopening a checked pathname. The future
+authority through all I/O instead of reopening a checked pathname. These are
+necessary resolution mechanisms, not sufficient authorization to begin a write;
+the pre-write refusal gate above applies to both platforms. The future
 tool must control the writer through that authority; passing a validated path
 to the existing CLI download command, which resolves it again, is insufficient.
 
@@ -85,9 +103,15 @@ proof. Both attacks must be refused:
    the same constraint on ancestors and through final publication.
 
 Assert outside sentinels are unchanged and no outside output appears, including
-partial files. Include an ordinary in-root success case and an unavailable-
-primitive refusal so that rejecting every request cannot satisfy the proof.
-These are requirements for the future tool, not tests claimed to exist today.
+partial files. For the unsupported backends specified here, assert refusal
+before any output mutation or writer invocation, including for an ordinary
+in-root destination; the first-write barrier must never be reached. This tests
+the refusal gate, not relocation prevention. Once a successor design supplies
+a protection backend, run the rename-during-write test against that backend on
+each platform it enables, alongside an ordinary in-root success case and an
+unavailable-primitive refusal. Rejecting every request cannot satisfy that
+backend's proof or justify registering a download tool. These are requirements
+for the future tool, not tests claimed to exist today.
 
 ## Reserved
 
@@ -106,5 +130,7 @@ This record changes neither config-key behavior nor any approval mechanism.
 Proposed. This is the design-only record for KO-449; no download tool ships with
 it. A follow-up implementation ticket, **Descriptor-confined Drive download
 tool** (issue identifier not yet assigned), must implement these mechanisms and
-ship the proof tests before registering a download tool. That ticket also needs
+ship the proof tests before registering a download tool. It is blocked on a
+successor design specifying relocation protection for each platform it enables;
+this record alone permits only pre-write refusal. That ticket also needs
 explicit product decisions for the reserved questions; this record supplies none.
