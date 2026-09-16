@@ -205,6 +205,48 @@ func TestListDriveEntriesEnforcesEntryLimitAndSignalsTruncation(t *testing.T) {
 	}
 }
 
+func TestListEntriesClampsTheLimit(t *testing.T) {
+	t.Parallel()
+
+	fixture := nodeListJSON(201)
+	binary := testkit.FakeDrive(t, "", fixture)
+	// Let the full fixture reach the MCP entry cap without hitting the CLI byte cap.
+	client, err := drivecli.New(drivecli.Options{BinaryPath: binary, MaxBytes: len(fixture)})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	session := connectDriveTestClient(t, Options{CLI: client})
+	cases := []struct {
+		name        string
+		arguments   map[string]any
+		wantEntries int
+	}{
+		{"omitted", map[string]any{"path": "/my-files"}, 100},
+		{"at_ceiling", map[string]any{"path": "/my-files", "limit": 200}, 200},
+		{"above_ceiling", map[string]any{"path": "/my-files", "limit": 201}, 200},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Each case must witness its own CLI invocation, not a prior record.
+			if err := os.Remove(filepath.Join(filepath.Dir(binary), "argv")); err != nil && !os.IsNotExist(err) {
+				t.Fatalf("remove recorded argv: %v", err)
+			}
+
+			var decoded listDriveResult
+			decodeDriveResult(t, callDriveTool(t, session, "list_drive_entries", tc.arguments), &decoded)
+			if len(decoded.Entries) != tc.wantEntries || !decoded.Truncated {
+				t.Fatalf("entries = %d, truncated = %v; want %d, true", len(decoded.Entries), decoded.Truncated, tc.wantEntries)
+			}
+
+			// The MCP server bounds the result; the CLI has no limit argument.
+			if got := testkit.RecordedArgv(t, binary); got != "filesystem\nlist\n/my-files\n--json\n" {
+				t.Fatalf("recorded argv = %q", got)
+			}
+		})
+	}
+}
+
 func TestDriveToolsRejectInvalidArgumentsWithoutExecutingTheCLI(t *testing.T) {
 	t.Parallel()
 
@@ -535,6 +577,28 @@ func TestMapDriveErrorCoversEveryAdapterCode(t *testing.T) {
 	}
 }
 
+func TestMapDriveErrorKeepsTheCodeThroughWrapping(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		err      error
+		wantCode string
+	}{
+		{"adapter", &drivecli.Error{Code: drivecli.CodeOutputOverflow}, "bounds_exceeded"},
+		{"deadline", context.DeadlineExceeded, "timed_out"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wrapped := fmt.Errorf("synthetic failure: %w", tc.err)
+
+			if got := mapDriveError(wrapped); got != tc.wantCode {
+				t.Errorf("mapDriveError(wrapped) = %q, want %q", got, tc.wantCode)
+			}
+		})
+	}
+}
+
 func TestDriveAuditRecordsOnlyToolNameAndOutcome(t *testing.T) {
 	t.Parallel()
 
@@ -559,6 +623,20 @@ func TestDriveAuditRecordsOnlyToolNameAndOutcome(t *testing.T) {
 		if strings.Contains(audit.String(), leak) {
 			t.Fatalf("audit output leaks %q: %q", leak, audit.String())
 		}
+	}
+}
+
+func TestAuditSanitizersFallBackToTheVocabulary(t *testing.T) {
+	t.Parallel()
+
+	var audit bytes.Buffer
+	auditor := NewAuditor(&audit)
+
+	auditor.ToolCall("unexpected_tool", "timeout", "unexpected_code", false)
+
+	want := `{"event":"tool_call","tool":"unknown_tool","outcome":"error","code":"internal"}` + "\n"
+	if got := audit.String(); got != want {
+		t.Fatalf("audit line = %q, want %q", got, want)
 	}
 }
 
