@@ -78,15 +78,15 @@ The frozen CLI surface is `drivecli.AllowedCommandLines()`, reproduced here:
 | `version` | `Handshake` | none (the gate) |
 | `filesystem list <path> [--type file\|folder] --json` | `List` | `list_drive_entries` |
 | `filesystem info <path> --json` | `Info` | `get_drive_metadata` |
-| `filesystem download <remotePath...> <localFolder> --file-conflict-strategy skip --folder-conflict-strategy skip --json` | `Download` | none: adapter-supported, exposed by no MCP tool |
 | `sharing status <path> --json` | `SharingStatus` | `get_drive_sharing_status` |
 
 The allowlist is not the MCP catalog. The catalog is `toolDefinitions()` in
 `internal/drivemcp/tools.go`, which registers exactly three tools:
 `list_drive_entries`, `get_drive_metadata`, and `get_drive_sharing_status`.
-`filesystem download` is allowlisted and `drivecli.Client.Download` exists,
-but no tool calls it; local confinement through `allowedDownloadDirectories`
-is reserved.
+`filesystem download` is rejected by the CLI allowlist. The
+`drivecli.Client.Download` method remains present but disabled, and no tool
+calls it. The internal confined output opener has no production call site;
+`allowedDownloadDirectories` and product download policy remain reserved.
 
 ## Packages
 
@@ -118,7 +118,7 @@ boundary exists in the tree but nothing ships behind it, with no date.
 | Mail and Drive `separately runnable` with separate configuration, credentials or authentication boundaries, and tool registries | Two executables; `config.Load` and `config.LoadDrive` decode separate schemas; Mail authenticates via `credentialCommand` in `bridge`, Drive via the CLI's own store behind the `internal/drivecli` handshake; catalogs in `internal/mcpserver` and `internal/drivemcp/tools.go`. |
 | Go implementation with a reusable, `MCP-neutral` Mail Bridge adapter | `bridge` imports no MCP types; `internal/mcpserver` is its only in-tree consumer. |
 | Independent, `unofficial` community project | README's Drive section and the non-affiliation statement; no Proton logos or branding in the tree. |
-| Public, installable open-source product with `account material` and personal automation kept outside | Apache 2.0 `LICENSE`; `SECURITY.md` sensitive-data rules; only synthetic `.test` fixtures in `internal/testkit`; see "Outside the module". Reserved: Drive download (`Download` exists, no tool, `allowedDownloadDirectories` unused), sharing mutation, writes (`writes.enabled` defaults to disabled), and additional Proton services. |
+| Public, installable open-source product with `account material` and personal automation kept outside | Apache 2.0 `LICENSE`; `SECURITY.md` sensitive-data rules; only synthetic `.test` fixtures in `internal/testkit`; see "Outside the module". Reserved: Drive download (`Download` is disabled by the CLI allowlist, no tool, `allowedDownloadDirectories` unused), sharing mutation, writes (`writes.enabled` defaults to disabled), and additional Proton services. |
 
 ## Outside the module
 
