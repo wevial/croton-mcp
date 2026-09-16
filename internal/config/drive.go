@@ -13,13 +13,21 @@
 
 package config
 
-import "path/filepath"
+import (
+	"encoding/json"
+	"math"
+	"path/filepath"
+	"time"
+
+	"github.com/wevial/croton-mcp/internal/strictjson"
+)
 
 // DriveConfig is Croton Drive's untrusted, process-local configuration. The
 // Drive executable has no relationship to the Mail Bridge configuration.
 type DriveConfig struct {
 	CLI                        DriveCLIConfig `json:"cli"`
 	AllowedDownloadDirectories []string       `json:"allowedDownloadDirectories"`
+	Download                   DriveDownload  `json:"download"`
 	Writes                     DriveWrites    `json:"writes"`
 }
 
@@ -35,13 +43,58 @@ type DriveWrites struct {
 	Enabled bool `json:"enabled"`
 }
 
+// DriveDownload is the reserved download policy. Parsing it does not register
+// a download tool or enable runtime enforcement of its limits.
+type DriveDownload struct {
+	Enabled        bool  `json:"enabled"`
+	MaxBytes       int64 `json:"maxBytes"`
+	TimeoutSeconds int64 `json:"timeoutSeconds"`
+}
+
+// UnmarshalJSON requires exact policy keys, including their case. The secure
+// loader also validates the enclosing document before decoding this object.
+func (policy *DriveDownload) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if !strictjson.DecodeObject(data, maxConfigBytes, &fields) {
+		return ErrConfigInvalid
+	}
+
+	for key, value := range fields {
+		var target any
+		switch key {
+		case "enabled":
+			target = &policy.Enabled
+		case "maxBytes":
+			target = &policy.MaxBytes
+		case "timeoutSeconds":
+			target = &policy.TimeoutSeconds
+		default:
+			return ErrConfigInvalid
+		}
+
+		if err := json.Unmarshal(value, target); err != nil {
+			return ErrConfigInvalid
+		}
+	}
+
+	return nil
+}
+
 // LoadDrive reads Croton Drive configuration through the same secure loader as
 // the Mail executable. Linux and macOS use descriptor-relative no-follow
 // traversal; every other platform fails closed in openSecure.
 func LoadDrive(path string) (DriveConfig, error) {
-	var loaded DriveConfig
+	// Seed defaults before decoding so explicit zero remains invalid.
+	loaded := DriveConfig{
+		Download: DriveDownload{MaxBytes: 256 * 1024 * 1024, TimeoutSeconds: 120},
+	}
 	if err := load(path, &loaded); err != nil {
 		return DriveConfig{}, err
+	}
+
+	if loaded.Download.Enabled || loaded.Download.MaxBytes <= 0 ||
+		loaded.Download.TimeoutSeconds <= 0 || loaded.Download.TimeoutSeconds > math.MaxInt64/int64(time.Second) {
+		return DriveConfig{}, ErrConfigInvalid
 	}
 
 	if !filepath.IsAbs(loaded.CLI.BinaryPath) {

@@ -200,6 +200,53 @@ func TestRunRefusesEnabledWritePolicyBeforeTouchingTheCLI(t *testing.T) {
 	}
 }
 
+func TestDriveDownloadEnabledRejectedBeforeCLI(t *testing.T) {
+	binary := testkit.FakeDrive(t, "", testkit.DriveFixture(t, "list-my-files.json"))
+	argvPath := filepath.Join(filepath.Dir(binary), "argv")
+
+	var stderr bytes.Buffer
+	command, _ := driveCommandWithConfig(t, map[string]any{
+		"cli":      map[string]string{"binaryPath": binary},
+		"download": map[string]any{"enabled": true},
+	}, &stderr)
+	var stdout bytes.Buffer
+	command.Stdout = &stdout
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		t.Fatalf("stdin pipe: %v", err)
+	}
+	defer func() { _ = stdin.Close() }()
+	if err := command.Start(); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+
+	// stdin stays open: a server that wrongly proceeds to serve blocks on it
+	// until the deadline below fires instead of exiting cleanly on EOF.
+	done := make(chan error, 1)
+	go func() { done <- command.Wait() }()
+	select {
+	case err := <-done:
+		exitError, ok := err.(*exec.ExitError)
+		if !ok || exitError.ExitCode() == 0 {
+			t.Fatalf("exit status = %v, want nonzero exit", err)
+		}
+	case <-time.After(5 * time.Second):
+		_ = command.Process.Kill()
+		<-done
+		t.Fatal("server did not refuse the enabled download policy within 5s")
+	}
+
+	if stdout.Len() != 0 {
+		t.Fatalf("refusal produced stdout: %q", stdout.String())
+	}
+	if got := stderr.String(); got != "croton-drive-mcp: configuration file is invalid\n" {
+		t.Fatalf("stderr = %q, want static download-policy refusal", got)
+	}
+	if _, err := os.Stat(argvPath); !os.IsNotExist(err) {
+		t.Fatalf("refusal executed the Drive CLI: argv stat = %v", err)
+	}
+}
+
 func TestStdioDriveWritePolicyDisabledPreservesReadOnlyCatalog(t *testing.T) {
 	documents := map[string]map[string]any{
 		"omitted": {"cli": map[string]string{"binaryPath": "/opt/proton-drive/proton-drive"}},
