@@ -228,6 +228,11 @@ func TestListEntriesClampsTheLimit(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// Each case must witness its own CLI invocation, not a prior record.
+			if err := os.Remove(filepath.Join(filepath.Dir(binary), "argv")); err != nil && !os.IsNotExist(err) {
+				t.Fatalf("remove recorded argv: %v", err)
+			}
+
 			var decoded listDriveResult
 			decodeDriveResult(t, callDriveTool(t, session, "list_drive_entries", tc.arguments), &decoded)
 			if len(decoded.Entries) != tc.wantEntries || !decoded.Truncated {
