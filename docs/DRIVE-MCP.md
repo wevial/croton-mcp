@@ -10,11 +10,9 @@ stderr.
 Every claim below names the synthetic test that pins it. The tests run against
 the fake Drive CLI in `internal/testkit/fakedrive` and the fixtures in
 `internal/drivecli/testdata`; no live Proton account, credential, or Drive
-content is involved. The two claims the tree has no test for are listed in
-[Not yet witnessed](#not-yet-witnessed) with their enforcing source lines; the
-page states nothing beyond the cited tests and that table.
+content is involved.
 `scripts/verify_docs_drive_mcp.py` cross-checks the tool names, the error
-codes, every cited test name, and every enforcing line against the tree.
+codes, and every cited test name against the tree.
 
 ## Running
 
@@ -45,9 +43,9 @@ initialization flow. A fail-closed method allowlist admits only `initialize`,
 `notifications/progress` notifications; every other method is answered with
 JSON-RPC "method not found". Every data command is gated behind one exact
 version handshake with the CLI; until it succeeds, tools fail closed with
-`unavailable` and the CLI sees nothing but the `version` command. No Go test
-sends a method outside the allowlist; the rejection is listed in
-[Not yet witnessed](#not-yet-witnessed).
+`unavailable` and the CLI sees nothing but the `version` command.
+`TestAllowlistMiddlewareAnswersMethodNotFound` sends an unlisted method over
+stdio framing and pins the JSON-RPC rejection and the absence of CLI argv.
 
 Witnesses: `TestStdioInitializesAnIndependentDriveServerWithThreeReadOnlyTools`
 (stdio startup, protocol version, catalog, clean stderr),
@@ -175,8 +173,9 @@ An error result carries `isError: true` and one JSON text item of the form
   output was malformed or truncated, the command exited nonzero, or it reported
   that authentication is required.
 - `internal`: a panic in the handler or any adapter error the server does not
-  recognize. The unknown-error path is tested; the panic path is not, and is
-  listed in [Not yet witnessed](#not-yet-witnessed).
+  recognize. `TestRunToolRecoversAPanicAsInternal` calls a registered test
+  handler over stdio framing and pins the bare error response, with neither
+  panic text nor stack frames, and the sanitized diagnostic on stderr.
 
 Every adapter failure maps to one of these codes; errors the server does not
 recognize collapse to `internal`, so no CLI stderr, path, node name, or stack
@@ -248,18 +247,4 @@ absent from the stdio result and from the process's stderr).
 
 ## Not yet witnessed
 
-These two claims are enforced by the named lines in `internal/drivemcp` but
-no tracked Drive test asserts them. Each row is retired by the code ticket
-that adds its synthetic test; the closed-schema and argument-cap rows were
-retired by `TestDriveToolSchemasAreClosedAndBounded` and
-`TestDriveToolsRejectOversizeRawArgumentsWithoutExecutingTheCLI`; the
-entry-limit, wrapped-error and audit-sanitizer rows were retired by
-`TestListEntriesClampsTheLimit`, `TestMapDriveErrorKeepsTheCodeThroughWrapping`
-and `TestAuditSanitizersFallBackToTheVocabulary`.
-`scripts/verify_docs_drive_mcp.py` requires exactly these two rows and
-requires every `path:line` to resolve to a non-blank line in the tree.
-
-| Claim | Enforcing line |
-| ----- | -------------- |
-| A method outside the allowlist is answered with JSON-RPC "method not found" by `allowlistMiddleware`. | `internal/drivemcp/tools.go:128` |
-| A panicking handler is recovered by `runTool` and reported as `internal` with no stack detail on the protocol stream. | `internal/drivemcp/tools.go:170` |
+Every claim on this page is witnessed by a tracked test.
