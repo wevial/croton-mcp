@@ -143,6 +143,42 @@ class MailDesignTests(unittest.TestCase):
             with self.subTest(substitution=new):
                 self.reject(RECORD.replace(old, new), "Status: missing")
 
+    def test_negated_proposed_status(self):
+        for replacement in ("Not Proposed.", "Never Proposed.", "No longer Proposed."):
+            with self.subTest(status=replacement):
+                self.reject(RECORD.replace("Proposed.", replacement), "Status: missing proposed read-only status")
+
+    def test_appended_contradictory_status(self):
+        for claim in (
+            "Mail supports writes.",
+            "Mail writes are enabled.",
+            "Mail is no longer read-only.",
+            "Mail mutation tools are registered.",
+            "This proposal is shipped.",
+            "Not Proposed.",
+        ):
+            with self.subTest(claim=claim):
+                self.reject(RECORD + claim + "\n", "Status: unexpected status statement")
+
+    def test_status_rejects_qualified_read_only_claim(self):
+        self.reject(
+            RECORD.replace("Proposed. Mail remains read-only.", "Proposed. Except for moves, Mail remains read-only."),
+            "Status: missing proposed read-only status",
+        )
+
+    def test_status_normalization_and_optional_context(self):
+        changed = RECORD.replace("Proposed. Mail remains read-only.", "`PROPOSED`.\n Mail remains\nread-only.")
+        self.assertEqual(self.check(changed + verifier.STATUS_CONTEXT + "\n"), [])
+
+    def test_hidden_contradictory_status_is_ignored(self):
+        for hidden in (
+            "<!-- Mail supports writes. -->",
+            "```\nMail supports writes.\n```",
+            "~~~~\nNot Proposed.\n~~~~",
+        ):
+            with self.subTest(hidden=hidden):
+                self.assertEqual(self.check(RECORD + hidden + "\n"), [])
+
     def test_missing_invariants_identity_and_future_proof(self):
         for section in ("Invariant", "Proposed operations", "Proof requirements"):
             for name in verifier.REQUIREMENTS[section]:

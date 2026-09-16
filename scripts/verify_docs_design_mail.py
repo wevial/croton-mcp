@@ -4,6 +4,8 @@
 Run from the repository root. Required statements are normalized for whitespace,
 case and inline code, but must occur in their named section outside examples and
 HTML comments. Failures name the missing contract requirement.
+Status uses a closed set of complete sentences to reject contradictory claims;
+changing that vocabulary requires review of this structural contract.
 """
 
 import pathlib
@@ -57,6 +59,10 @@ REQUIREMENTS = {
         "no registration": "No Mail mutation tools are registered by this record.",
     },
 }
+STATUS_CONTEXT = (
+    "Implementation requires a separate decision resolving Reserved and future "
+    "proof tests; publication of this proposal does not enable writes."
+)
 
 
 def visible_lines(text):
@@ -105,9 +111,26 @@ def verify(doc=DOC, mcp=MCP):
 
     for section, requirements in REQUIREMENTS.items():
         body = prose(sections.get(section, []))
+        # Status has a deliberately closed vocabulary: substring matches cannot
+        # distinguish affirmative status from negation or appended write claims.
+        sentences = re.findall(r"[^.]+(?:\.|$)", body)
+        sentences = [sentence.strip() for sentence in sentences]
         for name, statement in requirements.items():
-            if normalize(statement) not in body:
+            expected = normalize(statement)
+            present = expected in body
+            if section == "Status":
+                present = all(part.strip() + "." in sentences for part in expected.split(".") if part.strip())
+
+            if not present:
                 failures.append(f"{doc} {section}: missing {name}")
+
+        if section == "Status":
+            allowed = {normalize(STATUS_CONTEXT)}
+            for statement in requirements.values():
+                allowed.update(part.strip() + "." for part in normalize(statement).split(".") if part.strip())
+
+            if any(sentence not in allowed for sentence in sentences):
+                failures.append(f"{doc} Status: unexpected status statement; only the proposed read-only contract is allowed")
 
     rows = table_rows(sections.get("Proposed operations", []))
     names = [normalize(row[0]) for row in rows]
