@@ -28,7 +28,6 @@ func AllowedCommandLines() []string {
 		"version",
 		"filesystem list <path> [--type file|folder] --json",
 		"filesystem info <path> --json",
-		"filesystem download <remotePath...> <localFolder> --file-conflict-strategy skip --folder-conflict-strategy skip --json",
 		"sharing status <path> --json",
 	}
 }
@@ -104,8 +103,8 @@ func (client *Client) SharingStatus(ctx context.Context, path string) (SharingSt
 	return SharingStatus{Shared: true, Info: &info}, nil
 }
 
-// Download runs the frozen read-only download summary command. Local confinement
-// is a later slice; this method only invokes the allowlisted CLI surface.
+// Download remains disabled by the invocation allowlist. The internal confined
+// opener does not authorize CLI downloads or enable a product download policy.
 func (client *Client) Download(ctx context.Context, remotePaths []string, localFolder string) (DownloadSummary, error) {
 	if len(remotePaths) == 0 || !filepath.IsAbs(localFolder) {
 		return DownloadSummary{}, errorCode(CodeInvalidConfig)
@@ -173,38 +172,8 @@ func isAllowlistedInvocation(arguments []string) bool {
 	case len(arguments) == 4 && arguments[0] == "sharing" && arguments[1] == "status":
 		return isOperand(arguments[2]) && arguments[3] == "--json"
 	default:
-		return isAllowlistedDownload(arguments)
-	}
-}
-
-var downloadTrailer = [...]string{
-	"--file-conflict-strategy", "skip",
-	"--folder-conflict-strategy", "skip",
-	"--json",
-}
-
-func isAllowlistedDownload(arguments []string) bool {
-	if len(arguments) < 4+len(downloadTrailer) {
 		return false
 	}
-	if arguments[0] != "filesystem" || arguments[1] != "download" {
-		return false
-	}
-
-	trailer := arguments[len(arguments)-len(downloadTrailer):]
-	for index, token := range downloadTrailer {
-		if trailer[index] != token {
-			return false
-		}
-	}
-
-	for _, operand := range arguments[2 : len(arguments)-len(downloadTrailer)] {
-		if !isOperand(operand) {
-			return false
-		}
-	}
-
-	return true
 }
 
 // isOperand accepts one variable slot; empty or flag-shaped values fail closed.

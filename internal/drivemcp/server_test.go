@@ -68,6 +68,13 @@ func TestNewNegotiatesCurrentProtocolWithTheReadOnlyDriveCatalog(t *testing.T) {
 	if names[0] != "get_drive_metadata" || names[1] != "get_drive_sharing_status" || names[2] != "list_drive_entries" {
 		t.Fatalf("Drive tool names = %v", names)
 	}
+
+	// The confined output prerequisite must never register a download tool.
+	rejected, err := clientSession.CallTool(context.Background(), &mcp.CallToolParams{Name: "download_drive_file", Arguments: map[string]any{}})
+	if err == nil && (rejected == nil || !rejected.IsError) {
+		t.Fatal("unregistered download tool was accepted")
+	}
+
 	for _, tool := range listed.Tools {
 		if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
 			t.Fatalf("tool %q is not marked read-only", tool.Name)

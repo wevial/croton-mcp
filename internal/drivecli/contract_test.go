@@ -15,7 +15,6 @@ package drivecli_test
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/wevial/croton-mcp/internal/drivecli"
@@ -87,7 +86,7 @@ func TestListDecodesFrozenRootAndNodeSchemas(t *testing.T) {
 	}
 }
 
-func TestInfoSharingAndDownloadDecodeFrozenObjects(t *testing.T) {
+func TestInfoAndSharingDecodeFrozenObjects(t *testing.T) {
 	t.Parallel()
 
 	infoBinary := installFakeDriveFixture(t, "", "info-folder.json")
@@ -130,23 +129,6 @@ func TestInfoSharingAndDownloadDecodeFrozenObjects(t *testing.T) {
 	}
 	if unshared.Shared || unshared.Info != nil {
 		t.Fatalf("unshared status = %#v", unshared)
-	}
-
-	downloadBinary := installFakeDriveFixture(t, "", "download-summary.json")
-	downloadClient, err := drivecli.New(drivecli.Options{BinaryPath: downloadBinary})
-	if err != nil {
-		t.Fatalf("New download client: %v", err)
-	}
-
-	summary, err := downloadClient.Download(context.Background(), []string{"/my-files/notes.txt"}, "/tmp/croton-fixture")
-	if err != nil {
-		t.Fatalf("Download: %v", err)
-	}
-	if summary.TransferredItems != 1 || summary.FailedItems != 0 {
-		t.Fatalf("download summary = %#v", summary)
-	}
-	if got := recordedArgv(t, downloadBinary); !strings.Contains(got, "--file-conflict-strategy\nskip\n--folder-conflict-strategy\nskip\n--json\n") {
-		t.Fatalf("download argv = %q", got)
 	}
 }
 
