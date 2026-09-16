@@ -26,6 +26,8 @@ REQUIRED_WITNESSES = (
     "TestGetDriveSharingStatusReportsSharedUnsharedAndCommandErrors",
     "TestGetDriveSharingStatusBoundsMembersAndKeepsAuditPayloadFree",
     "TestStdioDriveToolsServeFrozenDataAfterSuccessfulNegotiation",
+    "TestAllowlistMiddlewareAnswersMethodNotFound",
+    "TestRunToolRecoversAPanicAsInternal",
 )
 TEST_NAME_RE = re.compile(r"Test[A-Za-z0-9_]+")
 
@@ -57,46 +59,18 @@ def code_error_codes():
 
 
 NOT_WITNESSED = "Not yet witnessed"
-# The closed list of claims the tree has no synthetic test for; a page needing
-# an eighth row drops the sentence instead.
-EXPECTED_NOT_WITNESSED_ROWS = 2
-LOCATION_RE = re.compile(r"`((?:internal|cmd)/[A-Za-z0-9_./-]+\.go):(\d+)`")
-
-
-def tracked_files():
-    out = subprocess.run(["git", "ls-files"], check=True, capture_output=True, text=True).stdout
-    return set(out.split())
+WITNESSED_SENTENCE = "Every claim on this page is witnessed by a tracked test."
 
 
 def check_not_witnessed(text, failures):
-    """The Not yet witnessed table has exactly the expected rows, each naming a path:line that resolves."""
+    """All claims are witnessed; the section must say so and carry no table."""
     body = section(text, NOT_WITNESSED, failures)
     if body is None:
         return
-    tracked = tracked_files()
-    rows = [
-        line for line in body.splitlines()
-        if line.startswith("|") and not re.match(r"^\|\s*-", line) and not line.startswith("| Claim")
-    ]
-    if len(rows) != EXPECTED_NOT_WITNESSED_ROWS:
-        failures.append(f"{PAGE} {NOT_WITNESSED}: table has {len(rows)} rows, want exactly {EXPECTED_NOT_WITNESSED_ROWS}")
-    for row in rows:
-        locations = LOCATION_RE.findall(row)
-        if not locations:
-            failures.append(f"{PAGE} {NOT_WITNESSED}: row carries no `path:line`: {row.strip()}")
-            continue
-        for path, number in locations:
-            if not path.startswith("internal/drivemcp/"):
-                failures.append(f"{PAGE} {NOT_WITNESSED}: {path}:{number} is outside internal/drivemcp")
-            if path not in tracked:
-                failures.append(f"{PAGE} {NOT_WITNESSED}: {path}:{number} is not a tracked file")
-                continue
-            lines = pathlib.Path(path).read_text(encoding="utf-8").splitlines()
-            number = int(number)
-            if number < 1 or number > len(lines):
-                failures.append(f"{PAGE} {NOT_WITNESSED}: {path}:{number} is past the end of the file ({len(lines)} lines)")
-            elif not lines[number - 1].strip():
-                failures.append(f"{PAGE} {NOT_WITNESSED}: {path}:{number} is a blank line")
+    if WITNESSED_SENTENCE not in " ".join(body.split()):
+        failures.append(f"{PAGE} {NOT_WITNESSED}: missing witnessed sentence")
+    if "|" in body:
+        failures.append(f"{PAGE} {NOT_WITNESSED}: must not contain a table")
 
 
 def code_tool_definitions_body(source):
