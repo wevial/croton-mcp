@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package drivefs contains an unregistered, descriptor-bound output primitive.
+// Package drivefs contains unregistered, descriptor-bound output primitives.
 // It provides resolution-time confinement, not lifetime pathname confinement.
 package drivefs
 
@@ -55,8 +55,32 @@ func components(path string) ([]string, error) {
 	return parts, nil
 }
 
-func writeFresh(root, destination string, write func(*os.File) error, ops confinedOps) (err error) {
-	if !strings.HasPrefix(root, "/") || strings.HasPrefix(destination, "/") || write == nil {
+func writeFresh(root, destination string, write func(*os.File) error, ops confinedOps) error {
+	if write == nil {
+		return errors.New("explicit absolute root, relative destination and writer required")
+	}
+
+	return withConfinedParent(root, destination, ops, func(parent int, name string) (err error) {
+		fd, err := ops.open(parent, name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
+		if err != nil {
+			return err
+		}
+
+		file := os.NewFile(uintptr(fd), "confined-output")
+		defer func() { err = errors.Join(err, file.Close()) }()
+		if ops.resolved != nil {
+			ops.resolved()
+		}
+
+		return write(file)
+	})
+}
+
+// withConfinedParent holds the complete directory chain until use returns.
+// Renaming a resolved directory does not change this authority. In particular,
+// this does not strengthen the accepted resolution-time root-relocation boundary.
+func withConfinedParent(root, destination string, ops confinedOps, use func(int, string) error) (err error) {
+	if !strings.HasPrefix(root, "/") || strings.HasPrefix(destination, "/") {
 		return errors.New("explicit absolute root, relative destination and writer required")
 	}
 
@@ -105,15 +129,5 @@ func writeFresh(root, destination string, write func(*os.File) error, ops confin
 		parent = retain(fd)
 	}
 
-	fd, err = ops.open(parent, targets[len(targets)-1], unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
-	if err != nil {
-		return err
-	}
-
-	retain(fd)
-	if ops.resolved != nil {
-		ops.resolved()
-	}
-
-	return write(held[len(held)-1])
+	return use(parent, targets[len(targets)-1])
 }
