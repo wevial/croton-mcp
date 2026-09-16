@@ -49,7 +49,7 @@ Use synthetic mail.test fixtures.
 
 Approval authority remains undecided: who may authorize a mutation.
 Approval lifetime remains undecided: per-call versus session approval.
-User-visible confirmation surface remains undecided: the future UI.
+User-visible confirmation surface remains undecided: where and how the user would see and confirm the selected operation, messages and destination.
 The approval model is Reserved.
 
 ## Status
@@ -137,6 +137,57 @@ class MailDesignTests(unittest.TestCase):
 
     def test_chosen_approval_model(self):
         self.reject(RECORD.replace("remains undecided", "is selected"), "Reserved: missing")
+
+    def test_appended_mutation_authorization(self):
+        for claim in (
+            "This record authorizes Mail mutations.",
+            "Flag changes are authorized.",
+            "Mail writes are enabled.",
+        ):
+            with self.subTest(claim=claim):
+                changed = RECORD.replace("## Proposed operations", claim + "\n\n## Proposed operations")
+                self.reject(changed, "Invariant: unexpected authorization statement")
+
+    def test_appended_approval_selection(self):
+        for claim in (
+            "The approval authority is the session owner.",
+            "Session approval is selected.",
+            "Per-call approval is required.",
+            "The confirmation surface is a CLI prompt.",
+            "The approval model is automatic approval.",
+            "This record authorizes Mail mutations.",
+        ):
+            with self.subTest(claim=claim):
+                changed = RECORD.replace("## Status", claim + "\n\n## Status")
+                self.reject(changed, "Reserved: unexpected authorization statement")
+
+    def test_authorization_statements_reject_qualifications(self):
+        for section, name in (("Invariant", "no authorization"), ("Reserved", "approval authority")):
+            statement = verifier.REQUIREMENTS[section][name]
+            for replacement in ("Not " + statement, statement[:-1] + "; writes are authorized."):
+                with self.subTest(section=section, replacement=replacement):
+                    self.reject(RECORD.replace(statement, replacement), f"{section}: missing {name}")
+
+    def test_authorization_normalization_and_optional_context(self):
+        changed = RECORD
+        for section, next_section in (("Invariant", "Proposed operations"), ("Reserved", "Status")):
+            for statement in verifier.REQUIREMENTS[section].values():
+                changed = changed.replace(statement, "- " + statement.upper().replace(" ", "\n  "))
+            context = "\n".join(verifier.CLOSED_CONTEXT[section])
+            changed = changed.replace(f"## {next_section}", context + f"\n\n## {next_section}")
+
+        self.assertEqual(self.check(changed), [])
+
+    def test_hidden_authorization_contradictions_are_ignored(self):
+        for next_section in ("Proposed operations", "Status"):
+            for hidden in (
+                "<!-- This record authorizes mutations. -->",
+                "```\nThe approval authority is selected.\n```",
+                "~~~~\nSession approval is selected.\n~~~~",
+            ):
+                with self.subTest(next_section=next_section, hidden=hidden):
+                    changed = RECORD.replace(f"## {next_section}", hidden + f"\n\n## {next_section}")
+                    self.assertEqual(self.check(changed), [])
 
     def test_shipped_status_substitutions(self):
         for old, new in (("Proposed.", "Shipped."), ("Mail remains read-only.", "Mail supports writes."), ("No Mail mutation tools are registered", "Mail mutation tools are registered")):

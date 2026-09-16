@@ -4,7 +4,8 @@
 Run from the repository root. Required statements are normalized for whitespace,
 case and inline code, but must occur in their named section outside examples and
 HTML comments. Failures name the missing contract requirement.
-Status uses a closed set of complete sentences to reject contradictory claims;
+Invariant, Reserved and Status use closed sets of complete sentences to reject
+contradictory claims;
 changing that vocabulary requires review of this structural contract.
 """
 
@@ -51,7 +52,10 @@ REQUIREMENTS = {
     "Reserved": {
         "approval authority": "Approval authority remains undecided: who may authorize a mutation.",
         "approval lifetime": "Approval lifetime remains undecided: per-call versus session approval.",
-        "confirmation surface": "User-visible confirmation surface remains undecided:",
+        "confirmation surface": (
+            "User-visible confirmation surface remains undecided: where and how the user "
+            "would see and confirm the selected operation, messages and destination."
+        ),
         "Reserved model": "The approval model is Reserved.",
     },
     "Status": {
@@ -63,6 +67,15 @@ STATUS_CONTEXT = (
     "Implementation requires a separate decision resolving Reserved and future "
     "proof tests; publication of this proposal does not enable writes."
 )
+
+CLOSED_CONTEXT = {
+    "Invariant": ("Bridge connections remain loopback-only with TLS.",),
+    "Reserved": (
+        "Neither this record nor engineering choices select an approval mechanism "
+        "or change config behavior.",
+    ),
+    "Status": (STATUS_CONTEXT,),
+}
 
 
 def visible_lines(text):
@@ -156,26 +169,35 @@ def verify(doc=DOC, mcp=MCP):
 
     for section, requirements in REQUIREMENTS.items():
         body = prose(sections.get(section, []))
-        # Status has a deliberately closed vocabulary: substring matches cannot
-        # distinguish affirmative status from negation or appended write claims.
+        # Authorization-sensitive sections have closed vocabularies: substring
+        # matches cannot reject negation, qualifications or appended write claims.
+        # Strip only line-leading list markers before checking complete sentences.
+        if section in CLOSED_CONTEXT:
+            body = normalize(" ".join(
+                re.sub(r"^\s*[-+*]\s+", "", line.text)
+                for line in sections.get(section, [])
+                if line.fence is None and not line.opens
+            ))
+
         sentences = re.findall(r"[^.]+(?:\.|$)", body)
         sentences = [sentence.strip() for sentence in sentences]
         for name, statement in requirements.items():
             expected = normalize(statement)
             present = expected in body
-            if section == "Status":
+            if section in CLOSED_CONTEXT:
                 present = all(part.strip() + "." in sentences for part in expected.split(".") if part.strip())
 
             if not present:
                 failures.append(f"{doc} {section}: missing {name}")
 
-        if section == "Status":
-            allowed = {normalize(STATUS_CONTEXT)}
+        if section in CLOSED_CONTEXT:
+            allowed = {normalize(statement) for statement in CLOSED_CONTEXT[section]}
             for statement in requirements.values():
                 allowed.update(part.strip() + "." for part in normalize(statement).split(".") if part.strip())
 
             if any(sentence not in allowed for sentence in sentences):
-                failures.append(f"{doc} Status: unexpected status statement; only the proposed read-only contract is allowed")
+                label = "status" if section == "Status" else "authorization"
+                failures.append(f"{doc} {section}: unexpected {label} statement; only the proposed read-only contract is allowed")
 
     rows = table_rows(sections.get("Proposed operations", []))
     names = [normalize(row[0]) for row in rows]
