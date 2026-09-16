@@ -9,6 +9,31 @@ import re
 import subprocess
 import sys
 
+from verify_docs_design_download_boundary import (
+    check_statements,
+    sections as contract_sections,
+    visible_lines,
+)
+
+DOWNLOAD_REQUIREMENTS = {
+    "future policy link": "Planned downloads follow the accepted [resolution-time download boundary](design/0003-download-boundary.md).",
+    "unshipped registration and controls": "The confined opener has shipped, but download registration and policy enforcement have not shipped.",
+    "client-managed per-call confirmation": "Operators must configure client-managed per-call confirmation before enabling downloads.",
+    "configured-client trust boundary": "Croton accepts tools/call from the configured client and cannot verify that a human confirmed.",
+    "no server prompt": "Croton never prompts for confirmation itself.",
+    "annotations do not enforce confirmation": "The annotations readOnlyHint false and destructiveHint false do not force a client prompt or prove confirmation.",
+    "auto-approval permits unattended writes": "An auto-approving client permits unattended local writes inside the allowed root.",
+    "disabled by default": "The planned download.enabled setting defaults to false.",
+    "no disabled tool": "While disabled, no download tool is registered.",
+    "explicit operator opt-in": "Explicit operator opt-in accepts the configured-client trust boundary.",
+    "pre-registration startup refusal": "Until the registration implementation ships, download.enabled true must fail startup rather than enable a partial capability.",
+    "future config contract": "This is a future implementation contract, not a claim that today's config schema accepts download.enabled.",
+    "writer and cleanup gate": "Registration requires later integration proof of a supported descriptor-bound writer and temporary-publication path, cleanup and runtime controls without reopening the validated destination pathname.",
+    "future audit privacy": "Future download audit lines identify source, destination and outcome, never claimed consent, credentials or share passwords; paths can reveal sensitive names and activity and require protected log access and retention.",
+    "current audit unchanged": "This future path-logging policy does not change the current audit vocabulary.",
+    "structural witness only": "Documentation verifiers witness these policy statements structurally, not runtime enforcement.",
+}
+
 PAGE = pathlib.Path("docs/DRIVE-MCP.md")
 TOOLS_GO = pathlib.Path("internal/drivemcp/tools.go")
 TEST_GLOBS = ("internal/drivemcp/*_test.go", "cmd/croton-drive-mcp/*_test.go")
@@ -59,16 +84,18 @@ def code_error_codes():
 
 
 NOT_WITNESSED = "Not yet witnessed"
-WITNESSED_SENTENCE = "Every claim on this page is witnessed by a tracked test."
+WITNESSED_SENTENCE = "Every current runtime claim on this page is witnessed by a tracked test."
 
 
 def check_not_witnessed(text, failures):
-    """All claims are witnessed; the section must say so and carry no table."""
+    """Runtime claims are witnessed; planned enforcement must remain future work."""
     body = section(text, NOT_WITNESSED, failures)
     if body is None:
         return
     if WITNESSED_SENTENCE not in " ".join(body.split()):
         failures.append(f"{PAGE} {NOT_WITNESSED}: missing witnessed sentence")
+    if "Planned download policies are structurally witnessed by documentation verifiers; their runtime enforcement remains future work." not in " ".join(body.split()):
+        failures.append(f"{PAGE} {NOT_WITNESSED}: missing future policy enforcement distinction")
     if "|" in body:
         failures.append(f"{PAGE} {NOT_WITNESSED}: must not contain a table")
 
@@ -96,6 +123,12 @@ def check_page(failures):
         failures.append(f"{PAGE}: missing")
         return
     text = PAGE.read_text(encoding="utf-8")
+    _, policy_sections = contract_sections(visible_lines(text))
+    check_statements(
+        policy_sections.get("Planned downloads", []), DOWNLOAD_REQUIREMENTS, (),
+        f"{PAGE} Planned downloads", failures,
+    )
+
     sections = {name: section(text, name, failures) for name in HEADINGS}
 
     tools_section = sections["Tools"]

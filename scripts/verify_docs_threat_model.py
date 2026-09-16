@@ -9,6 +9,27 @@ import re
 import subprocess
 import sys
 
+from verify_docs_design_download_boundary import check_statements, sections, visible_lines
+
+DOWNLOAD_REQUIREMENTS = {
+    "future policy link": "Planned downloads follow the accepted [resolution-time download boundary](design/0003-download-boundary.md).",
+    "unshipped registration and controls": "The confined opener has shipped, but download registration and policy enforcement have not shipped.",
+    "client-managed per-call confirmation": "Operators must configure client-managed per-call confirmation before enabling downloads.",
+    "configured-client trust boundary": "Croton accepts tools/call from the configured client and cannot verify that a human confirmed.",
+    "no server prompt": "Croton never prompts for confirmation itself.",
+    "annotations do not enforce confirmation": "The annotations readOnlyHint false and destructiveHint false do not force a client prompt or prove confirmation.",
+    "auto-approval permits unattended writes": "An auto-approving client permits unattended local writes inside the allowed root.",
+    "disabled by default": "The planned download.enabled setting defaults to false.",
+    "no disabled tool": "While disabled, no download tool is registered.",
+    "explicit operator opt-in": "Explicit operator opt-in accepts the configured-client trust boundary.",
+    "pre-registration startup refusal": "Until the registration implementation ships, download.enabled true must fail startup rather than enable a partial capability.",
+    "future config contract": "This is a future implementation contract, not a claim that today's config schema accepts download.enabled.",
+    "writer and cleanup gate": "Registration requires later integration proof of a supported descriptor-bound writer and temporary-publication path, cleanup and runtime controls without reopening the validated destination pathname.",
+    "future audit privacy": "Future download audit lines identify source, destination and outcome, never claimed consent, credentials or share passwords; paths can reveal sensitive names and activity and require protected log access and retention.",
+    "current audit unchanged": "This future path-logging policy does not change the current audit vocabulary.",
+    "structural witness only": "Documentation verifiers witness these policy statements structurally, not runtime enforcement.",
+}
+
 DOC = pathlib.Path("docs/THREAT_MODEL.md")
 REQUIRED_HEADINGS = (
     "## Assets",
@@ -77,6 +98,13 @@ def main():
         print(f"FAIL: {DOC}: file not found", file=sys.stderr)
         return 1
     text = DOC.read_text(encoding="utf-8")
+    _, policy_sections = sections(visible_lines(text))
+    check_statements(
+        policy_sections.get("Planned Drive downloads", []), DOWNLOAD_REQUIREMENTS,
+        ("The shipped opener is in `internal/drivefs/confined.go`; WriteFresh alone does not provide cleanup or publication.",
+         "Relocation of the allowed root or its ancestors after opening remains the operator's responsibility, outside the threat model."),
+        f"{DOC} Planned Drive downloads", failures,
+    )
     headings = {line.rstrip() for line in text.splitlines() if line.startswith("## ")}
     for heading in REQUIRED_HEADINGS:
         if heading not in headings:
