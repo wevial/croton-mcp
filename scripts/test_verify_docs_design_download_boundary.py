@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """Synthetic temporary-file regression tests for the download boundary verifier."""
 
+import contextlib
+import io
 import pathlib
+import re
 import tempfile
 import unittest
+from unittest import mock
 
 import verify_docs_design_download_boundary as verifier
+import verify_docs_drive_mcp as drive_verifier
+import verify_docs_threat_model as threat_verifier
 
 
 RECORD = """# Resolution-time Drive download boundary
@@ -30,9 +36,57 @@ Relocation of the allowed root or its ancestors after opening is outside the thr
 
 A validated destination pathname must never be reopened, including through the CLI download command. Reject check-then-open via `Lstat`, `EvalSymlinks` or an allowlist-prefix check followed by a separate open. Post-write checks cannot undo an escaped write. The historical requirements remain recorded in [KO-449](0001-download-confinement.md).
 
+Operators must configure client-managed per-call confirmation before enabling downloads.
+
+Croton accepts tools/call from the configured client and cannot verify that a human confirmed.
+
+Croton never prompts for confirmation itself.
+
+The annotations readOnlyHint false and destructiveHint false do not force a client prompt or prove confirmation.
+
+An auto-approving client permits unattended local writes inside the allowed root.
+
+The human-facing request must identify the Drive source path, destination under the allowed root and size when metadata supplies it.
+
+The human-facing request must never include credentials or share passwords.
+
+There is no approved tool argument or other agent-supplied consent assertion.
+
+There is no consent audit field.
+
+The planned download.enabled setting defaults to false.
+
+While disabled, no download tool is registered.
+
+Explicit operator opt-in accepts the configured-client trust boundary.
+
+Until the registration implementation ships, download.enabled true must fail startup rather than enable a partial capability.
+
+This is a future implementation contract, not a claim that today's config schema accepts download.enabled.
+
+Downloads must refuse an existing destination.
+
+There is no overwrite flag.
+
+The configurable byte cap defaults to 256 MiB.
+
+The configurable time cap defaults to 120 seconds.
+
+Known limits must be checked before the first write.
+
+A limit reached mid-download must stop the download and delete partial output.
+
+A future local audit line per download must identify source, destination and outcome.
+
+That audit line must never claim consent or include credentials or share passwords.
+
+Source and destination paths can reveal sensitive names and activity; operators must protect access to and retention of these future local logs.
+
+These controls require future runtime implementation and are not supplied by WriteFresh.
+
 ## Proof test
 
-Future implementation proofs must use deterministic Go tests on Linux and macOS with synthetic temporary allowed and outside directories. These tests are required future work, not tests already shipped. Use explicit synchronization barriers at resolution and write boundaries, not timing sleeps.
+Future download integration proofs must use deterministic Go tests on Linux and macOS with synthetic temporary allowed and outside directories. These tests are required future work, not tests already shipped. Use explicit synchronization barriers at resolution and write boundaries, not timing sleeps.
 
 - Intermediate symlink: refuse traversal of a component pointing to the outside directory, including substitution after destination selection before opening.
 
@@ -50,18 +104,32 @@ The documentation verifier witnesses these named requirements structurally; pass
 
 ## Reserved
 
-The approval model remains undecided and Reserved. The overwrite policy remains undecided and Reserved. Size caps remain undecided and Reserved. Time caps remain undecided and Reserved. These unresolved policies block tool registration. This record selects none of these policies and changes no config behavior.
+Only per-session approval remains Reserved.
 
 ## Status
 
-Accepted as a maintainer-approved design decision, with no implementation shipped. This record registers no download tool and implements no opener. A future implementation must satisfy the proof requirements and resolve Reserved before tool registration. The server remains read-only."""
+Accepted as a maintainer-approved design and policy record.
+
+The internal confined opener WriteFresh has shipped without a production call site.
+
+Download tool registration and policy enforcement have not shipped.
+
+Registration remains held until this record ships and a later integration proves the required controls.
+
+Before registration, integration must prove a supported descriptor-bound writer and temporary-publication path, partial-output cleanup and all required runtime controls without reopening the validated destination pathname.
+
+WriteFresh alone does not provide partial-output cleanup or publication.
+
+The existing CLI Download method remains disabled by the invocation allowlist.
+
+The server remains read-only."""
 OLD = """## Status
 
 Superseded-in-part by the maintainer-approved [resolution-time Drive download boundary](0003-download-boundary.md). The successor replaces the lifetime relocation guarantee, unconditional pre-write refusal gate and relocation-backend prerequisite with resolution-time confinement and descriptor-bound output. The body above preserves the historical KO-449 proposal; its superseded requirements are not the current boundary. No download tool or opener ships with either record. Approval, overwrite, size and time cap policies remain Reserved and block tool registration.
 """
 DRIVE = """## Running
 
-`allowedDownloadDirectories` and `writes.enabled` are reserved: the server registers no download or write tools. Under the accepted design, relocation of the allowed root or its ancestors after opening is the operator's responsibility, outside Croton's threat model. See the [resolution-time download boundary](design/0003-download-boundary.md) for the design decision and reserved policy questions; no download implementation ships. The file carries no credentials and the server never reads any; authentication is the CLI's own concern, and a CLI that reports it needs authentication surfaces as `unavailable`.
+`allowedDownloadDirectories` and `writes.enabled` are reserved: the server registers no download or write tools. Under the accepted design, relocation of the allowed root or its ancestors after opening is the operator's responsibility, outside Croton's threat model. See the [resolution-time download boundary](design/0003-download-boundary.md) for the accepted confinement and download policies; no download tool ships. The file carries no credentials and the server never reads any; authentication is the CLI's own concern, and a CLI that reports it needs authentication surfaces as `unavailable`.
 """
 
 
@@ -153,6 +221,39 @@ class DownloadBoundaryTests(unittest.TestCase):
             texts = [RECORD, OLD, DRIVE]
             texts[index] = texts[index].replace(target, "wrong.md")
             self.assertTrue(self.check(texts))
+
+    def test_public_docs_require_their_own_visible_policy_statements(self):
+        for module, attribute, section in (
+            (drive_verifier, "PAGE", "Planned downloads"),
+            (threat_verifier, "DOC", "Planned Drive downloads"),
+        ):
+            source = getattr(module, attribute).read_text(encoding="utf-8")
+            for token in ("tools/call", "download.enabled", "readOnlyHint false", "destructiveHint false"):
+                source = source.replace(f"`{token}`", token)
+            path = self.paths[0]
+            path.write_text(source, encoding="utf-8")
+            with mock.patch.object(module, attribute, path):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(module.main(), 0)
+
+                for name, statement in module.DOWNLOAD_REQUIREMENTS.items():
+                    pattern = r"`?" + r"`?\s+`?".join(
+                        re.escape(word) for word in statement.split()
+                    ) + r"`?"
+                    for replacement in ("", "<!-- " + statement + " -->",
+                                        "Not " + statement,
+                                        "\n\n```\n" + statement + "\n```\n\n"):
+                        with self.subTest(document=module.__name__, name=name,
+                                          replacement=replacement):
+                            changed, count = re.subn(pattern, lambda _: replacement,
+                                                     source, count=1)
+                            self.assertEqual(count, 1)
+                            # A visible copy outside the policy section cannot satisfy it.
+                            path.write_text(statement + "\n\n" + changed, encoding="utf-8")
+                            errors = io.StringIO()
+                            with contextlib.redirect_stderr(errors):
+                                self.assertEqual(module.main(), 1)
+                            self.assertIn(f"{section}: missing {name}", errors.getvalue())
 
     def test_duplicate_drive_summary_is_rejected(self):
         self.assertTrue(self.check([RECORD, OLD, DRIVE + "\n" + DRIVE.split("\n\n", 1)[1]]))

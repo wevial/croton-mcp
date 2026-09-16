@@ -187,7 +187,44 @@ beyond the scrubbed environment, the neutral working directory and the output
 and time caps. The client's `Download` method remains present, but
 `filesystem download` is rejected by the CLI allowlist and is not registered
 as a tool. The internal confined output opener has no production call site;
-`allowedDownloadDirectories` and product download approval remain reserved.
+`allowedDownloadDirectories` remains reserved in the current configuration.
+
+### Planned Drive downloads
+
+Planned downloads follow the accepted [resolution-time download
+boundary](design/0003-download-boundary.md). The confined opener has shipped,
+but download registration and policy enforcement have not shipped.
+
+Operators must configure client-managed per-call confirmation before enabling
+downloads. Croton accepts `tools/call` from the configured client and cannot
+verify that a human confirmed. Croton never prompts for confirmation itself.
+The annotations `readOnlyHint false` and `destructiveHint false` do not force a
+client prompt or prove confirmation. An auto-approving client permits
+unattended local writes inside the allowed root.
+
+The planned `download.enabled` setting defaults to false. While disabled, no
+download tool is registered. Explicit operator opt-in accepts the
+configured-client trust boundary. Until the registration implementation ships,
+`download.enabled` true must fail startup rather than enable a partial
+capability. This is a future implementation contract, not a claim that today's
+config schema accepts `download.enabled`.
+
+Registration requires later integration proof of a supported descriptor-bound
+writer and temporary-publication path, cleanup and runtime controls without
+reopening the validated destination pathname.
+
+Future download audit lines identify source, destination and outcome, never
+claimed consent, credentials or share passwords; paths can reveal sensitive
+names and activity and require protected log access and retention. This future
+path-logging policy does not change the current audit vocabulary.
+
+Documentation verifiers witness these policy statements structurally, not
+runtime enforcement.
+
+The shipped opener is in `internal/drivefs/confined.go`; `WriteFresh` alone
+does not provide cleanup or publication. Relocation of the allowed root or its
+ancestors after opening remains the operator's responsibility, outside the
+threat model.
 
 ### MCP stdio surface
 
@@ -262,10 +299,10 @@ Risks the code already admits and this model records rather than hides:
   frames a client sends or how fast, so a client can keep the process busy.
 - **The version banner does not authenticate a swapped executable.** A
   replaced CLI that prints the pinned banner passes the handshake.
-- **Drive downloads and writes are reserved and not shipped.** The
-  configuration schema reserves an allowed-directory list and a write policy,
-  both disabled by default, and the server registers no download or write
-  tool. Their confinement and approval semantics are not designed here.
+- **Drive download and write tools are not shipped.** The current
+  configuration reserves an allowed-directory list and a disabled write policy.
+  Download policies are decided in record 0003, but their runtime controls
+  remain future work; client confirmation is an operator trust boundary.
 
 ## Out of scope
 

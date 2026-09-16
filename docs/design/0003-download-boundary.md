@@ -45,9 +45,41 @@ allowlist-prefix check followed by a separate open. Post-write checks cannot
 undo an escaped write. The historical requirements remain recorded in
 [KO-449](0001-download-confinement.md).
 
+Operators must configure client-managed per-call confirmation before enabling
+downloads. Croton accepts `tools/call` from the configured client and cannot
+verify that a human confirmed. Croton never prompts for confirmation itself.
+The annotations `readOnlyHint false` and `destructiveHint false` do not force a
+client prompt or prove confirmation. An auto-approving client permits
+unattended local writes inside the allowed root.
+
+The human-facing request must identify the Drive source path, destination
+under the allowed root and size when metadata supplies it. The human-facing
+request must never include credentials or share passwords. There is no
+approved tool argument or other agent-supplied consent assertion. There is no
+consent audit field.
+
+The planned `download.enabled` setting defaults to false. While disabled, no
+download tool is registered. Explicit operator opt-in accepts the
+configured-client trust boundary. Until the registration implementation ships,
+`download.enabled` true must fail startup rather than enable a partial
+capability. This is a future implementation contract, not a claim that today's
+config schema accepts `download.enabled`.
+
+Downloads must refuse an existing destination. There is no overwrite flag. The
+configurable byte cap defaults to 256 MiB. The configurable time cap defaults
+to 120 seconds. Known limits must be checked before the first write. A limit
+reached mid-download must stop the download and delete partial output.
+
+A future local audit line per download must identify source, destination and
+outcome. That audit line must never claim consent or include credentials or
+share passwords. Source and destination paths can reveal sensitive names and
+activity; operators must protect access to and retention of these future local
+logs. These controls require future runtime implementation and are not
+supplied by `WriteFresh`.
+
 ## Proof test
 
-Future implementation proofs must use deterministic Go tests on Linux and
+Future download integration proofs must use deterministic Go tests on Linux and
 macOS with synthetic temporary allowed and outside directories. These tests
 are required future work, not tests already shipped. Use explicit synchronization
 barriers at resolution and write boundaries, not timing sleeps.
@@ -76,14 +108,19 @@ passing it is not a runtime security proof.
 
 ## Reserved
 
-The approval model remains undecided and Reserved. The overwrite policy remains
-undecided and Reserved. Size caps remain undecided and Reserved. Time caps remain
-undecided and Reserved. These unresolved policies block tool registration.
-This record selects none of these policies and changes no config behavior.
+Only per-session approval remains Reserved.
 
 ## Status
 
-Accepted as a maintainer-approved design decision, with no implementation
-shipped. This record registers no download tool and implements no opener.
-A future implementation must satisfy the proof requirements and resolve Reserved
-before tool registration. The server remains read-only.
+Accepted as a maintainer-approved design and policy record. The internal
+confined opener `WriteFresh` has shipped without a production call site.
+Download tool registration and policy enforcement have not shipped.
+Registration remains held until this record ships and a later integration
+proves the required controls.
+
+Before registration, integration must prove a supported descriptor-bound
+writer and temporary-publication path, partial-output cleanup and all required
+runtime controls without reopening the validated destination pathname.
+`WriteFresh` alone does not provide partial-output cleanup or publication. The
+existing CLI Download method remains disabled by the invocation allowlist. The
+server remains read-only.

@@ -7,12 +7,11 @@ the Mail contract carries over unless this page says so. Stdout carries
 protocol frames only; all diagnostics, including the audit stream, go to
 stderr.
 
-Every claim below names the synthetic test that pins it. The tests run against
-the fake Drive CLI in `internal/testkit/fakedrive` and the fixtures in
-`internal/drivecli/testdata`; no live Proton account, credential, or Drive
-content is involved.
-`scripts/verify_docs_drive_mcp.py` cross-checks the tool names, the error
-codes, and every cited test name against the tree.
+Every current runtime claim below names the synthetic test that pins it. The
+tests run against the fake Drive CLI in `internal/testkit/fakedrive` and the
+fixtures in `internal/drivecli/testdata`; no live Proton account, credential,
+or Drive content is involved. `scripts/verify_docs_drive_mcp.py` cross-checks
+the tool names, the error codes, and every cited test name against the tree.
 
 ## Running
 
@@ -36,7 +35,7 @@ registers no download or write tools. Under the accepted design, relocation of
 the allowed root or its ancestors after opening is the operator's responsibility,
 outside Croton's threat model. See the
 [resolution-time download boundary](design/0003-download-boundary.md) for the
-design decision and reserved policy questions; no download implementation ships.
+accepted confinement and download policies; no download tool ships.
 The file carries no credentials and
 the server never reads any; authentication is the CLI's own concern, and a CLI
 that reports it needs authentication surfaces as `unavailable`.
@@ -57,6 +56,38 @@ Witnesses: `TestStdioInitializesAnIndependentDriveServerWithThreeReadOnlyTools`
 `TestNewSupportsLegacyInitialize` (legacy negotiation), and
 `TestStdioDriveToolsFailClosedWhenNegotiationFails` (fail-closed handshake
 over stdio).
+
+## Planned downloads
+
+Planned downloads follow the accepted [resolution-time download
+boundary](design/0003-download-boundary.md). The confined opener has shipped,
+but download registration and policy enforcement have not shipped.
+
+Operators must configure client-managed per-call confirmation before enabling
+downloads. Croton accepts `tools/call` from the configured client and cannot
+verify that a human confirmed. Croton never prompts for confirmation itself.
+The annotations `readOnlyHint false` and `destructiveHint false` do not force a
+client prompt or prove confirmation. An auto-approving client permits
+unattended local writes inside the allowed root.
+
+The planned `download.enabled` setting defaults to false. While disabled, no
+download tool is registered. Explicit operator opt-in accepts the
+configured-client trust boundary. Until the registration implementation ships,
+`download.enabled` true must fail startup rather than enable a partial
+capability. This is a future implementation contract, not a claim that today's
+config schema accepts `download.enabled`.
+
+Registration requires later integration proof of a supported descriptor-bound
+writer and temporary-publication path, cleanup and runtime controls without
+reopening the validated destination pathname.
+
+Future download audit lines identify source, destination and outcome, never
+claimed consent, credentials or share passwords; paths can reveal sensitive
+names and activity and require protected log access and retention. This future
+path-logging policy does not change the current audit vocabulary.
+
+Documentation verifiers witness these policy statements structurally, not
+runtime enforcement.
 
 ## Tools
 
@@ -252,4 +283,6 @@ absent from the stdio result and from the process's stderr).
 
 ## Not yet witnessed
 
-Every claim on this page is witnessed by a tracked test.
+Every current runtime claim on this page is witnessed by a tracked test.
+Planned download policies are structurally witnessed by documentation verifiers;
+their runtime enforcement remains future work.
