@@ -2,8 +2,9 @@
 """Witness the resolution-time download design, not runtime security.
 
 Uses the existing Markdown parser and comment filter. Requirements are local to
-named sections, outside comments and fenced examples. This closed list of
-required statements is normalized for whitespace, case and inline code only;
+named sections, outside comments and fenced examples. Closed sets of complete
+statements reject extra or qualified claims. The contract vocabulary is normalized
+for whitespace, case and inline code only;
 changing the contract vocabulary requires review.
 """
 
@@ -11,7 +12,7 @@ import pathlib
 import re
 import sys
 
-from verify_docs_design_mail import normalize, prose, visible_lines
+from verify_docs_design_mail import normalize, visible_lines
 
 DOC = pathlib.Path("docs/design/0003-download-boundary.md")
 OLD = pathlib.Path("docs/design/0001-download-confinement.md")
@@ -75,6 +76,54 @@ REQUIREMENTS = {
 }
 
 
+CONTEXT = {
+    "Decision": (
+        "A descriptor continues to identify its opened object even if that object is renamed; this is not a lifetime pathname-location guarantee.",
+        "Reject check-then-open via `Lstat`, `EvalSymlinks` or an allowlist-prefix check followed by a separate open.",
+        "Post-write checks cannot undo an escaped write.",
+        "The historical requirements remain recorded in [KO-449](0001-download-confinement.md).",
+    ),
+    "Proof test": (
+        "Movement of an already-open object is not evidence of following its replacement pathname; do not assert lifetime location protection for that object.",
+    ),
+}
+OLD_REQUIREMENTS = {
+    "superseded-in-part status and successor link": "Superseded-in-part by the maintainer-approved [resolution-time Drive download boundary](0003-download-boundary.md).",
+    "superseded lifetime contract": "The successor replaces the lifetime relocation guarantee, unconditional pre-write refusal gate and relocation-backend prerequisite with resolution-time confinement and descriptor-bound output.",
+    "historical body": "The body above preserves the historical KO-449 proposal; its superseded requirements are not the current boundary.",
+    "no shipped tool or opener": "No download tool or opener ships with either record.",
+    "reserved policies block registration": "Approval, overwrite, size and time cap policies remain Reserved and block tool registration.",
+}
+DRIVE_REQUIREMENTS = {
+    "reserved keys and no shipped tools": "allowedDownloadDirectories and writes.enabled are reserved: the server registers no download or write tools.",
+    "operator responsibility for root and ancestor relocation": "Under the accepted design, relocation of the allowed root or its ancestors after opening is the operator's responsibility, outside Croton's threat model.",
+    "successor link and no shipped download implementation": "See the [resolution-time download boundary](design/0003-download-boundary.md) for the design decision and reserved policy questions; no download implementation ships.",
+}
+DRIVE_CONTEXT = (
+    "The file carries no credentials and the server never reads any; authentication is the CLI's own concern, and a CLI that reports it needs authentication surfaces as `unavailable`.",
+)
+
+
+def check_statements(lines, requirements, context, label, failures):
+    # Strip only line-leading list markers; keep negations and qualifications.
+    body = normalize(" ".join(
+        re.sub(r"^\s*[-+*]\s+", "", line.text)
+        for line in lines if line.fence is None and not line.opens
+    ))
+    # A terminator is a single period followed by whitespace or end of prose.
+    # Dots inside links, writes.enabled and the `..` component are not boundaries.
+    statements = set(re.split(r"(?<=[^.]\.)\s+", body)) - {""}
+    allowed = {normalize(statement) for statement in context}
+    for name, statement in requirements.items():
+        expected = normalize(statement)
+        allowed.add(expected)
+        if expected not in statements:
+            failures.append(f"{label}: missing {name}")
+
+    if statements - allowed:
+        failures.append(f"{label}: unexpected contract statement; only approved complete statements are allowed")
+
+
 def sections(lines):
     headings = []
     bodies = {}
@@ -111,17 +160,16 @@ def verify(doc=DOC, old=OLD, drive=DRIVE):
         failures.append(f"{doc}: expected exactly six ordered ## headings: {', '.join(HEADINGS)}")
 
     for section, requirements in REQUIREMENTS.items():
-        body = prose(bodies.get(section, []))
-        for name, statement in requirements.items():
-            if normalize(statement) not in body:
-                failures.append(f"{doc} {section}: missing {name}")
+        check_statements(
+            bodies.get(section, []), requirements, CONTEXT.get(section, ()),
+            f"{doc} {section}", failures,
+        )
 
     _, old_bodies = sections(contents[old])
-    status = prose(old_bodies.get("Status", []))
-    if "superseded-in-part" not in status:
-        failures.append(f"{old} Status: missing superseded-in-part status")
-    if not re.search(r"\[[^\]]+\]\(0003-download-boundary\.md\)", status):
-        failures.append(f"{old} Status: missing successor link")
+    check_statements(
+        old_bodies.get("Status", []), OLD_REQUIREMENTS, (),
+        f"{old} Status", failures,
+    )
 
     _, drive_bodies = sections(contents[drive])
     # Check the actual configuration paragraph, not an unrelated page mention.
@@ -129,18 +177,15 @@ def verify(doc=DOC, old=OLD, drive=DRIVE):
         line.text if line.fence is None and not line.opens else ""
         for line in drive_bodies.get("Running", [])
     )
-    paragraphs = [normalize(p) for p in re.split(r"\n\s*\n", running)]
-    paragraph = next((p for p in paragraphs if p.startswith("alloweddownloaddirectories")), "")
-    drive_requirements = {
-        "reserved keys and no shipped tools": "allowedDownloadDirectories and writes.enabled are reserved: the server registers no download or write tools.",
-        "operator responsibility for root and ancestor relocation": "Under the accepted design, relocation of the allowed root or its ancestors after opening is the operator's responsibility, outside Croton's threat model.",
-        "no shipped download implementation": "no download implementation ships.",
-    }
-    for name, statement in drive_requirements.items():
-        if normalize(statement) not in paragraph:
-            failures.append(f"{drive} allowedDownloadDirectories paragraph: missing {name}")
-    if not re.search(r"\[[^\]]+\]\(design/0003-download-boundary\.md\)", paragraph):
-        failures.append(f"{drive} allowedDownloadDirectories paragraph: missing successor link")
+    paragraphs = re.split(r"\n\s*\n", running)
+    matching = [p for p in paragraphs if normalize(p).startswith("alloweddownloaddirectories")]
+    if len(matching) != 1:
+        failures.append(f"{drive}: expected exactly one allowedDownloadDirectories paragraph")
+
+    check_statements(
+        visible_lines(matching[0] if matching else ""), DRIVE_REQUIREMENTS, DRIVE_CONTEXT,
+        f"{drive} allowedDownloadDirectories paragraph", failures,
+    )
 
     return failures
 
