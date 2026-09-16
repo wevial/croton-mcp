@@ -11,6 +11,10 @@ This page covers the Mail server only. The separate Drive executable,
 its bounds, error vocabulary, and always-on audit stream differ from those
 described here, and every claim there names the test that pins it.
 
+The [proposed Mail mutation boundary](design/0002-mail-mutation.md) records
+possible flag, mark-read and move semantics for maintainer review. Its approval
+model remains Reserved; it authorizes no writes. Mail remains read-only.
+
 ## Protocol
 
 The server targets MCP `2026-07-28` and retains legacy compatibility through
