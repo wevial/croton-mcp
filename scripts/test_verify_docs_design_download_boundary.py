@@ -54,7 +54,7 @@ There is no approved tool argument or other agent-supplied consent assertion.
 
 There is no consent audit field.
 
-The planned download.enabled setting defaults to false.
+The download.enabled setting defaults to false.
 
 While disabled, no download tool is registered.
 
@@ -62,7 +62,13 @@ Explicit operator opt-in accepts the configured-client trust boundary.
 
 Until the registration implementation ships, download.enabled true must fail startup rather than enable a partial capability.
 
-This is a future implementation contract, not a claim that today's config schema accepts download.enabled.
+The current config schema accepts download.enabled, download.maxBytes and download.timeoutSeconds, but rejects enabled downloads with a static ErrConfigInvalid before CLI startup, regardless of allowed roots.
+
+Omitted limits default to 256 MiB and 120 seconds.
+
+Explicit limits must be positive signed-64-bit integers; timeout conversion to time.Duration must not overflow.
+
+Invalid limits are rejected, never clamped.
 
 Downloads must refuse an existing destination.
 
@@ -228,7 +234,8 @@ class DownloadBoundaryTests(unittest.TestCase):
             (threat_verifier, "DOC", "Planned Drive downloads"),
         ):
             source = getattr(module, attribute).read_text(encoding="utf-8")
-            for token in ("tools/call", "download.enabled", "readOnlyHint false", "destructiveHint false"):
+            for token in ("tools/call", "download.enabled", "download.maxBytes", "download.timeoutSeconds",
+                          "ErrConfigInvalid", "time.Duration", "readOnlyHint false", "destructiveHint false"):
                 source = source.replace(f"`{token}`", token)
             path = self.paths[0]
             path.write_text(source, encoding="utf-8")

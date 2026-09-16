@@ -20,13 +20,14 @@ croton-drive-mcp --config /absolute/path/to/croton-drive.json
 ```
 
 The configuration file goes through the same secure loader as the Mail
-executable (see [MCP.md](MCP.md)). Its strict schema has three keys:
+executable (see [MCP.md](MCP.md)). Its strict schema has four keys:
 
 ```json
 {
   "cli": {"binaryPath": "/opt/proton-drive/proton-drive"},
   "allowedDownloadDirectories": [],
-  "writes": {"enabled": false}
+  "writes": {"enabled": false},
+  "download": {"enabled": false, "maxBytes": 268435456, "timeoutSeconds": 120}
 }
 ```
 
@@ -70,12 +71,16 @@ The annotations `readOnlyHint false` and `destructiveHint false` do not force a
 client prompt or prove confirmation. An auto-approving client permits
 unattended local writes inside the allowed root.
 
-The planned `download.enabled` setting defaults to false. While disabled, no
+The `download.enabled` setting defaults to false. While disabled, no
 download tool is registered. Explicit operator opt-in accepts the
 configured-client trust boundary. Until the registration implementation ships,
 `download.enabled` true must fail startup rather than enable a partial
-capability. This is a future implementation contract, not a claim that today's
-config schema accepts `download.enabled`.
+capability. The current config schema accepts `download.enabled`,
+`download.maxBytes` and `download.timeoutSeconds`, but rejects enabled downloads with a static
+`ErrConfigInvalid` before CLI startup, regardless of allowed roots.
+Omitted limits default to 256 MiB and 120 seconds. Explicit limits must be
+positive signed-64-bit integers; timeout conversion to `time.Duration` must
+not overflow. Invalid limits are rejected, never clamped.
 
 Registration requires later integration proof of a supported descriptor-bound
 writer and temporary-publication path, cleanup and runtime controls without
