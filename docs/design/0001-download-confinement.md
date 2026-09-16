@@ -127,10 +127,11 @@ This record changes neither config-key behavior nor any approval mechanism.
 
 ## Status
 
-Proposed. This is the design-only record for KO-449; no download tool ships with
-it. A follow-up implementation ticket, **Descriptor-confined Drive download
-tool** (issue identifier not yet assigned), must implement these mechanisms and
-ship the proof tests before registering a download tool. It is blocked on a
-successor design specifying relocation protection for each platform it enables;
-this record alone permits only pre-write refusal. That ticket also needs
-explicit product decisions for the reserved questions; this record supplies none.
+Superseded-in-part by the maintainer-approved
+[resolution-time Drive download boundary](0003-download-boundary.md).
+The successor replaces the lifetime relocation guarantee, unconditional pre-write
+refusal gate and relocation-backend prerequisite with resolution-time confinement
+and descriptor-bound output. The body above preserves the historical KO-449
+proposal; its superseded requirements are not the current boundary. No download
+tool or opener ships with either record. Approval, overwrite, size and time cap
+policies remain Reserved and block tool registration.

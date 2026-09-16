@@ -32,9 +32,12 @@ executable (see [MCP.md](MCP.md)). Its strict schema has three keys:
 ```
 
 `allowedDownloadDirectories` and `writes.enabled` are reserved: the server
-registers no download or write tools. See the proposed
-[download confinement design](design/0001-download-confinement.md) for the
-mechanism and reserved policy questions. The file carries no credentials and
+registers no download or write tools. Under the accepted design, relocation of
+the allowed root or its ancestors after opening is the operator's responsibility,
+outside Croton's threat model. See the
+[resolution-time download boundary](design/0003-download-boundary.md) for the
+design decision and reserved policy questions; no download implementation ships.
+The file carries no credentials and
 the server never reads any; authentication is the CLI's own concern, and a CLI
 that reports it needs authentication surfaces as `unavailable`.
 
