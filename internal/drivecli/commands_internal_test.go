@@ -15,6 +15,7 @@ package drivecli
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -32,8 +33,8 @@ func TestIsAllowlistedInvocationMatchesExactArgvShapes(t *testing.T) {
 		{name: "list with folder type", arguments: []string{"filesystem", "list", "/my-files", "--type", "folder", "--json"}, want: true},
 		{name: "info", arguments: []string{"filesystem", "info", "/my-files/notes.txt", "--json"}, want: true},
 		{name: "sharing status", arguments: []string{"sharing", "status", "/my-files/notes.txt", "--json"}, want: true},
-		{name: "download one remote path", arguments: []string{"filesystem", "download", "/my-files/notes.txt", "/tmp/dest", "--file-conflict-strategy", "skip", "--folder-conflict-strategy", "skip", "--json"}, want: true},
-		{name: "download several remote paths", arguments: []string{"filesystem", "download", "/my-files/a", "/my-files/b", "/tmp/dest", "--file-conflict-strategy", "skip", "--folder-conflict-strategy", "skip", "--json"}, want: true},
+		{name: "download one remote path", arguments: []string{"filesystem", "download", "/my-files/notes.txt", "/tmp/dest", "--file-conflict-strategy", "skip", "--folder-conflict-strategy", "skip", "--json"}, want: false},
+		{name: "download several remote paths", arguments: []string{"filesystem", "download", "/my-files/a", "/my-files/b", "/tmp/dest", "--file-conflict-strategy", "skip", "--folder-conflict-strategy", "skip", "--json"}, want: false},
 		{name: "operand with spaces stays one slot", arguments: []string{"filesystem", "list", "/my-files/report 2026; rm -rf /", "--json"}, want: true},
 
 		{name: "bare invocation", arguments: nil, want: false},
@@ -86,6 +87,25 @@ func TestInvokeEnforcesAllowlistBeforeExecution(t *testing.T) {
 	} {
 		if _, err := client.invoke(context.Background(), arguments, false); CodeOf(err) != CodeInvalidConfig {
 			t.Fatalf("invoke(%q) error = %v, want %q before any execution", arguments, err, CodeInvalidConfig)
+		}
+	}
+}
+
+func TestDownloadRefusedBeforeCLIExecution(t *testing.T) {
+	t.Parallel()
+
+	client, err := New(Options{BinaryPath: "/nonexistent/proton-drive"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = client.Download(context.Background(), []string{"/my-files/synthetic.test"}, "/tmp/synthetic.test")
+	if CodeOf(err) != CodeInvalidConfig {
+		t.Fatalf("Download error = %v, want allowlist refusal before execution", err)
+	}
+	for _, command := range AllowedCommandLines() {
+		if strings.Contains(command, "download") {
+			t.Fatalf("download advertised in CLI allowlist: %q", command)
 		}
 	}
 }

@@ -184,9 +184,10 @@ provenance. The handshake proves that the program at the configured path
 printed the expected banner; it does not prove which binary is running, that it
 is unmodified, or that it is confined. Nothing in Croton sandboxes the child
 beyond the scrubbed environment, the neutral working directory and the output
-and time caps. The download command exists on the client but is not registered
-as a tool, and local download confinement and write approval are reserved and
-not shipped.
+and time caps. The client's `Download` method remains present, but
+`filesystem download` is rejected by the CLI allowlist and is not registered
+as a tool. The internal confined output opener has no production call site;
+`allowedDownloadDirectories` and product download approval remain reserved.
 
 ### MCP stdio surface
 
