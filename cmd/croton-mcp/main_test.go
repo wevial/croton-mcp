@@ -165,6 +165,7 @@ func TestStdioServesToolsOverOfficialSDKAndAuditsSafely(t *testing.T) {
 	// Stderr must contain only allowlisted audit metadata: never folder
 	// names, credentials, endpoints, or protocol data.
 	sawAudit := false
+	lifecycleEvents := 0
 	for _, line := range strings.Split(strings.TrimSpace(stderr.String()), "\n") {
 		if line == "" {
 			continue
@@ -173,6 +174,15 @@ func TestStdioServesToolsOverOfficialSDKAndAuditsSafely(t *testing.T) {
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			t.Fatalf("stderr line is not audit JSON: %q", line)
 		}
+		if event["event"] == "transport_end" {
+			if len(event) != 2 || event["category"] != "normal_close" {
+				t.Fatalf("unexpected lifecycle event: %q", line)
+			}
+
+			lifecycleEvents++
+			continue
+		}
+
 		for key := range event {
 			switch key {
 			case "event", "tool", "outcome", "code", "truncated":
@@ -181,6 +191,9 @@ func TestStdioServesToolsOverOfficialSDKAndAuditsSafely(t *testing.T) {
 			}
 		}
 		sawAudit = true
+	}
+	if lifecycleEvents != 1 {
+		t.Fatalf("lifecycle events = %d, want 1", lifecycleEvents)
 	}
 	if !sawAudit {
 		t.Fatalf("no audit events on stderr: %q", stderr.String())
@@ -370,8 +383,8 @@ func TestOversizeStdioFrameFailsClosedWithoutContentLeak(t *testing.T) {
 	if strings.Contains(stderr.String(), secret) || strings.Contains(stderr.String(), "mail.test") {
 		t.Fatalf("oversize frame leaked content: %q", stderr.String())
 	}
-	if got := strings.TrimSpace(stderr.String()); got != "croton-mcp: server unavailable" {
-		t.Fatalf("stderr = %q, want static server failure", got)
+	if got := strings.TrimSpace(stderr.String()); got != "{\"event\":\"transport_end\",\"category\":\"transport_failure\"}\ncroton-mcp: server unavailable" {
+		t.Fatalf("stderr = %q, want lifecycle event and static server failure", got)
 	}
 }
 
