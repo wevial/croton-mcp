@@ -83,6 +83,8 @@ jobs:
         # fresh clone of a newer default branch back onto the pin). Nothing is
         # piped from the network into a shell, so no change at a mutable
         # endpoint can execute here.
+        # The authenticated Contents API route avoids shared-runner rate limits
+        # on the raw content host.
         #
         # Pinning the installer is necessary but not sufficient, because on a
         # machine that has never seen Hermes the installer fetches its own
@@ -110,8 +112,9 @@ jobs:
         # CI temporary HERMES_HOME, so no credential, profile, or mailbox on the
         # runner is read or written.
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HERMES_HOME: ${{ runner.temp }}/hermes-install-home
-          HERMES_INSTALLER_URL: https://raw.githubusercontent.com/NousResearch/hermes-agent/f80f453ae0679347e38abc917c7f94f717bf96c5/scripts/install.sh
+          HERMES_INSTALLER_URL: https://api.github.com/repos/NousResearch/hermes-agent/contents/scripts/install.sh?ref=f80f453ae0679347e38abc917c7f94f717bf96c5
           HERMES_INSTALLER_SHA256: 458ed1873bec1766ccd723b8a86338fbdf1caff5d43eae45065bc448cafa2dca
           # https://github.com/astral-sh/uv/releases/tag/0.12.4 — digests as
           # published in that release's uv-*-apple-darwin.tar.gz.sha256 assets.
@@ -136,6 +139,7 @@ jobs:
           esac
           uv_archive="${{ runner.temp }}/uv-$uv_target.tar.gz"
           curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            --retry 5 --retry-delay 15 --retry-all-errors \
             --output "$uv_archive" \
             "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-$uv_target.tar.gz"
           echo "$uv_sha256  $uv_archive" | shasum -a 256 --check
@@ -146,6 +150,9 @@ jobs:
           "$HERMES_HOME/bin/uv" --version
           installer="${{ runner.temp }}/hermes-install.sh"
           curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            --retry 5 --retry-delay 15 --retry-all-errors \
+            --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+            --header "Accept: application/vnd.github.raw+json" \
             --output "$installer" "$HERMES_INSTALLER_URL"
           echo "$HERMES_INSTALLER_SHA256  $installer" | shasum -a 256 --check
           bash "$installer" \
