@@ -32,6 +32,12 @@ never accesses credentials and registers no write-capable tools.
 
 - Go 1.26.6 (the module's `toolchain` directive enforces this release)
 
+## User-owned Mail installation
+
+See [the user-owned installation guide](docs/USER-INSTALL.md) for source builds,
+configuration and credential-helper prerequisites, catalog verification, and
+staged updates and rollback.
+
 ## Platform support
 
 Linux and macOS are supported and receive identical configuration-loading
