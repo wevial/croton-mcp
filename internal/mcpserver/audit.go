@@ -1,9 +1,14 @@
 package mcpserver
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"sync"
+	"syscall"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // Auditor emits allowlisted, metadata-only audit events as JSON lines. A nil
@@ -23,7 +28,7 @@ func NewAuditor(writer io.Writer) *Auditor {
 	return &Auditor{writer: writer}
 }
 
-// auditEvent is the complete allowlisted audit vocabulary. Every field is
+// auditEvent is the complete allowlisted tool audit vocabulary. Every field is
 // server-chosen metadata; no caller input, mailbox data, or wrapped error
 // detail may reach it.
 type auditEvent struct {
@@ -50,6 +55,10 @@ func (auditor *Auditor) ToolCall(tool, outcome, code string, truncated bool) {
 		Truncated: truncated,
 	}
 
+	auditor.writeEvent(event)
+}
+
+func (auditor *Auditor) writeEvent(event any) {
 	encoded, err := json.Marshal(event)
 	if err != nil {
 		return
@@ -84,4 +93,29 @@ func sanitizeErrorCode(code string) string {
 	default:
 		return errInternal
 	}
+}
+
+// transportEndEvent is independent of tool audit metadata and contains no
+// transport error detail.
+type transportEndEvent struct {
+	Event    string `json:"event"`
+	Category string `json:"category"`
+}
+
+func (auditor *Auditor) transportEnd(err error) {
+	if auditor == nil {
+		return
+	}
+
+	category := "transport_failure"
+	switch {
+	case err == nil, errors.Is(err, io.EOF), errors.Is(err, mcp.ErrConnectionClosed):
+		category = "normal_close"
+	case errors.Is(err, context.Canceled):
+		category = "canceled"
+	case errors.Is(err, syscall.EPIPE):
+		category = "client_disconnected"
+	}
+
+	auditor.writeEvent(transportEndEvent{Event: "transport_end", Category: category})
 }

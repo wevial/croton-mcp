@@ -172,3 +172,19 @@ only the allowlisted vocabulary `event`, `tool`, `outcome`, `code`,
 `truncated`. Tool names, outcomes, and codes are re-validated against fixed
 sets before logging; caller inputs, folder names, identifiers, subjects,
 addresses, and error text never appear.
+
+With the same opt-in setting, Mail `Serve` completion writes exactly one
+independent lifecycle JSON line to the diagnostic stream (stderr), never to
+the JSON-RPC stream. Its only fields are `event` (always `transport_end`) and
+`category`, from this closed vocabulary:
+
+- `normal_close`: nil, EOF, or MCP connection closed.
+- `canceled`: context cancellation.
+- `client_disconnected`: a broken pipe (`EPIPE`); this is not proof of user intent.
+- `transport_failure`: an unclassified transport failure.
+
+Classification uses typed error identity, including wrapped errors, and never
+error text. No underlying error detail is emitted. Normal closure and
+cancellation still return success; other failures still return the static
+`server unavailable` error. With audit disabled, no lifecycle event is
+written. Direct `Connect` behavior is unchanged.

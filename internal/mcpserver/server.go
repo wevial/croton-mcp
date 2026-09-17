@@ -35,7 +35,8 @@ type Options struct {
 
 // Server wraps the SDK server with per-connection cancellation behavior.
 type Server struct {
-	sdk *mcp.Server
+	sdk   *mcp.Server
+	audit *Auditor
 }
 
 // New constructs Croton's MCP server exposing only the six read-only tools.
@@ -53,14 +54,17 @@ func New(options Options) *Server {
 
 	registerTools(sdkServer, options)
 
-	return &Server{sdk: sdkServer}
+	return &Server{sdk: sdkServer, audit: options.Audit}
 }
 
 // Serve runs an already-constructed server over a persistent MCP transport.
 func Serve(ctx context.Context, server *Server, transport mcp.Transport) error {
 	err := server.Run(ctx, transport)
+	server.audit.transportEnd(err)
+
 	if err == nil || errors.Is(err, io.EOF) || errors.Is(err, mcp.ErrConnectionClosed) || errors.Is(err, context.Canceled) {
 		return nil
 	}
+
 	return errServerUnavailable
 }
