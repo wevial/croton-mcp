@@ -42,6 +42,9 @@ REQUIRED = {
         "no validated Claude Code or Codex compatibility"),
     "Update and rollback": (
         "reviewed revision", "backup", "hash", "permissions", "rename",
+        "rename the staged executable and every staged config, helper and trust file",
+        "Do not reopen the client session until the complete matched set is installed and verified",
+        "Keep launches blocked until the complete prior set is restored and verified",
         "Restore", "previously absent", "catalog-only", "user-service",
         "self-update", "transient", "no commands to modify or restart running services"),
     "Troubleshooting": ("Configuration unreadable", "Catalog succeeds", "synthetic stubs"),
@@ -150,6 +153,10 @@ def self_test(guide, readme):
         ("missing update/rollback", re.sub(
             r"^## Update and rollback\n.*?(?=^## |\Z)", "", guide, flags=re.M | re.S),
          readme, "section missing: Update and rollback"),
+        ("binary-only installation", guide.replace(
+            "rename the staged executable and every staged config, helper and trust file",
+            "rename only the staged executable"),
+         readme, "missing contract phrase 'rename the staged executable and every staged config, helper and trust file'"),
         ("non-loopback", mutate_config(lambda c: c["imap"].update(host="192.0.2.1")),
          readme, "IMAP must be loopback"),
         ("inline credentials", mutate_config(lambda c: c["imap"].update(password="synthetic")),

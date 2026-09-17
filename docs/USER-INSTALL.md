@@ -215,20 +215,33 @@ credentials, protocol captures or unredacted diagnostics to agents or tickets.
    Back up each existing artifact with its permissions intact. Keep private
    backups local and protected; record the previous source SHA and client
    executable/argument settings. Do not log config or secret contents.
-4. Stage the candidate under a new unused filename in the selected bin directory,
-   verify its hash and permissions, then rename it over the final executable
-   within that directory for atomic replacement. Do not make the config a
-   symlink. Stage any necessary reviewed config/helper/trust changes separately
-   with restrictive permissions, retaining the matched prior set for rollback.
-5. Reopen the client session and repeat catalog-only verification. A live read
+4. Stage the candidate under a new unused filename in the selected bin directory.
+   Stage every required reviewed config, helper and trust change as a regular
+   file under a new unused name in its target directory with restrictive
+   permissions. Verify staged hashes, ownership and modes, and confirm that
+   the config references the intended final helper and trust paths. Retain the
+   matched prior set for rollback; do not make the config a symlink.
+5. Keep launches blocked while installing the complete matched artifact set:
+   rename the staged executable and every staged config, helper and trust file
+   over their respective final targets within each target's directory. Each
+   rename is atomic, but the set of renames is not a transaction. Verify all
+   final artifacts against the intended set, including unchanged supporting
+   files reviewed for compatibility. If any installation or verification step
+   fails, keep launches blocked and restore the complete prior set using step 7.
+   Do not reopen the client session until the complete matched set is installed
+   and verified.
+6. Reopen the client session and repeat catalog-only verification. Catalog-only
+   verification does not exercise the helper or trust material. A live read
    still requires separate explicit authorization. Retain the backup until the
    operator has accepted the update.
-6. On failure, close the Croton session and prevent new launches again. Restore
+7. On failure, close the Croton session and prevent new launches again. Restore
    each changed artifact from the recorded backup via a staged regular file and
    same-directory rename; verify original hashes, owner and modes. Restore prior
    client executable/argument settings if changed. Remove only exact newly
    created targets recorded as previously absent; never recursively delete the
-   install tree. Repeat catalog-only verification and retain backups on failure.
+   install tree. Keep launches blocked until the complete prior set is restored
+   and verified, then reopen the session and repeat catalog-only verification.
+   Retain backups on failure.
 
 Rolling Croton back does not roll Bridge back. Bridge may run as a user-service
 and may self-update independently, changing availability or its certificate.
