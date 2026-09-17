@@ -277,7 +277,96 @@ func TestTransactionalOutputRename(t *testing.T) {
 	}
 }
 
+// The open hook orders substitution exactly between staging creation and its
+// reopen. A compromised staging directory lets a parent-directory writer swap
+// the publication source after the callback has produced its complete bytes.
+func TestTransactionalOutputStageSubstitution(t *testing.T) {
+	for _, source := range []string{"file", "symlink", "empty"} {
+		t.Run(source, func(t *testing.T) {
+			root, outside := fixture(t), fixture(t)
+			moved := filepath.Join(root, "moved.test")
+			sentinel := filepath.Join(outside, "sentinel.test")
+			must(t, os.WriteFile(sentinel, []byte("outside.test"), 0600))
+			ops, closed := transactionTracked(t)
+			realOpen := ops.open
+			var replacement string
+			ops.open = func(parent int, name string, flags int, mode uint32) (int, error) {
+				if strings.HasPrefix(name, ".croton-output-") {
+					replacement = filepath.Join(root, name)
+					must(t, os.Rename(replacement, moved))
+					must(t, os.Mkdir(replacement, 0700))
+				}
+
+				return realOpen(parent, name, flags, mode)
+			}
+			called := false
+			err := writeTransactional(root, "output.test", func(file *os.File) error {
+				called = true
+				if err := syntheticWrite(file); err != nil {
+					return err
+				}
+
+				// Emulate the replacement directory's owner changing the source.
+				path := filepath.Join(replacement, "output")
+				if source != "empty" {
+					must(t, os.Remove(path))
+					if source == "symlink" {
+						must(t, os.Symlink(sentinel, path))
+					} else {
+						must(t, os.WriteFile(path, []byte("competitor.test"), 0600))
+					}
+				}
+
+				return nil
+			}, ops)
+			closed()
+			if err == nil || called {
+				t.Fatalf("substitution error = %v, writer called = %v", err, called)
+			}
+
+			absent(t, filepath.Join(root, "output.test"))
+			entries(t, moved, 0)
+			entries(t, replacement, 0)
+			entries(t, root, 2)
+			content(t, sentinel, "outside.test")
+			entries(t, outside, 1)
+		})
+	}
+}
+
 func TestTransactionalOutputFailures(t *testing.T) {
+	t.Run("staging-privacy", func(t *testing.T) {
+		root := fixture(t)
+		ops, closed := transactionTracked(t)
+		realOpen := ops.open
+		ops.open = func(parent int, name string, flags int, mode uint32) (int, error) {
+			if strings.HasPrefix(name, ".croton-output-") {
+				must(t, unix.Fchmodat(parent, name, 0777, 0))
+			}
+
+			return realOpen(parent, name, flags, mode)
+		}
+		called := false
+		err := writeTransactional(root, "output.test", func(file *os.File) error {
+			called = true
+
+			return syntheticWrite(file)
+		}, ops)
+		closed()
+		if err == nil || called {
+			t.Fatalf("privacy error = %v, writer called = %v", err, called)
+		}
+
+		entries(t, root, 0)
+	})
+	t.Run("staging-owner", func(t *testing.T) {
+		// Synthetic metadata tests the ownership rule without requiring root
+		// or changing any real account's files on the native CI runners.
+		stat := unix.Stat_t{Mode: unix.S_IFDIR | 0700, Uid: uint32(os.Geteuid()) + 1}
+		if err := privateStage(&stat); err == nil {
+			t.Fatal("accepted another user's private directory")
+		}
+	})
 	for _, stage := range []string{"directory", "file"} {
 		t.Run("open/"+stage, func(t *testing.T) {
 			root := fixture(t)

@@ -38,6 +38,11 @@ import (
 //
 // All operations retain the resolved directory authority, with the same
 // resolution-time confinement and root-relocation boundary as WriteFresh.
+// Staging requires a private directory owned by the invoking user, and its
+// identity is checked across reopening. As in the package's filesystem trust
+// model, this does not defend against compromise of that user account.
+// A substituted staging name is refused; cleanup reports lost authority rather
+// than removing a replacement directory or searching for a renamed original.
 // Publication requires descriptor-relative hard links on the filesystem;
 // unsupported operations fail closed without an overwrite fallback.
 // No CLI or MCP production path calls this primitive.
@@ -63,6 +68,26 @@ func publishLink(from int, source string, to int, destination string) error {
 	return unix.Linkat(from, source, to, destination, 0)
 }
 
+func privateStage(stat *unix.Stat_t) error {
+	if stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Uid != uint32(os.Geteuid()) || stat.Mode&0077 != 0 {
+		return errors.New("temporary output directory is not private to the invoking user")
+	}
+
+	return nil
+}
+
+func checkStage(parent int, name string, expected *unix.Stat_t) error {
+	var current unix.Stat_t
+	if err := unix.Fstatat(parent, name, &current, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return err
+	}
+	if current.Dev != expected.Dev || current.Ino != expected.Ino || current.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return errors.New("temporary output directory identity changed")
+	}
+
+	return nil
+}
+
 func writeTransactional(root, destination string, write func(*os.File) error, ops transactionOps) error {
 	if write == nil {
 		return errors.New("writer required")
@@ -83,7 +108,25 @@ func writeTransactional(root, destination string, write func(*os.File) error, op
 			return err
 		}
 
+		// mkdirat does not return a descriptor. Establish a private, owned
+		// identity before reopening, then compare the actual opened object.
+		// Ownership/privacy also reject another user's substitution between
+		// mkdirat and this first stat; inode comparison alone cannot do that.
+		var created unix.Stat_t
+		if err := unix.Fstatat(parent, stage, &created, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+			return fmt.Errorf("temporary output directory cleanup authority unavailable: %w", err)
+		}
+		if err := privateStage(&created); err != nil {
+			return fmt.Errorf("temporary output directory cleanup authority unavailable: %w", err)
+		}
+
 		defer func() {
+			if cleanupErr := checkStage(parent, stage, &created); cleanupErr != nil {
+				err = errors.Join(err, fmt.Errorf("remove temporary output directory: %w", cleanupErr))
+
+				return
+			}
+
 			if cleanupErr := ops.remove(parent, stage, unix.AT_REMOVEDIR); cleanupErr != nil {
 				err = errors.Join(err, fmt.Errorf("remove temporary output directory: %w", cleanupErr))
 			}
@@ -96,6 +139,17 @@ func writeTransactional(root, destination string, write func(*os.File) error, op
 
 		directory := os.NewFile(uintptr(fd), "transaction-directory")
 		defer func() { err = errors.Join(err, directory.Close()) }()
+		var opened unix.Stat_t
+		if err := unix.Fstat(fd, &opened); err != nil {
+			return err
+		}
+		if opened.Dev != created.Dev || opened.Ino != created.Ino {
+			return errors.New("temporary output directory identity changed")
+		}
+		if err := privateStage(&opened); err != nil {
+			return err
+		}
+
 		const source = "output"
 		outputFD, err := ops.open(fd, source, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
 		if err != nil {
