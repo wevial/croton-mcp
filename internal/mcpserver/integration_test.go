@@ -21,7 +21,13 @@ var mutatingIMAPCommands = []string{
 func startIntegrationAdapter(t *testing.T) (*testkit.Server, *bridge.Adapter) {
 	t.Helper()
 
-	server, err := testkit.Start(testkit.Options{Mode: testkit.ImplicitTLS})
+	return startIntegrationAdapterWithMessages(t, nil)
+}
+
+func startIntegrationAdapterWithMessages(t *testing.T, messages []string) (*testkit.Server, *bridge.Adapter) {
+	t.Helper()
+
+	server, err := testkit.Start(testkit.Options{Mode: testkit.ImplicitTLS, Messages: messages})
 	if err != nil {
 		t.Fatalf("start fake server: %v", err)
 	}
@@ -175,5 +181,107 @@ func TestAllSixToolsProduceReadOnlyWireTranscript(t *testing.T) {
 	requireReadOnlyTranscript(t, server)
 	if err := server.AssertNoInsecureAuthentication(); err != nil {
 		t.Fatalf("insecure authentication: %v", err)
+	}
+}
+
+func TestGetThreadSyntheticWire(t *testing.T) {
+	t.Parallel()
+
+	server, adapter := startIntegrationAdapterWithMessages(t, testkit.SyntheticLinkedThread())
+	session := connectTestClient(t, Options{Mail: adapter})
+
+	var search searchMailDecoded
+	decodeResult(t, callTool(t, session, "search_mail", map[string]any{
+		"mailbox": "INBOX", "subject": "Synthetic planning",
+	}), &search)
+	if len(search.Results) != 3 || search.Truncated {
+		t.Fatalf("fixture search = %+v, want all three messages", search)
+	}
+
+	// Resolve each opaque ID through MCP, independently of search ordering.
+	ids := make(map[string]string)
+	seen := make(map[string]bool)
+	for _, candidate := range search.Results {
+		if candidate.ID == "" || seen[candidate.ID] {
+			t.Fatalf("missing or duplicate opaque ID: %q", candidate.ID)
+		}
+		seen[candidate.ID] = true
+
+		var message getMessageDecoded
+		decodeResult(t, callTool(t, session, "get_message", map[string]any{"messageId": candidate.ID}), &message)
+		ids[message.Headers.MessageID] = candidate.ID
+	}
+	for _, name := range []string{"root", "reply", "unrelated"} {
+		if ids["<"+name+"@croton.test>"] == "" {
+			t.Fatalf("missing synthetic %s ID: %v", name, ids)
+		}
+	}
+
+	rootID, replyID, unrelatedID := ids["<root@croton.test>"], ids["<reply@croton.test>"], ids["<unrelated@croton.test>"]
+	for _, limit := range []int{10, 1} {
+		t.Run(fmt.Sprintf("maxMessages=%d", limit), func(t *testing.T) {
+			before := len(server.Commands())
+
+			var thread getThreadDecoded
+			decodeResult(t, callTool(t, session, "get_thread", map[string]any{
+				"messageId": replyID, "maxMessages": limit,
+			}), &thread)
+			if thread.ID != replyID || thread.Mailbox != "INBOX" {
+				t.Errorf("unexpected thread identity: %+v", thread)
+			}
+			if limit == 1 {
+				if len(thread.Nodes) != 1 || thread.Nodes[0].Key != replyID || !thread.Truncated {
+					t.Errorf("bounded thread must retain target and report truncation: %+v", thread)
+				}
+			} else {
+				if len(thread.Nodes) != 3 || thread.Truncated {
+					t.Errorf("want three nodes without truncation, got %+v", thread)
+				}
+				foundRoot, foundReply, foundSibling := false, false, false
+				for _, node := range thread.Nodes {
+					switch node.Key {
+					case rootID:
+						foundRoot = true
+						if node.MessageID != "<root@croton.test>" || node.ParentKey != "" || node.Depth != 0 {
+							t.Errorf("unexpected root: %+v", node)
+						}
+					case replyID:
+						foundReply = true
+						if node.MessageID != "<reply@croton.test>" || node.ParentKey != rootID || node.Depth != 1 {
+							t.Errorf("unexpected reply: %+v", node)
+						}
+					case unrelatedID:
+						foundSibling = true
+						if node.MessageID != "<unrelated@croton.test>" || node.ParentKey != "" || node.Depth != 0 {
+							t.Errorf("unexpected independent subject sibling: %+v", node)
+						}
+					default:
+						t.Errorf("unexpected node: %+v", node)
+					}
+				}
+				if !foundRoot || !foundReply || !foundSibling {
+					t.Errorf("thread membership missing: root=%v reply=%v sibling=%v", foundRoot, foundReply, foundSibling)
+				}
+			}
+
+			bodyFetches := 0
+			for _, command := range server.Commands()[before:] {
+				if !command.TLS {
+					t.Error("thread command used plaintext transport")
+				}
+				if strings.Contains(strings.ToUpper(command.Raw), "UID FETCH") && strings.Contains(strings.ToUpper(command.Raw), "BODY.PEEK[]") {
+					bodyFetches++
+				}
+			}
+			if bodyFetches == 0 || bodyFetches > limit {
+				t.Errorf("body PEEK fetches = %d, want 1..%d", bodyFetches, limit)
+			}
+
+			requireReadOnlyTranscript(t, server)
+		})
+	}
+
+	if err := server.AssertNoInsecureAuthentication(); err != nil {
+		t.Fatal(err)
 	}
 }

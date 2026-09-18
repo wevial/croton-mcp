@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -289,5 +290,23 @@ func TestGetThreadDeduplicatesAndRejectsSubjectFalsePositives(t *testing.T) {
 			keys = append(keys, member.Key)
 		}
 		t.Fatalf("members = %d, want target plus one exact unique sibling: %v", len(members), keys)
+	}
+}
+
+func TestThreadSubjectSiblingDocumentation(t *testing.T) {
+	t.Parallel()
+
+	contents, err := os.ReadFile("../../docs/MCP.md")
+	if err != nil {
+		t.Fatalf("read Mail documentation: %v", err)
+	}
+
+	for _, statement := range []string{
+		"Thread results may include unlinked messages with the same base subject.",
+		"An unlinked subject sibling has depth 0 and no parent; subject similarity alone does not establish a reply relationship.",
+	} {
+		if !strings.Contains(string(contents), statement) {
+			t.Errorf("Mail documentation missing contract statement: %q", statement)
+		}
 	}
 }

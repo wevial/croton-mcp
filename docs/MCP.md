@@ -147,6 +147,21 @@ transport admits only one unambiguous newline-delimited JSON object of at most
 Message identifiers are the bridge's opaque HMAC-bound ids; they are validated
 against a fresh UIDVALIDITY generation on every use.
 
+### Mail thread membership
+
+Thread results may include unlinked messages with the same base subject.
+`get_thread` gathers bounded same-subject candidates from the target mailbox;
+the base subject strips repeated `Re:`, `Fw:`, and `Fwd:` prefixes. Reply
+relationships are resolved from `References` and `In-Reply-To` headers.
+An unlinked subject sibling has depth 0 and no parent; subject similarity alone does not establish a reply relationship.
+
+`maxMessages` bounds the returned nodes and body fetches. When matching siblings
+are omitted because of this bound, the result reports `truncated: true`.
+`TestGetThreadSyntheticWire` verifies linked and independent-root membership,
+the one-message bound, and read-only PEEK fetches over loopback TLS using
+synthetic mail. `TestThreadSubjectSiblingDocumentation` pins the contract
+sentences above.
+
 ## Output
 
 Serialized tool results are capped (100 000 bytes). Oversize results are

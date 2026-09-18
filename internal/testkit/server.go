@@ -147,6 +147,12 @@ type Scenario struct {
 type Options struct {
 	Mode     TLSMode
 	Scenario Scenario
+
+	// Messages optionally replaces the default fixture with synthetic MIME messages
+	// assigned consecutive UIDs starting at 101. Searches honor UID ranges;
+	// callers must use criteria matching all supplied messages. Custom message
+	// FETCH responses do not apply Scenario fault injection.
+	Messages []string
 }
 
 // Command is one client command observed by a Server.
@@ -225,6 +231,8 @@ func Start(options Options) (*Server, error) {
 	if options.Scenario.UnexpectedBodyFetchBinaryLiteralBytes < 0 {
 		return nil, errors.New("testkit: unexpected body FETCH binary literal size must not be negative")
 	}
+
+	options.Messages = append([]string(nil), options.Messages...)
 
 	certificate, caDER, err := generateCertificate()
 	if err != nil {
@@ -579,6 +587,9 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 			}
 
 			statusResponse := "* STATUS \"INBOX\" (MESSAGES 2 UIDNEXT 103 UIDVALIDITY 9001 UNSEEN 1)"
+			if len(server.options.Messages) > 0 {
+				statusResponse = fmt.Sprintf("* STATUS \"INBOX\" (MESSAGES %d UIDNEXT %d UIDVALIDITY 9001 UNSEEN %d)", len(server.options.Messages), 101+len(server.options.Messages), len(server.options.Messages))
+			}
 			if server.options.Scenario.StatusResponse != "" {
 				statusResponse = server.options.Scenario.StatusResponse
 			}
@@ -597,12 +608,17 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 				continue
 			}
 
+			exists := 2
+			if len(server.options.Messages) > 0 {
+				exists = len(server.options.Messages)
+			}
+
 			uidValidity := server.nextUIDValidity()
 			uidNext := server.options.Scenario.UIDNext
 			if uidNext == 0 {
-				uidNext = 103
+				uidNext = uint32(101 + exists)
 			}
-			if !server.writeLines(writer, "* 2 EXISTS", fmt.Sprintf("* OK [UIDVALIDITY %d] fixture generation", uidValidity), fmt.Sprintf("* OK [UIDNEXT %d] fixture next UID", uidNext), tagged(tag, "OK [READ-ONLY] EXAMINE completed")) {
+			if !server.writeLines(writer, fmt.Sprintf("* %d EXISTS", exists), fmt.Sprintf("* OK [UIDVALIDITY %d] fixture generation", uidValidity), fmt.Sprintf("* OK [UIDNEXT %d] fixture next UID", uidNext), tagged(tag, "OK [READ-ONLY] EXAMINE completed")) {
 				return
 			}
 		case "UID":
@@ -636,6 +652,16 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 				} else if exactUIDSearch {
 					searchResponse = fmt.Sprintf("* SEARCH %d", searchWindowEnd(raw))
 				}
+				if len(server.options.Messages) > 0 {
+					searchResponse = "* SEARCH"
+					start, end, bounded := searchUIDRange(raw)
+					for index := range server.options.Messages {
+						uid := uint32(101 + index)
+						if !bounded || uid >= start && uid <= end {
+							searchResponse += fmt.Sprintf(" %d", uid)
+						}
+					}
+				}
 				if server.options.Scenario.ExactUIDSearchResponse != "" && exactUIDSearch {
 					searchResponse = strings.ReplaceAll(server.options.Scenario.ExactUIDSearchResponse, "{TAG}", tag)
 				} else if server.options.Scenario.OmitExactUIDSearchResponse && exactUIDSearch {
@@ -649,6 +675,14 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 					return
 				}
 			case "FETCH":
+				if len(server.options.Messages) > 0 {
+					if !server.writeFixtureFetch(writer, tag, raw) {
+						return
+					}
+
+					continue
+				}
+
 				literal := syntheticMessageBody
 				header := strings.Contains(strings.ToUpper(raw), "HEADER")
 				if server.shouldOmitFetchResponse(header) {
@@ -1107,4 +1141,49 @@ func isUnsafeBodyFetch(command Command) bool {
 		strings.Contains(upper, "BODY<") ||
 		strings.Contains(upper, "BINARY[") ||
 		strings.Contains(upper, "RFC822")
+}
+
+// writeFixtureFetch handles both single-message reads and batched metadata reads.
+func (server *Server) writeFixtureFetch(writer *bufio.Writer, tag, raw string) bool {
+	fields := strings.Fields(raw)
+	if len(fields) < 4 {
+		return server.writeLines(writer, tagged(tag, "BAD missing UID set"))
+	}
+
+	header := strings.Contains(strings.ToUpper(raw), "HEADER")
+	for index, body := range server.options.Messages {
+		uid := uint32(101 + index)
+		matched := false
+		for _, span := range strings.Split(fields[3], ",") {
+			startText, endText, bounded := strings.Cut(span, ":")
+			if !bounded {
+				endText = startText
+			}
+
+			start, startErr := strconv.ParseUint(startText, 10, 32)
+			end, endErr := strconv.ParseUint(endText, 10, 32)
+			if startErr == nil && endErr == nil && uint64(uid) >= start && uint64(uid) <= end {
+				matched = true
+			}
+		}
+		if !matched {
+			continue
+		}
+
+		literal := body
+		if header {
+			literal, _, _ = strings.Cut(body, "\r\n\r\n")
+			literal += "\r\n\r\n"
+		} else {
+			literal = partialBodyLiteral(raw, body)
+		}
+
+		response := fmt.Sprintf("* %d FETCH (UID %d RFC822.SIZE %d BODY%s {%d}\r\n%s)",
+			index+1, uid, len(body), fetchResponseSection(raw, header), len(literal), literal)
+		if err := server.writeLine(writer, response); err != nil {
+			return false
+		}
+	}
+
+	return server.writeLines(writer, tagged(tag, "OK FETCH completed"))
 }
