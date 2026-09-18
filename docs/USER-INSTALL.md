@@ -59,6 +59,14 @@ changes and accesses no live accounts. Synthetic subprocess tests verify the
 helper contract only; they are not evidence that a real release was built.
 Actual candidate acceptance remains a separate operator step.
 
+Candidate publication is not atomic. If linking the candidate files fails, the
+helper attempts to remove its linked files and the output directory. Cleanup
+errors can leave partial output; the helper reports incomplete rollback and
+returns nonzero. Inspect the requested output locally, do not install it, and
+remove only artifacts you identify as belonging to the failed attempt before
+retrying with an absent output path. Concurrently created entries are not removed
+by rollback.
+
 ## User-owned layout
 
 Choose absolute, canonical, operator-writable paths before staging. The following

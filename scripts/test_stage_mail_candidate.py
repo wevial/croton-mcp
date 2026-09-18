@@ -77,8 +77,14 @@ class CandidateTests(unittest.TestCase):
         return subprocess.CompletedProcess(argv, code, result.encode(), b"synthetic diagnostic.test")
 
     def run_helper(self, revision=REVISION):
-        with patch("sys.stdout", new_callable=io.StringIO), patch("sys.stderr", new_callable=io.StringIO):
-            return helper.main(["--revision=" + revision, "--output", str(self.output)])
+        with patch("sys.stdout", new_callable=io.StringIO) as stdout, \
+                patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            result = helper.main(["--revision=" + revision, "--output", str(self.output)])
+
+        self.stdout = stdout.getvalue()
+        self.stderr = stderr.getvalue()
+
+        return result
 
     def assert_no_build(self):
         self.assertFalse(any(c[:2] == ["go", "build"] for c in self.calls))
@@ -194,12 +200,90 @@ class CandidateTests(unittest.TestCase):
         self.assertEqual(list(self.output.iterdir()), [])
         self.assert_cleaned()
 
+    def fail_manifest_link(self, source, destination):
+        if source.name == "manifest.json":
+            raise OSError("synthetic link failure.test")
+
+        self.real_link(source, destination)
+
+    def test_first_publication_link_failure_cleanup(self):
+        with patch.object(helper.os, "link", side_effect=OSError("synthetic link failure.test")):
+            self.assertEqual(self.run_helper(), 1)
+
+        self.assertFalse(self.output.exists())
+        self.assertIn("candidate publication failed; output removed", self.stderr)
+        self.assertEqual(self.stdout, "")
+        self.assert_cleaned()
+
+    def test_second_publication_link_failure_cleanup(self):
+        self.real_link = helper.os.link
+        with patch.object(helper.os, "link", side_effect=self.fail_manifest_link):
+            self.assertEqual(self.run_helper(), 1)
+
+        self.assertFalse(self.output.exists())
+        self.assertIn("candidate publication failed; output removed", self.stderr)
+        self.assertEqual(self.stdout, "")
+        self.assert_cleaned()
+
+    def test_publication_rollback_unlink_failure_still_attempts_rmdir(self):
+        self.real_link = helper.os.link
+        real_unlink = Path.unlink
+        real_rmdir = Path.rmdir
+        rmdir_attempts = []
+
+        def fail_unlink(path, *args, **kwargs):
+            if path == self.output / "croton-mcp":
+                raise OSError("synthetic unlink failure.test")
+
+            return real_unlink(path, *args, **kwargs)
+
+        def record_rmdir(path, *args, **kwargs):
+            rmdir_attempts.append(path)
+
+            return real_rmdir(path, *args, **kwargs)
+
+        with patch.object(helper.os, "link", side_effect=self.fail_manifest_link), \
+                patch.object(Path, "unlink", fail_unlink), patch.object(Path, "rmdir", record_rmdir):
+            self.assertEqual(self.run_helper(), 1)
+
+        self.assertIn(self.output, rmdir_attempts)
+        self.assertEqual([p.name for p in self.output.iterdir()], ["croton-mcp"])
+        self.assertEqual((self.output / "croton-mcp").read_bytes(), BINARY)
+        self.assertIn("rollback incomplete and output may remain", self.stderr)
+        self.assertIn("do not install it", self.stderr)
+        self.assertNotIn("synthetic", self.stderr)
+        self.assertEqual(self.stdout, "")
+        self.assert_cleaned()
+
+    def test_publication_rollback_preserves_concurrent_entry(self):
+        self.real_link = helper.os.link
+        marker = self.output / "concurrent.test"
+
+        def concurrent_entry(source, destination):
+            if source.name == "manifest.json":
+                marker.write_bytes(b"unchanged")
+
+            self.fail_manifest_link(source, destination)
+
+        with patch.object(helper.os, "link", side_effect=concurrent_entry):
+            self.assertEqual(self.run_helper(), 1)
+
+        self.assertEqual(list(self.output.iterdir()), [marker])
+        self.assertEqual(marker.read_bytes(), b"unchanged")
+        self.assertIn("rollback incomplete and output may remain", self.stderr)
+        self.assertIn("do not install it", self.stderr)
+        self.assertNotIn("synthetic", self.stderr)
+        self.assertEqual(self.stdout, "")
+        self.assert_cleaned()
+
     def test_guide_contract(self):
         guide = (Path(__file__).resolve().parents[1] / "docs/USER-INSTALL.md").read_text()
         for statement in ("python3 scripts/stage_mail_candidate.py", '--revision "$REVIEWED_REVISION"',
                           '--output "$MAIL_CANDIDATE_DIR"', "Nothing is published",
                           "Checksums provide integrity", "not signatures", "provenance attestation",
-                          "not hermetic", "manual installation", "manifest.json", "Python 3.12"):
+                          "not hermetic", "manual installation", "manifest.json", "Python 3.12",
+                          "Candidate publication is not atomic", "errors can leave partial output",
+                          "do not install it", "Concurrently created entries are not removed"):
             with self.subTest(statement=statement):
                 self.assertIn(statement, guide)
 

@@ -98,10 +98,23 @@ def stage(revision, output):
                 os.link(candidate / name, output / name)
                 published.append(output / name)
         except OSError:
+            cleanup_failed = False
             for path in published:
-                path.unlink()
-            output.rmdir()
-            raise
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    cleanup_failed = True
+
+            try:
+                output.rmdir()
+            except OSError:
+                cleanup_failed = True
+
+            if cleanup_failed:
+                raise StageError("candidate publication failed; rollback incomplete and output may remain. "
+                                 "Inspect the requested output locally before retrying; do not install it.") from None
+
+            raise StageError("candidate publication failed; output removed") from None
 
     return manifest
 
