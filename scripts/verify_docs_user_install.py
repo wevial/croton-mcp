@@ -72,10 +72,14 @@ def fixture_errors(raw):
         imap = cfg["imap"]
         if set(imap) != {"host", "port", "tlsMode", "credentialCommand", "tls"}:
             raise ValueError("unexpected IMAP fields or inline credentials")
-        address = ipaddress.ip_address(imap["host"])
-        address = getattr(address, "ipv4_mapped", None) or address
-        if not address.is_loopback:
-            failures.append("fixture: IMAP must be loopback")
+        host = imap["host"]
+        if not isinstance(host, str):
+            failures.append("fixture: IMAP host must be an IP string literal")
+        else:
+            address = ipaddress.ip_address(host)
+            address = getattr(address, "ipv4_mapped", None) or address
+            if not address.is_loopback:
+                failures.append("fixture: IMAP must be loopback")
         if type(imap["port"]) is not int or not 1 <= imap["port"] <= 65535:
             failures.append("fixture: invalid IMAP port")
         if imap["tlsMode"] not in ("starttls", "implicit"):
@@ -96,7 +100,16 @@ def fixture_errors(raw):
             failures.append("fixture: absolute trust file required")
         if pin and (not isinstance(pin, str) or not re.fullmatch(r"[0-9a-f]{64}", pin)):
             failures.append("fixture: invalid SPKI pin")
-        if cfg["bounds"] != {"maxSearchResults": 50} or cfg["audit"] != {"enabled": True}:
+        bounds = cfg["bounds"]
+        audit = cfg["audit"]
+        if (not isinstance(bounds, dict)
+                or set(bounds) != {"maxSearchResults"}
+                or type(bounds["maxSearchResults"]) is not int
+                or bounds["maxSearchResults"] != 50
+                or not isinstance(audit, dict)
+                or set(audit) != {"enabled"}
+                or type(audit["enabled"]) is not bool
+                or audit["enabled"] is not True):
             failures.append("fixture: unexpected bounds or audit fields")
     except (ValueError, TypeError, KeyError, AttributeError):
         failures.append("fixture: invalid JSON configuration shape")
@@ -159,6 +172,12 @@ def self_test(guide, readme):
          readme, "missing contract phrase 'rename the staged executable and every staged config, helper and trust file'"),
         ("non-loopback", mutate_config(lambda c: c["imap"].update(host="192.0.2.1")),
          readme, "IMAP must be loopback"),
+        ("integer IMAP host", mutate_config(lambda c: c["imap"].update(host=2130706433)),
+         readme, "IMAP host must be an IP string literal"),
+        ("floating-point search bound", mutate_config(lambda c: c["bounds"].update(
+            maxSearchResults=50.0)), readme, "unexpected bounds or audit fields"),
+        ("integer audit flag", mutate_config(lambda c: c["audit"].update(enabled=1)),
+         readme, "unexpected bounds or audit fields"),
         ("inline credentials", mutate_config(lambda c: c["imap"].update(password="synthetic")),
          readme, "invalid JSON configuration shape"),
         ("missing link", guide, readme.replace(LINK, "docs/MISSING.md"), "guide link missing"),
