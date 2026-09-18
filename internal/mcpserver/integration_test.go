@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wevial/croton-mcp/bridge"
 	"github.com/wevial/croton-mcp/internal/testkit"
@@ -153,7 +155,14 @@ func startIntegrationAdapter(t *testing.T) (*testkit.Server, *bridge.Adapter) {
 func startIntegrationAdapterWithMessages(t *testing.T, messages []string) (*testkit.Server, *bridge.Adapter) {
 	t.Helper()
 
-	server, err := testkit.Start(testkit.Options{Mode: testkit.ImplicitTLS, Messages: messages})
+	return startIntegrationAdapterWithOptions(t, testkit.Options{Messages: messages})
+}
+
+func startIntegrationAdapterWithOptions(t *testing.T, options testkit.Options) (*testkit.Server, *bridge.Adapter) {
+	t.Helper()
+
+	options.Mode = testkit.ImplicitTLS
+	server, err := testkit.Start(options)
 	if err != nil {
 		t.Fatalf("start fake server: %v", err)
 	}
@@ -409,5 +418,149 @@ func TestGetThreadSyntheticWire(t *testing.T) {
 
 	if err := server.AssertNoInsecureAuthentication(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDigestSyntheticWire(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	sentinels := []string{
+		testkit.SyntheticDigestUnreadFirstBody,
+		testkit.SyntheticDigestUnreadSecondBody,
+		testkit.SyntheticDigestReadBody,
+	}
+	boundedUID := regexp.MustCompile(`\bUID [1-9][0-9]*(?::[1-9][0-9]*)? `)
+	dateBounds := regexp.MustCompile(`\bSINCE "[0-9]{1,2}-[A-Z]{3}-[0-9]{4}" BEFORE "[0-9]{1,2}-[A-Z]{3}-[0-9]{4}"`)
+
+	for _, fixture := range []struct {
+		name    string
+		options testkit.Options
+		total   int
+		unseen  int
+	}{
+		{"mixed", testkit.SyntheticDigestMixedMailbox(now), 3, 2},
+		{"all_read", testkit.SyntheticDigestAllReadMailbox(now), 1, 0},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			server, adapter := startIntegrationAdapterWithOptions(t, fixture.options)
+			var audit bytes.Buffer
+			session := connectTestClient(t, Options{Mail: adapter, Audit: NewAuditor(&audit)})
+
+			cases := []struct {
+				name      string
+				unread    bool
+				limit     int
+				subjects  []string
+				truncated bool
+			}{
+				{"unread", true, 10, []string{"Synthetic digest unread first", "Synthetic digest unread second"}, false},
+				{"all", false, 10, []string{"Synthetic digest unread first", "Synthetic digest unread second", "Synthetic digest read"}, false},
+				{"bounded", true, 1, []string{"Synthetic digest unread first", "Synthetic digest unread second"}, true},
+			}
+			if fixture.unseen == 0 {
+				cases = cases[:1]
+				cases[0].subjects = nil
+			}
+
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					before := len(server.Commands())
+					result := callTool(t, session, "select_digest_candidates", map[string]any{
+						"mailbox": "INBOX", "sinceHours": 72, "unreadOnly": tc.unread, "limit": tc.limit,
+					})
+					raw, err := json.Marshal(result)
+					if err != nil {
+						t.Fatalf("marshal SDK result: %v", err)
+					}
+					for _, sentinel := range sentinels {
+						if bytes.Contains(raw, []byte(sentinel)) {
+							t.Fatal("synthetic body leaked into digest result")
+						}
+					}
+
+					var decoded digestDecoded
+					decodeResult(t, result, &decoded)
+					if decoded.Mailbox != "INBOX" || decoded.TotalMessages != fixture.total || decoded.UnseenCount != fixture.unseen {
+						t.Fatalf("unexpected digest summary: %+v", decoded)
+					}
+					wantCount := min(len(tc.subjects), tc.limit)
+					if decoded.Candidates == nil || len(decoded.Candidates) != wantCount || decoded.Truncated != tc.truncated {
+						t.Fatalf("want %d candidates, truncated=%v: %+v", wantCount, tc.truncated, decoded)
+					}
+
+					allowed := make(map[string]bool)
+					for _, subject := range tc.subjects {
+						allowed[subject] = true
+					}
+					ids := make(map[string]bool)
+					for _, candidate := range decoded.Candidates {
+						if !allowed[candidate.Subject] || candidate.ID == "" || ids[candidate.ID] || candidate.Mailbox != "INBOX" || candidate.Size <= 0 {
+							t.Fatalf("unexpected or duplicate candidate metadata: %+v", candidate)
+						}
+						delete(allowed, candidate.Subject)
+						ids[candidate.ID] = true
+					}
+
+					sawStatus, sawSearch, fetches := false, false, 0
+					for _, command := range server.Commands()[before:] {
+						upper := strings.ToUpper(command.Raw)
+						if !command.TLS {
+							t.Error("digest command used plaintext transport")
+						}
+						if command.Name == "STATUS" {
+							sawStatus = true
+							if !strings.Contains(upper, "MESSAGES") || !strings.Contains(upper, "UNSEEN") {
+								t.Fatalf("STATUS omitted summary fields: %s", command.Raw)
+							}
+						}
+						if strings.Contains(upper, "UID SEARCH ") {
+							sawSearch = true
+							if !boundedUID.MatchString(upper) || !dateBounds.MatchString(upper) || strings.Contains(upper, " UNSEEN") != tc.unread {
+								t.Fatalf("unexpected digest search bounds or unread criterion: %s", command.Raw)
+							}
+						}
+						if strings.Contains(upper, " FETCH ") {
+							fetches++
+							// Permit only UID, size and a non-mutating header read. A
+							// body read fails even if combined with a permitted header read.
+							if !strings.Contains(upper, "UID FETCH ") || !strings.Contains(upper, "BODY.PEEK[HEADER]") {
+								t.Fatalf("unexpected metadata fetch: %s", command.Raw)
+							}
+							_, items, _ := strings.Cut(upper, "(")
+							for _, item := range strings.Fields(strings.TrimSuffix(items, ")")) {
+								if item != "UID" && item != "RFC822.SIZE" && item != "BODY.PEEK[HEADER]" {
+									t.Fatalf("digest requested non-metadata fetch item: %s", command.Raw)
+								}
+							}
+						}
+					}
+					if !sawStatus || !sawSearch || (fetches > 0) != (wantCount > 0) {
+						t.Fatalf("unexpected wire operations: status=%v search=%v fetches=%d", sawStatus, sawSearch, fetches)
+					}
+
+					requireReadOnlyTranscript(t, server)
+				})
+			}
+
+			for _, sentinel := range sentinels {
+				if strings.Contains(audit.String(), sentinel) {
+					t.Fatal("synthetic body leaked into audit output")
+				}
+			}
+			events := auditLines(t, &audit)
+			if len(events) != len(cases) {
+				t.Fatalf("audit events = %d, want %d", len(events), len(cases))
+			}
+			for _, event := range events {
+				requireAllowlistedKeys(t, event)
+				if event["tool"] != "select_digest_candidates" || event["event"] != "tool_call" || event["outcome"] != "ok" {
+					t.Fatalf("unexpected digest audit event: %v", event)
+				}
+			}
+			if err := server.AssertNoInsecureAuthentication(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
