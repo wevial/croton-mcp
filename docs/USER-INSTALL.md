@@ -27,13 +27,37 @@ go version
 go build ./...
 go vet ./...
 go test -race ./...
-go build -trimpath -o ./croton-mcp.candidate ./cmd/croton-mcp
+MAIL_CANDIDATE_DIR=/absolute/operator/candidates/mail-reviewed
+python3 scripts/stage_mail_candidate.py --revision "$REVIEWED_REVISION" --output "$MAIL_CANDIDATE_DIR"
 ```
 
 Confirm HEAD equals the reviewed SHA and `go version` reports Go 1.26.6,
-matching the repository's `go.mod` toolchain. Record the SHA, toolchain, platform,
-and candidate binary SHA-256 locally. Race tests require a supported C compiler.
+matching the repository's `go.mod` toolchain. Review and retain the candidate
+manifest with its SHA, toolchain, platform, and binary SHA-256 locally. Race tests
+require a supported C compiler.
 Build only the Mail executable for installation; Drive has a separate setup.
+
+The local staging helper requires Python 3.12 or newer, a full maintainer-reviewed
+revision equal to HEAD, a clean tracked working tree and index, and an absent
+absolute output directory outside the checkout (with an existing parent).
+It does not fetch or check out revisions. It builds only `./cmd/croton-mcp` with
+`-trimpath` from a temporary Git archive of the selected revision; ignored and
+untracked checkout inputs are excluded. Git archive export attributes apply.
+Only native Linux and macOS targets are supported; cross-compilation is rejected
+before building. The helper selects Go 1.26.6, disables Go workspace and persisted
+Go environment settings, and clears GOFLAGS. Dependency downloads may still occur;
+this is not hermetic reproducibility.
+
+The candidate directory contains `croton-mcp` and `manifest.json`, recording
+`revision`, `toolchain`, `GOOS`, `GOARCH`, `binary` (filename), and `sha256` of the
+actual binary bytes. Existing output is never replaced. Failed builds remove
+temporary staging and do not create final output. After success, review the
+manifest and independently compare the binary's SHA-256 before manual installation
+below. Checksums provide integrity, not signatures or provenance attestation.
+Nothing is published or installed by the helper; it makes no profile or service
+changes and accesses no live accounts. Synthetic subprocess tests verify the
+helper contract only; they are not evidence that a real release was built.
+Actual candidate acceptance remains a separate operator step.
 
 ## User-owned layout
 
@@ -63,7 +87,7 @@ the build in the selected bin directory, for example:
 ```sh
 umask 077
 CROTON_BIN_DIR=/absolute/operator/bin
-install -m 0700 ./croton-mcp.candidate "$CROTON_BIN_DIR/croton-mcp.candidate"
+install -m 0700 "$MAIL_CANDIDATE_DIR/croton-mcp" "$CROTON_BIN_DIR/croton-mcp.candidate"
 ```
 
 Compare the staged binary's SHA-256 with the build artifact using the platform's
