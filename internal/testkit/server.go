@@ -149,10 +149,14 @@ type Options struct {
 	Scenario Scenario
 
 	// Messages optionally replaces the default fixture with synthetic MIME messages
-	// assigned consecutive UIDs starting at 101. Searches honor UID ranges;
-	// callers must use criteria matching all supplied messages. Custom message
+	// assigned consecutive UIDs starting at 101. Searches honor UID ranges and UNSEEN;
+	// callers must use other criteria matching all supplied messages. Custom message
 	// FETCH responses do not apply Scenario fault injection.
 	Messages []string
+
+	// Seen optionally marks custom Messages as read by index. Omitted entries
+	// remain unread, preserving the existing custom-message defaults.
+	Seen []bool
 }
 
 // Command is one client command observed by a Server.
@@ -233,6 +237,7 @@ func Start(options Options) (*Server, error) {
 	}
 
 	options.Messages = append([]string(nil), options.Messages...)
+	options.Seen = append([]bool(nil), options.Seen...)
 
 	certificate, caDER, err := generateCertificate()
 	if err != nil {
@@ -588,7 +593,14 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 
 			statusResponse := "* STATUS \"INBOX\" (MESSAGES 2 UIDNEXT 103 UIDVALIDITY 9001 UNSEEN 1)"
 			if len(server.options.Messages) > 0 {
-				statusResponse = fmt.Sprintf("* STATUS \"INBOX\" (MESSAGES %d UIDNEXT %d UIDVALIDITY 9001 UNSEEN %d)", len(server.options.Messages), 101+len(server.options.Messages), len(server.options.Messages))
+				unseen := len(server.options.Messages)
+				for index := range server.options.Messages {
+					if server.fixtureSeen(index) {
+						unseen--
+					}
+				}
+
+				statusResponse = fmt.Sprintf("* STATUS \"INBOX\" (MESSAGES %d UIDNEXT %d UIDVALIDITY 9001 UNSEEN %d)", len(server.options.Messages), 101+len(server.options.Messages), unseen)
 			}
 			if server.options.Scenario.StatusResponse != "" {
 				statusResponse = server.options.Scenario.StatusResponse
@@ -657,6 +669,10 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 					start, end, bounded := searchUIDRange(raw)
 					for index := range server.options.Messages {
 						uid := uint32(101 + index)
+						if strings.Contains(" "+strings.ToUpper(raw)+" ", " UNSEEN ") && server.fixtureSeen(index) {
+							continue
+						}
+
 						if !bounded || uid >= start && uid <= end {
 							searchResponse += fmt.Sprintf(" %d", uid)
 						}
@@ -1186,4 +1202,8 @@ func (server *Server) writeFixtureFetch(writer *bufio.Writer, tag, raw string) b
 	}
 
 	return server.writeLines(writer, tagged(tag, "OK FETCH completed"))
+}
+
+func (server *Server) fixtureSeen(index int) bool {
+	return index < len(server.options.Seen) && server.options.Seen[index]
 }
