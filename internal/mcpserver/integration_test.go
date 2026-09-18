@@ -1,6 +1,9 @@
 package mcpserver
 
 import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -11,6 +14,129 @@ import (
 	"github.com/wevial/croton-mcp/bridge"
 	"github.com/wevial/croton-mcp/internal/testkit"
 )
+
+func TestAttachmentsSyntheticWire(t *testing.T) {
+	t.Parallel()
+
+	// The helper uses only loopback test TLS and the test executable's
+	// synthetic credential helper; all mail is supplied by this named fixture.
+	server, adapter := startIntegrationAdapterWithMessages(t, testkit.SyntheticAttachmentMessages())
+	var audit bytes.Buffer
+	session := connectTestClient(t, Options{Mail: adapter, Audit: NewAuditor(&audit)})
+
+	var search searchMailDecoded
+	decodeResult(t, callTool(t, session, "search_mail", map[string]any{
+		"mailbox": "INBOX", "subject": "Synthetic attachment",
+	}), &search)
+	if len(search.Results) != 2 || search.Truncated {
+		t.Fatalf("want both synthetic messages, got %+v", search)
+	}
+
+	ids := make(map[string]string)
+	for _, candidate := range search.Results {
+		if candidate.ID == "" || ids[candidate.Subject] != "" {
+			t.Fatal("missing opaque ID or duplicate fixture subject")
+		}
+		ids[candidate.Subject] = candidate.ID
+	}
+	if ids["Synthetic attachment report"] == ids["Synthetic attachment-free message"] {
+		t.Fatal("fixture messages must have distinct opaque IDs")
+	}
+
+	sentinels := []string{
+		testkit.SyntheticAttachmentBody,
+		testkit.SyntheticAttachmentFreeBody,
+		testkit.SyntheticAttachmentDecoded,
+		base64.StdEncoding.EncodeToString([]byte(testkit.SyntheticAttachmentDecoded)),
+	}
+	for _, tc := range []struct {
+		subject string
+		count   int
+	}{
+		{"Synthetic attachment report", 1},
+		{"Synthetic attachment-free message", 0},
+	} {
+		t.Run(tc.subject, func(t *testing.T) {
+			id := ids[tc.subject]
+			if id == "" {
+				t.Fatal("search did not return fixture message")
+			}
+
+			before := len(server.Commands())
+			result := callTool(t, session, "list_attachments", map[string]any{"messageId": id})
+			// Inspect the entire SDK result, including any structured content.
+			raw, err := json.Marshal(result)
+			if err != nil {
+				t.Fatalf("marshal SDK result: %v", err)
+			}
+			for _, sentinel := range sentinels {
+				if bytes.Contains(raw, []byte(sentinel)) {
+					t.Fatal("synthetic content leaked into attachment result")
+				}
+			}
+
+			var decoded struct {
+				ID          string             `json:"id"`
+				Mailbox     string             `json:"mailbox"`
+				Attachments []attachmentResult `json:"attachments"`
+				Truncated   bool               `json:"truncated"`
+			}
+			decodeResult(t, result, &decoded)
+			if decoded.ID != id || decoded.Mailbox != "INBOX" || decoded.Truncated {
+				t.Fatalf("unexpected attachment result identity or truncation: %+v", decoded)
+			}
+			if decoded.Attachments == nil || len(decoded.Attachments) != tc.count {
+				t.Fatalf("attachments = %+v, want collection of length %d", decoded.Attachments, tc.count)
+			}
+			if tc.count == 1 {
+				attachment := decoded.Attachments[0]
+				if attachment.Filename != "report.pdf" || attachment.ContentType != "application/pdf" || attachment.Disposition != "attachment" {
+					t.Fatalf("unexpected attachment metadata: %+v", attachment)
+				}
+			}
+
+			sawBodyPeek := false
+			for _, command := range server.Commands()[before:] {
+				upper := strings.ToUpper(command.Raw)
+				if strings.Contains(upper, "UID FETCH") && strings.Contains(upper, "BODY.PEEK[]") {
+					sawBodyPeek = true
+				}
+			}
+			if !sawBodyPeek {
+				t.Fatal("attachment MIME retrieval did not use BODY.PEEK[]")
+			}
+		})
+	}
+
+	for _, sentinel := range sentinels {
+		if strings.Contains(audit.String(), sentinel) {
+			t.Fatal("synthetic content leaked into audit output")
+		}
+	}
+	attachmentEvents := 0
+	for _, event := range auditLines(t, &audit) {
+		requireAllowlistedKeys(t, event)
+		if event["tool"] == "list_attachments" {
+			attachmentEvents++
+			if event["event"] != "tool_call" || event["outcome"] != "ok" {
+				t.Fatalf("unexpected attachment audit event: %v", event)
+			}
+		}
+	}
+	if attachmentEvents != 2 {
+		t.Fatalf("attachment audit events = %d, want 2", attachmentEvents)
+	}
+
+	requireReadOnlyTranscript(t, server)
+	for _, command := range server.Commands() {
+		if !command.TLS {
+			t.Error("attachment test command used plaintext transport")
+		}
+	}
+	if err := server.AssertNoInsecureAuthentication(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // mutatingIMAPCommands is the vocabulary that must never appear in any
 // transcript produced through the MCP tool surface.
