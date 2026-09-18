@@ -20,6 +20,16 @@ model remains Reserved; it authorizes no writes. Mail remains read-only.
 The server targets MCP `2026-07-28` and retains legacy compatibility through
 the official Go SDK (`modelcontextprotocol/go-sdk`).
 
+`TestIndependentStdioCatalog` provides independent legacy protocol coverage
+against the built Mail executable using standard-library JSON and pipes, without
+an MCP SDK client or Hermes. It initializes with `2025-11-25` and checks the exact
+six read-only tools, with one frame per write and a frame split across two writes.
+Each case uses a fresh child and synthetic secure config, verifies protocol-only
+stdout and clean shutdown after stdin EOF, and asserts the credential helper was
+never invoked. It performs no tool calls or Bridge/account access. This is generic
+protocol evidence, not validated Claude Code or Codex compatibility or branded-client
+certification. `TestIndependentStdioCatalogDocumentation` pins this coverage note.
+
 ## Running
 
 ```sh
