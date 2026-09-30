@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"reflect"
 	"slices"
@@ -260,6 +261,46 @@ func TestStatefulIMAP(t *testing.T) {
 		}
 		if status := mailboxStatus(t, fresh, "Archive"); status.UIDNext != 6 || *status.NumMessages != 5 {
 			t.Fatalf("destination STATUS = %+v", status)
+		}
+
+		if _, err := Start(Options{Stateful: &StatefulOptions{Mailboxes: []MailboxSeed{
+			{Name: "INBOX", Messages: []MessageSeed{{UID: math.MaxUint32, Body: syntheticBody(1)}}},
+		}}}); err == nil {
+			t.Fatal("seed UID without a valid UIDNEXT was accepted")
+		}
+
+		for _, exhaustion := range []struct {
+			highest  uint32
+			refused  imap.UIDSet
+			accepted imap.UIDSet
+		}{
+			{highest: math.MaxUint32 - 1, refused: imap.UIDSetNum(2, 5, 9)},
+			{highest: math.MaxUint32 - 2, refused: imap.UIDSetNum(2, 5, 9), accepted: imap.UIDSetNum(5)},
+		} {
+			full := startStateful(t, ImplicitTLS, StatefulOptions{Move: true, Mailboxes: []MailboxSeed{
+				{Name: "INBOX", Messages: source},
+				{Name: "Archive", Messages: []MessageSeed{{UID: 1, Body: syntheticBody(101)}, {UID: exhaustion.highest, Body: syntheticBody(102)}}},
+			}})
+			fullBaseline := full.Snapshot()
+			client := dialStateful(t, full, ImplicitTLS)
+			selectMailbox(t, client, "INBOX", false)
+
+			var imapError *imap.Error
+			if _, err := client.Move(exhaustion.refused, "Archive").Wait(); !errors.As(err, &imapError) {
+				t.Fatalf("highest %d: UID MOVE beyond UID capacity error = %v, want tagged failure", exhaustion.highest, err)
+			}
+			requireSnapshot(t, full, fullBaseline)
+			if exhaustion.accepted == nil {
+				continue
+			}
+
+			moved, err := client.Move(exhaustion.accepted, "Archive").Wait()
+			if err != nil || moved.DestUIDs.String() != "4294967294" {
+				t.Fatalf("UID MOVE into last valid UID = %+v, %v", moved, err)
+			}
+			if state, _ := full.MailboxSnapshot("Archive"); state.UIDNext != math.MaxUint32 || len(state.Messages) != 3 {
+				t.Fatalf("destination after last valid UID = %+v", state)
+			}
 		}
 	})
 

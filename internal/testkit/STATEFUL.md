@@ -41,7 +41,7 @@ server, err := testkit.Start(testkit.Options{
   No `SPECIAL-USE` capability is advertised.
 - `UIDValidity` zero assigns `1001 + seed index`. Message `UID` zero assigns the
   previous UID plus one, starting at 1. UIDs must increase. `UIDNEXT` starts at
-  the highest seeded UID plus one.
+  the highest seeded UID plus one, so a seeded UID of 4294967295 is rejected.
 - Clients authenticate with any synthetic LOGIN or AUTHENTICATE PLAIN
   credentials after TLS.
 
@@ -93,6 +93,8 @@ unchanged:
 - no selection: `BAD`
 - EXAMINE selection: `NO [READ-ONLY]`
 - missing destination: `NO [TRYCREATE]`
+- too few destination UIDs left for every moved message while keeping a valid
+  `UIDNEXT`: `NO [LIMIT]`
 - nonselectable destination or same mailbox: `NO [CANNOT]`
 
 With MOVE disabled, go-imap's `Client.Move` falls back to COPY, STORE and

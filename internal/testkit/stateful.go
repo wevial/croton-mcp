@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -125,6 +126,9 @@ func newMailboxStore(options StatefulOptions) (*mailboxStore, error) {
 			}
 			if uid <= previous {
 				return nil, fmt.Errorf("testkit: mailbox %q UIDs must strictly increase", seed.Name)
+			}
+			if uid == math.MaxUint32 {
+				return nil, fmt.Errorf("testkit: mailbox %q UID %d leaves no valid UIDNEXT", seed.Name, uid)
 			}
 
 			flags, err := validateAtoms(messageSeed.Flags, false)
@@ -844,7 +848,8 @@ func statefulStore(session *statefulSession, mailbox *statefulMailbox, tag strin
 }
 
 // statefulMove moves existing source UIDs, allocating destination UIDs from
-// UIDNEXT in ascending source order. Missing source UIDs are ignored.
+// UIDNEXT in ascending source order. Missing source UIDs are ignored. A move
+// that would exhaust destination UIDs is refused before either mailbox changes.
 func (server *Server) statefulMove(session *statefulSession, source *statefulMailbox, tag string, arguments []imapToken) []string {
 	if session.readOnly {
 		return []string{tagged(tag, "NO [READ-ONLY] mailbox was opened with EXAMINE")}
@@ -867,6 +872,17 @@ func (server *Server) statefulMove(session *statefulSession, source *statefulMai
 		return []string{tagged(tag, "NO [CANNOT] destination mailbox is not selectable")}
 	case destination == source:
 		return []string{tagged(tag, "NO [CANNOT] destination is the selected mailbox")}
+	}
+
+	moving := 0
+	for _, message := range source.messages {
+		if uidInRanges(message.uid, ranges) {
+			moving++
+		}
+	}
+	// UIDNEXT must stay a valid nonzero 32-bit UID after allocation.
+	if uint64(destination.uidNext)+uint64(moving) > math.MaxUint32 {
+		return []string{tagged(tag, "NO [LIMIT] destination mailbox has too few UIDs left")}
 	}
 
 	var sourceUIDs, destinationUIDs, expunged []string
