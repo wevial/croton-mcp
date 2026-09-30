@@ -189,6 +189,7 @@ type Server struct {
 	examineCount     int
 	nextConnectionID int
 	commands         []Command
+	faults           []*FaultHandle
 	connections      map[net.Conn]struct{}
 	closeOnce        sync.Once
 	closeErr         error
@@ -460,7 +461,7 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 		raw := strings.TrimRight(line, "\r\n")
 		tag, name := parseCommand(raw)
 
-		server.record(raw, name, tlsEstablished, connectionID)
+		command := server.record(raw, name, tlsEstablished, connectionID)
 		connectionCommands++
 
 		if server.shouldDisconnectForScenario(name, raw, authenticated) || server.shouldDisconnect(connectionCommands) {
@@ -481,6 +482,13 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 		}
 
 		if session != nil {
+			if fault := server.claimFault(command, authenticated); fault != nil {
+				server.runFault(fault, session, reader, command, tag)
+				_ = connection.Close()
+				fault.finish()
+				return
+			}
+
 			handled, keep := server.serveStateful(session, writer, tag, name, raw, tlsEstablished, authenticated)
 			if !keep {
 				return
