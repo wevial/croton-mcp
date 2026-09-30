@@ -157,6 +157,10 @@ type Options struct {
 	// Seen optionally marks custom Messages as read by index. Omitted entries
 	// remain unread, preserving the existing custom-message defaults.
 	Seen []bool
+
+	// Stateful opts into mutable synthetic mailboxes; see STATEFUL.md. It
+	// cannot be combined with Messages, Seen or Scenario. Nil keeps legacy behavior.
+	Stateful *StatefulOptions
 }
 
 // Command is one client command observed by a Server.
@@ -176,6 +180,7 @@ type Server struct {
 	leafDER   []byte
 	spkiPin   [sha256.Size]byte
 	options   Options
+	stateful  *mailboxStore
 	done      chan struct{}
 
 	mu               sync.Mutex
@@ -236,6 +241,19 @@ func Start(options Options) (*Server, error) {
 		return nil, errors.New("testkit: unexpected body FETCH binary literal size must not be negative")
 	}
 
+	var stateful *mailboxStore
+	if options.Stateful != nil {
+		if len(options.Messages) > 0 || len(options.Seen) > 0 || options.Scenario != (Scenario{}) {
+			return nil, errors.New("testkit: stateful mode cannot be combined with Messages, Seen or Scenario")
+		}
+
+		var err error
+		stateful, err = newMailboxStore(*options.Stateful)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	options.Messages = append([]string(nil), options.Messages...)
 	options.Seen = append([]bool(nil), options.Seen...)
 
@@ -264,6 +282,7 @@ func Start(options Options) (*Server, error) {
 		leafDER:     certificate.Certificate[0],
 		spkiPin:     sha256.Sum256(leaf.RawSubjectPublicKeyInfo),
 		options:     options,
+		stateful:    stateful,
 		done:        make(chan struct{}),
 		connections: make(map[net.Conn]struct{}),
 	}
@@ -428,6 +447,10 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 
 	authenticated := false
 	connectionCommands := 0
+	var session *statefulSession
+	if server.stateful != nil {
+		session = &statefulSession{}
+	}
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
@@ -454,6 +477,16 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 			size := server.options.Scenario.OversizedResponseBytes
 			if err := server.writeLine(writer, "* OK "+strings.Repeat("X", size-5)); err != nil {
 				return
+			}
+		}
+
+		if session != nil {
+			handled, keep := server.serveStateful(session, writer, tag, name, raw, tlsEstablished, authenticated)
+			if !keep {
+				return
+			}
+			if handled {
+				continue
 			}
 		}
 
