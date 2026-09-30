@@ -366,6 +366,46 @@ func TestStatefulIMAP(t *testing.T) {
 		requireSnapshot(t, enabled, want)
 	})
 
+	t.Run("partial_fetch_bounds", func(t *testing.T) {
+		t.Parallel()
+
+		body := syntheticBody(1)
+		server := startStateful(t, ImplicitTLS, StatefulOptions{Mailboxes: []MailboxSeed{{Name: "INBOX", Messages: []MessageSeed{{Body: body}}}}})
+		client := dialStateful(t, server, ImplicitTLS)
+		selectMailbox(t, client, "INBOX", true)
+
+		for _, partial := range []struct {
+			offset, size int64
+			want         string
+			refused      bool
+		}{
+			{offset: 1, size: math.MaxInt64, refused: true},
+			{offset: math.MaxUint32 + 1, size: 1, refused: true},
+			{offset: 0, size: 0, refused: true},
+			{offset: 2, size: 5, want: body[2:7]},
+			{offset: 1000, size: 10},
+			{offset: math.MaxUint32, size: math.MaxUint32},
+		} {
+			section := &imap.FetchItemBodySection{Peek: true, Partial: &imap.SectionPartial{Offset: partial.offset, Size: partial.size}}
+			messages, err := client.Fetch(imap.UIDSetNum(1), &imap.FetchOptions{UID: true, BodySection: []*imap.FetchItemBodySection{section}}).Collect()
+			if partial.refused {
+				var imapError *imap.Error
+				if !errors.As(err, &imapError) || len(messages) != 0 {
+					t.Fatalf("partial <%d.%d> = %d messages, %v; want tagged refusal", partial.offset, partial.size, len(messages), err)
+				}
+				continue
+			}
+
+			if err != nil || len(messages) != 1 || len(messages[0].BodySection) != 1 {
+				t.Fatalf("partial <%d.%d> = %+v, %v", partial.offset, partial.size, messages, err)
+			}
+			returned := messages[0].BodySection[0]
+			if returned.Section.Partial == nil || returned.Section.Partial.Offset != partial.offset || string(returned.Bytes) != partial.want {
+				t.Fatalf("partial <%d.%d> returned origin %+v bytes %q, want origin %d bytes %q", partial.offset, partial.size, returned.Section.Partial, returned.Bytes, partial.offset, partial.want)
+			}
+		}
+	})
+
 	t.Run("forbidden_mutations", func(t *testing.T) {
 		t.Parallel()
 

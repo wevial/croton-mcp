@@ -740,6 +740,12 @@ func statefulFetch(mailbox *statefulMailbox, tag string, arguments []imapToken) 
 		if item.isList || item.quoted || upper != "UID" && upper != "FLAGS" && upper != "RFC822.SIZE" && upper != "INTERNALDATE" && !bodyPeekItem.MatchString(upper) {
 			return []string{tagged(tag, "BAD unsupported FETCH item")}
 		}
+
+		if match := bodyPeekItem.FindStringSubmatch(upper); match != nil && match[2] != "" {
+			if _, _, ok := parsePartial(match); !ok {
+				return []string{tagged(tag, "BAD partial range must be a 32-bit offset and nonzero size")}
+			}
+		}
 	}
 
 	var lines []string
@@ -784,14 +790,24 @@ func bodyPeekResponse(body string, match []string) string {
 
 	label := "BODY[" + match[1] + "]"
 	if match[2] != "" {
-		offset, _ := strconv.Atoi(match[2])
-		size, _ := strconv.Atoi(match[3])
-		offset = min(offset, len(literal))
-		literal = literal[offset:min(len(literal), offset+size)]
+		// The response echoes the requested origin even beyond the end of the
+		// text, where the literal is empty. Bounds use uint64 to avoid overflow.
+		offset, size, _ := parsePartial(match)
+		start := min(offset, uint64(len(literal)))
+		end := start + min(size, uint64(len(literal))-start)
+		literal = literal[start:end]
 		label += fmt.Sprintf("<%d>", offset)
 	}
 
 	return fmt.Sprintf("%s {%d}\r\n%s", label, len(literal), literal)
+}
+
+// parsePartial validates a <offset.size> partial as IMAP number and nz-number.
+func parsePartial(match []string) (uint64, uint64, bool) {
+	offset, offsetErr := strconv.ParseUint(match[2], 10, 32)
+	size, sizeErr := strconv.ParseUint(match[3], 10, 32)
+
+	return offset, size, offsetErr == nil && sizeErr == nil && size > 0
 }
 
 // statefulStore permits only adding or removing \Seen on a read-write selection.

@@ -76,7 +76,9 @@ reconnect. A failed SELECT or EXAMINE clears it.
 | `UID MOVE <set> <mailbox>` | read-write selection and `Move: true` only |
 
 UID sets accept numbers, ranges, comma lists and `*`, which means the highest
-UID present. Unsupported search keys, `CHARSET`, `RETURN`, parenthesized
+UID present. A partial `<offset.size>` needs a 32-bit offset and a nonzero
+32-bit size. The response echoes the requested origin; an origin past the end
+of the section returns an empty literal. Unsupported search keys, `CHARSET`, `RETURN`, parenthesized
 search groups and unsupported FETCH items return tagged `BAD`. They never
 fall back to broader results. Non-peek body items are refused because they
 would set `\Seen` implicitly.
