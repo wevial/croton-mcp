@@ -102,10 +102,12 @@ the native `MOVE` capability; without it every move is unsupported and no
 write is sent. The `SPECIAL-USE` capability and `LIST RETURN (SPECIAL-USE)` are
 not required: ordinary `LIST` attributes suffice.
 
-`archive_mail` and `trash_mail` map to the single selectable mailbox in that
-fresh listing carrying the `\Archive` or `\Trash` attribute respectively. Zero
-or several matches make the mapping unresolved, which is unsupported and
-dispatches no write.
+`archive_mail` and `trash_mail` first map to the single selectable mailbox in
+that fresh listing carrying the `\Archive` or `\Trash` attribute respectively.
+That candidate must then pass every destination refusal below, including the
+`Labels/` namespace, virtual-view, nonselectable and source-equals-destination
+checks. Zero or several matches, or a candidate that fails those refusals,
+make the mapping unresolved, which is unsupported and dispatches no write.
 
 `move_mail` matches its destination by exact UTF-8 name against the fresh
 listing and allows only two namespaces. The `root_system` namespace is INBOX,
@@ -224,7 +226,7 @@ Where prose and block differ, the difference is a defect to fix in review.
     "same_authenticated_session": true,
     "move_requires_capability": "MOVE",
     "special_use_token_required": false,
-    "special_mapping": "exactly_one_selectable_attribute_match",
+    "special_mapping": "exactly_one_selectable_attribute_match_then_apply_destination_refusals",
     "archive_attribute": "\\Archive",
     "trash_attribute": "\\Trash",
     "name_matching": "exact_utf8",
