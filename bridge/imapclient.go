@@ -78,6 +78,7 @@ type imapSession struct {
 	client *imapclient.Client
 	conn   *deadlineConn
 	budget *readBudgetConn
+	guard  *dispatchGuardConn
 }
 
 func newIMAPSession(ctx context.Context, connection *Connection) (*imapSession, error) {
@@ -86,15 +87,22 @@ func newIMAPSession(ctx context.Context, connection *Connection) (*imapSession, 
 		return nil, err
 	}
 
+	return newIMAPSessionOver(ctx, transport, startTLS)
+}
+
+// newIMAPSessionOver builds the client stack over an established transport.
+// Every client write passes through the dispatch guard.
+func newIMAPSessionOver(ctx context.Context, transport net.Conn, startTLS bool) (*imapSession, error) {
 	wrapped := &deadlineConn{Conn: transport}
-	budget := newReadBudgetConn(wrapped, maxControlResponseBytes)
+	guard := &dispatchGuardConn{Conn: wrapped}
+	budget := newReadBudgetConn(guard, maxControlResponseBytes)
 	clientTransport := net.Conn(budget)
 	if startTLS {
 		clientTransport = &syntheticGreetingConn{Conn: budget, greeting: []byte(syntheticStartTLSGreeting)}
 	}
 
 	client := imapclient.New(clientTransport, nil)
-	session := &imapSession{client: client, conn: wrapped, budget: budget}
+	session := &imapSession{client: client, conn: wrapped, budget: budget, guard: guard}
 	if err := session.withBoundedInput(ctx, maxControlResponseBytes, func() error {
 		if err := client.WaitGreeting(); err != nil {
 			return err
@@ -291,10 +299,11 @@ func (session *imapSession) SupportsMove() bool {
 	return session.client.Caps().Has(imap.CapMove)
 }
 
-// MoveUID sends exactly one native UID MOVE of a single UID. go-imap would
-// silently substitute COPY, STORE and EXPUNGE when MOVE is not advertised, so
-// the capability is checked immediately before and the command is refused
-// without dispatch when it is absent.
+// MoveUID sends exactly one native UID MOVE of a single UID. go-imap
+// substitutes COPY, STORE \Deleted and EXPUNGE whenever its cached
+// capabilities lack MOVE, and a server response can replace that cache at any
+// moment, so a capability check alone cannot keep the dispatch native. The
+// check refuses early; the dispatch guard is what enforces it.
 func (session *imapSession) MoveUID(ctx context.Context, uid uint32, destination string) error {
 	if uid == 0 || destination == "" {
 		return errorCode(CodeIMAPProtocol)
@@ -303,10 +312,26 @@ func (session *imapSession) MoveUID(ctx context.Context, uid uint32, destination
 		return errorCode(CodeUnsupported)
 	}
 
-	return session.withBoundedInput(ctx, maxControlResponseBytes, func() error {
+	return session.dispatchMove(ctx, uid, destination)
+}
+
+// dispatchMove arms the guard so the only bytes that can leave the session are
+// one complete "<tag> UID MOVE <uid> ..." line. A fallback write is refused
+// before reaching the transport and closes the connection, so the outcome is
+// a definite refusal with nothing sent.
+func (session *imapSession) dispatchMove(ctx context.Context, uid uint32, destination string) error {
+	session.guard.arm(uid)
+
+	err := session.withBoundedInput(ctx, maxControlResponseBytes, func() error {
 		_, err := session.client.Move(imap.UIDSetNum(imap.UID(uid)), destination).Wait()
 		return err
 	})
+
+	if session.guard.disarm() {
+		return errorCode(CodeUnsupported)
+	}
+
+	return err
 }
 
 func (session *imapSession) UIDSearchWindow(ctx context.Context, query SearchQuery, window uidWindow, limit int) ([]uint32, error) {
@@ -907,6 +932,74 @@ func trailingIMAPLiteralSize(line string) (uint64, bool) {
 		return ^uint64(0), true
 	}
 	return size, true
+}
+
+var errDispatchRefused = errors.New("IMAP write outside the armed native MOVE")
+
+// dispatchGuardConn enforces the native-MOVE-only write allowlist. While
+// armed it forwards exactly one write, which must be one complete
+// "<tag> UID MOVE <uid> <mailbox>" line. Any other write, including a
+// COPY/STORE/EXPUNGE fallback, a capability refresh, a second command or a
+// split or literal-bearing line, is refused without forwarding a byte and
+// closes the connection. Disarmed, it is a pass-through.
+type dispatchGuardConn struct {
+	net.Conn
+	mu      sync.Mutex
+	armed   bool
+	used    bool
+	tripped bool
+	prefix  string
+}
+
+func (connection *dispatchGuardConn) arm(uid uint32) {
+	connection.mu.Lock()
+	defer connection.mu.Unlock()
+
+	connection.armed, connection.used, connection.tripped = true, false, false
+	connection.prefix = "UID MOVE " + strconv.FormatUint(uint64(uid), 10) + " "
+}
+
+// disarm reports whether a write was refused while armed.
+func (connection *dispatchGuardConn) disarm() bool {
+	connection.mu.Lock()
+	defer connection.mu.Unlock()
+
+	connection.armed = false
+	return connection.tripped
+}
+
+func (connection *dispatchGuardConn) Write(buffer []byte) (int, error) {
+	connection.mu.Lock()
+	if connection.armed {
+		if connection.tripped || connection.used || !nativeMoveLine(buffer, connection.prefix) {
+			connection.tripped = true
+			connection.mu.Unlock()
+			_ = connection.Conn.Close()
+			return 0, errDispatchRefused
+		}
+		connection.used = true
+	}
+	connection.mu.Unlock()
+
+	return connection.Conn.Write(buffer)
+}
+
+// nativeMoveLine accepts only "<tag> " + prefix + "<mailbox>\r\n" with no
+// other line break and no literal, whose body would need a second write.
+func nativeMoveLine(buffer []byte, prefix string) bool {
+	line := string(buffer)
+	body, complete := strings.CutSuffix(line, "\r\n")
+	if !complete || strings.ContainsAny(body, "\r\n") {
+		return false
+	}
+
+	tag, command, found := strings.Cut(body, " ")
+	if !found || tag == "" {
+		return false
+	}
+
+	mailbox, native := strings.CutPrefix(command, prefix)
+	return native && mailbox != "" && !strings.HasSuffix(mailbox, "}")
 }
 
 type deadlineConn struct {

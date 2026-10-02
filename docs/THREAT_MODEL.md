@@ -90,6 +90,10 @@ only when `mutations.enabled` is true: `bridge/seen.go` sends one Seen-only
 `UID STORE` per UID, and `bridge/move.go` sends one native `UID MOVE` per UID
 to a destination revalidated from a fresh `LIST` on the same session. Without
 the `MOVE` capability no move is sent; there is no COPY or EXPUNGE fallback.
+Because the IMAP client library would substitute that fallback if a server
+response withdrew `MOVE` mid-dispatch, a write guard on the session transport
+forwards only one complete native `UID MOVE` line per dispatch and refuses any
+other write, closing the connection before a byte is sent.
 
 **How it fails closed.** A non-loopback endpoint, a hostname, a configuration
 with neither anchor nor pin, an unparseable anchor, a leaf that does not match,
