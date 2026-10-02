@@ -95,8 +95,9 @@ func validateMoveDestination(destination string) error {
 		}
 	}
 
-	// Names are exact UTF-8. One that still contains a modified UTF-7 shift
-	// sequence is ambiguous with its own wire form, so it is never guessed.
+	// Names are exact UTF-8. One that still contains a nonempty modified
+	// UTF-7 shift sequence such as &A- reads as wire encoding, so it is never
+	// guessed. A literal "&-" is ordinary text and stays an exact name.
 	if containsModifiedUTF7Shift(destination) {
 		return errorCode(CodeInvalidRequest)
 	}
@@ -114,7 +115,7 @@ func containsModifiedUTF7Shift(name string) bool {
 		for end < len(name) && isModifiedBase64(name[end]) {
 			end++
 		}
-		if end < len(name) && name[end] == '-' {
+		if end > index+1 && end < len(name) && name[end] == '-' {
 			return true
 		}
 	}

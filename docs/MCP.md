@@ -195,7 +195,9 @@ message-id argument. A missing, null, zero, negative, fractional,
 out-of-range, duplicate or unknown input fails the whole request with
 `invalid_argument` before any IMAP command. So does a `destination` that is
 empty, longer than 512 bytes, not UTF-8, contains a control character, `*` or
-`%`, or still contains a modified UTF-7 shift sequence such as `&A-`.
+`%`, or still contains a nonempty modified UTF-7 shift sequence such as
+`&A-`. A literal `&-`, as in `Folders/Research&-Development`, is an ordinary
+exact name.
 
 The server selects the source mailbox read-write on its one authenticated
 session and compares the fresh UIDVALIDITY with `uidvalidity`. A mismatch
