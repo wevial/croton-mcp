@@ -20,9 +20,10 @@ const (
 // CredentialCommand is an exception: it is an operator-controlled privileged
 // capability that executes the configured absolute argv verbatim.
 type Config struct {
-	IMAP   IMAPConfig  `json:"imap"`
-	Bounds BoundsPatch `json:"bounds"`
-	Audit  AuditConfig `json:"audit"`
+	IMAP      IMAPConfig      `json:"imap"`
+	Bounds    BoundsPatch     `json:"bounds"`
+	Audit     AuditConfig     `json:"audit"`
+	Mutations MutationsConfig `json:"mutations"`
 }
 
 // IMAPConfig configures the local Proton Mail Bridge endpoint.
@@ -51,6 +52,13 @@ type TLSConfig struct {
 
 // AuditConfig controls metadata-only audit logging in the MCP layer.
 type AuditConfig struct {
+	Enabled bool `json:"enabled"`
+}
+
+// MutationsConfig is the local operator opt-in for Mail triage tools. Absent
+// or false keeps the read-only catalog; strict decoding rejects any other type.
+// Enabling it registers tools; it never approves an individual call.
+type MutationsConfig struct {
 	Enabled bool `json:"enabled"`
 }
 

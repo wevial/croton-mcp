@@ -1,4 +1,5 @@
-// Command croton-mcp serves Croton's six read-only mail tools over stdio.
+// Command croton-mcp serves Croton's six read-only mail tools over stdio, plus
+// the Seen triage tools when the configuration file opts in.
 package main
 
 import (
@@ -53,7 +54,12 @@ func run(ctx context.Context, arguments []string, stderr io.Writer) error {
 		auditor = mcpserver.NewAuditor(stderr)
 	}
 
-	server := mcpserver.New(mcpserver.Options{Mail: adapter, Audit: auditor})
+	options := mcpserver.Options{Mail: adapter, Audit: auditor}
+	if loaded.Mutations.Enabled {
+		options.Triage = adapter
+	}
+
+	server := mcpserver.New(options)
 
 	return mcpserver.Serve(ctx, server, mcpserver.NewStdioTransport(os.Stdin, os.Stdout))
 }

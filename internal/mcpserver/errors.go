@@ -7,8 +7,10 @@ import "github.com/wevial/croton-mcp/bridge"
 // detail can ever cross the protocol boundary.
 func mapAdapterError(err error) string {
 	switch bridge.CodeOf(err) {
-	case bridge.CodeMailboxNotFound:
+	case bridge.CodeMailboxNotFound, bridge.CodeMessageNotFound:
 		return errNotFound
+	case bridge.CodeInvalidRequest:
+		return errInvalidArgument
 	case bridge.CodeStaleMessageID:
 		return errStaleID
 	case bridge.CodeBoundsExceeded:

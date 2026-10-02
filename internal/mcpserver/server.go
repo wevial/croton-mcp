@@ -29,8 +29,11 @@ type Mail interface {
 
 // Options configures Croton's MCP server.
 type Options struct {
-	Mail  Mail
-	Audit *Auditor
+	Mail Mail
+	// Triage registers the opt-in mark_read and mark_unread tools when
+	// non-nil. Nil keeps the default catalog of six read-only tools.
+	Triage Triage
+	Audit  *Auditor
 }
 
 // Server wraps the SDK server with per-connection cancellation behavior.
@@ -39,7 +42,8 @@ type Server struct {
 	audit *Auditor
 }
 
-// New constructs Croton's MCP server exposing only the six read-only tools.
+// New constructs Croton's MCP server exposing the six read-only tools, plus the
+// Seen triage tools only when Options.Triage opts in.
 func New(options Options) *Server {
 	sdkServer := mcp.NewServer(&mcp.Implementation{
 		Name:        "croton-mcp",

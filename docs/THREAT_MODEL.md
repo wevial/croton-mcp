@@ -82,10 +82,12 @@ anchor file or an SPKI pin, and compares the presented leaf certificate in
 constant time before checking its validity window and server-authentication
 usage. `bridge/dial.go` performs the connection and STARTTLS upgrade under a
 byte and time budget, and `bridge/config.go` documents the anchor-versus-pin
-choice. The adapter in `bridge` exposes no mutating IMAP operation, so nothing
-sent through it can alter the mailbox. The planned, default-off triage writes
-in `docs/design/0005-mail-triage.md` are limited to Seen `UID STORE` and native
-`UID MOVE` over this same boundary and are not implemented.
+choice. With the default configuration the adapter in `bridge` sends no
+mutating IMAP command, so nothing sent through it can alter the mailbox. The
+default-off triage writes in `docs/design/0005-mail-triage.md` are limited to
+Seen `UID STORE` and native `UID MOVE` over this same boundary. Only the Seen
+write is implemented: `bridge/seen.go` sends one Seen-only `UID STORE` per UID,
+and only when `mutations.enabled` is true. The move write is not implemented.
 
 **How it fails closed.** A non-loopback endpoint, a hostname, a configuration
 with neither anchor nor pin, an unparseable anchor, a leaf that does not match,
@@ -238,7 +240,8 @@ threat model.
 either executable, over standard input and standard output only. Neither
 executable listens on a socket.
 
-**What enforces it.** Both servers register only read-only tools and install an
+**What enforces it.** Both servers register only read-only tools by default
+(Mail adds its Seen triage tools only when `mutations.enabled` is true) and install an
 allowlist middleware, `internal/mcpserver/tools.go` for Mail and
 `internal/drivemcp/tools.go` for Drive, that rejects every method outside a
 fixed set. Tool arguments are capped at 24 KiB and decoded strictly
@@ -309,11 +312,13 @@ Risks the code already admits and this model records rather than hides:
   configuration reserves an allowed-directory list and a disabled write policy.
   Download policies are decided in record 0003, but their runtime controls
   remain future work; client confirmation is an operator trust boundary.
-- **Planned Mail triage relies on the trusted client for approval.** Record
-  0005 plans default-off Seen and move writes behind a local file opt-in.
-  Croton cannot verify that a human approved a call, so once implemented and
-  enabled, an auto-approving or prompt-injected client could triage mail
-  within that allowlist. Nothing is implemented today.
+- **Mail triage relies on the trusted client for approval.** Record 0005
+  plans default-off Seen and move writes behind a local file opt-in. Croton
+  cannot verify that a human approved a call, so once enabled, an
+  auto-approving or prompt-injected client could triage mail within that
+  allowlist. The Seen writes are implemented and can then change read state;
+  the move writes are not implemented. An `unknown` outcome is never
+  replayed, so its UID may or may not have changed until a fresh read shows it.
 
 ## Out of scope
 

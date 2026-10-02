@@ -6,8 +6,9 @@ approval model that record left Reserved and freezes the contract for a
 planned, default-off, bounded Mail triage capability: marking messages read or
 unread and moving them between folders. It is a design and proof contract
 only. It registers no tool, changes no installed configuration and enables no
-live write; the shipped Mail runtime remains read-only until a later,
-separately approved implementation lands.
+live write; each part of the Mail runtime stays read-only until a later,
+separately approved implementation lands. The Status section records what has
+since landed.
 
 `scripts/test_mail_triage_design.py` checks the structured contract and the
 conformance examples below. It is a documentation witness: it cannot prove that
@@ -61,12 +62,13 @@ Setting `mutations.enabled` true is a local operator opt-in that makes the
 tools available. It is not approval of any user action; every call still needs
 the per-payload approval above.
 
-Current shipped status: nothing in this record is implemented. The shipped
-Mail configuration schema has no `mutations` member and rejects it as an
-unknown field. The shipped catalog is the six read tools, all with
-`readOnlyHint: true`, and the `bridge` adapter exposes no mutating IMAP
-operation. This story changes no installed configuration and performs no live
-enablement.
+Current shipped status: the configuration schema accepts the
+`mutations.enabled` boolean and rejects every other type and any unknown key
+inside `mutations`. Absent or false, the catalog is the six read tools, all
+with `readOnlyHint: true`, and the `bridge` adapter sends no mutating IMAP
+command. True registers only `mark_read` and `mark_unread` so far; the three
+move tools are not implemented. No installed configuration was changed and no
+live enablement was performed.
 
 ## Tool and result contract
 
@@ -354,8 +356,11 @@ never attempted and nothing is replayed.
 
 ## Status
 
-Planned design; not implemented. It supersedes the historical
+Partially implemented. It supersedes the historical
 [proposed Mail mutation boundary](0002-mail-mutation.md), whose body is
-preserved unchanged. No triage tool is registered, the shipped configuration
-has no `mutations` member, and Mail remains read-only. Runtime implementation,
-live acceptance and any live enablement each require a separate decision.
+preserved unchanged. The Seen tools `mark_read` and `mark_unread` are
+implemented behind the default-off `mutations.enabled` opt-in and witnessed by
+`TestStoryTriageSeen` against synthetic state only. `move_mail`,
+`archive_mail` and `trash_mail` are not implemented. Without the opt-in Mail
+remains read-only. Live acceptance and any live enablement each require a
+separate decision.

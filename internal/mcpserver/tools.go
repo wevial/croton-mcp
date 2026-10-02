@@ -125,6 +125,26 @@ func registerTools(server *mcp.Server, options Options) {
 			},
 		}, makeHandler(definition, options))
 	}
+
+	if options.Triage == nil {
+		return
+	}
+
+	// Annotations describe the tools to clients; they neither prompt for nor
+	// prove human approval.
+	for _, definition := range triageToolDefinitions() {
+		server.AddTool(&mcp.Tool{
+			Name:        definition.name,
+			Description: definition.description,
+			InputSchema: definition.schema,
+			Annotations: &mcp.ToolAnnotations{
+				ReadOnlyHint:    false,
+				DestructiveHint: &falseHint,
+				IdempotentHint:  true,
+				OpenWorldHint:   &falseHint,
+			},
+		}, makeHandler(definition, options))
+	}
 }
 
 // allowlistMiddleware fails closed: only the negotiation, discovery, and tool

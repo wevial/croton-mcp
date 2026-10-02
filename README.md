@@ -1,10 +1,10 @@
 # Croton MCP for Proton Mail
 
-Croton is a privacy-first, local stdio [Model Context Protocol](https://modelcontextprotocol.io/) server that provides controlled access to Proton Mail through Proton Mail Bridge. The repository includes a production read-only Bridge adapter and synthetic protocol fixtures; it does not bundle Proton credentials, account identifiers, mailbox content, or live fixture data.
+Croton is a privacy-first, local stdio [Model Context Protocol](https://modelcontextprotocol.io/) server that provides controlled access to Proton Mail through Proton Mail Bridge. The repository includes a production Bridge adapter, read-only by default, and synthetic protocol fixtures; it does not bundle Proton credentials, account identifiers, mailbox content, or live fixture data.
 
 ## Status
 
-Early read-only implementation. The executable supports MCP `2026-07-28` by default and the legacy `2025-11-25` initialization flow for older clients. Its local Bridge adapter supports bounded folder, status, search, metadata, and body reads over verified loopback TLS; it does not expose mail mutation operations. The [Mail triage design](docs/design/0005-mail-triage.md) plans default-off mark-read and folder-move tools limited to Seen `UID STORE` and native `UID MOVE`; they are not implemented.
+Early implementation, read-only by default. The executable supports MCP `2026-07-28` by default and the legacy `2025-11-25` initialization flow for older clients. Its local Bridge adapter supports bounded folder, status, search, metadata, and body reads over verified loopback TLS. Unless the configuration file sets `mutations.enabled` to true, it exposes no mail mutation. With that opt-in, the `mark_read` and `mark_unread` tools from the [Mail triage design](docs/design/0005-mail-triage.md) change only the Seen flag, one UID per `UID STORE`; the planned folder-move tools are not implemented, and no live account write has been exercised.
 
 ## Croton Drive MCP (unofficial)
 
