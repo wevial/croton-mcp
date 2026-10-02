@@ -32,9 +32,14 @@ REQUIRED_HEADINGS = (
 )
 
 
+def visible_text(text):
+    """Remove HTML comments; an unterminated opener hides the rest of the text."""
+    return re.sub(r"<!--.*?(?:-->|$)", "", text, flags=re.S)
+
+
 def prose_sections(text):
     """Collect visible section prose, excluding comments and fenced examples."""
-    text = re.sub(r"<!--.*?(?:-->|$)", "", text, flags=re.S)
+    text = visible_text(text)
     sections = {}
     current = None
     fence = None
@@ -61,7 +66,7 @@ def prose_sections(text):
 class SuccessorDesign(unittest.TestCase):
     def setUp(self):
         self.assertTrue(RECORD.is_file(), "successor design record is absent")
-        text = RECORD.read_text()
+        text = visible_text(RECORD.read_text())
         self.sections = prose_sections(text)
         blocks = re.findall(r"^```json croton-mail-triage-contract-v1\n(.*?)^```\s*$", text, re.M | re.S)
         self.assertEqual(len(blocks), 1, "need one uniquely tagged structured contract")
