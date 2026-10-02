@@ -11,9 +11,12 @@ This page covers the Mail server only. The separate Drive executable,
 its bounds, error vocabulary, and always-on audit stream differ from those
 described here, and every claim there names the test that pins it.
 
-The [proposed Mail mutation boundary](design/0002-mail-mutation.md) records
-possible flag, mark-read and move semantics for maintainer review. Its approval
-model remains Reserved; it authorizes no writes. Mail remains read-only.
+The historical [proposed Mail mutation boundary](design/0002-mail-mutation.md)
+is superseded by the [Mail triage design](design/0005-mail-triage.md). The
+successor plans five default-off triage tools behind a local
+`mutations.enabled` file opt-in, limited to Seen `UID STORE` and native
+`UID MOVE`, with approval owned by the trusted client. None is implemented:
+the six read tools below are unchanged and Mail remains read-only.
 
 ## Protocol
 

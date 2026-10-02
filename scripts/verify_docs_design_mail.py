@@ -7,6 +7,7 @@ HTML comments. Failures name the missing contract requirement.
 Invariant, Reserved and Status use closed sets of complete sentences to reject
 contradictory claims;
 changing that vocabulary requires review of this structural contract.
+Status additionally accepts only the exact canonical successor link sentence.
 """
 
 import pathlib
@@ -67,6 +68,7 @@ STATUS_CONTEXT = (
     "Implementation requires a separate decision resolving Reserved and future "
     "proof tests; publication of this proposal does not enable writes."
 )
+SUPERSESSION = "Superseded by [Mail triage design](0005-mail-triage.md)."
 
 CLOSED_CONTEXT = {
     "Invariant": ("Bridge connections remain loopback-only with TLS.",),
@@ -74,7 +76,7 @@ CLOSED_CONTEXT = {
         "Neither this record nor engineering choices select an approval mechanism "
         "or change config behavior.",
     ),
-    "Status": (STATUS_CONTEXT,),
+    "Status": (STATUS_CONTEXT, SUPERSESSION),
 }
 
 
@@ -179,7 +181,9 @@ def verify(doc=DOC, mcp=MCP):
                 if line.fence is None and not line.opens
             ))
 
-        sentences = re.findall(r"[^.]+(?:\.|$)", body)
+        # The canonical successor link is one sentence despite its dotted target.
+        atomic = re.escape(normalize(SUPERSESSION)) + "|" if section == "Status" else ""
+        sentences = re.findall(r"\s*(" + atomic + r"[^.]+(?:\.|$))", body)
         sentences = [sentence.strip() for sentence in sentences]
         for name, statement in requirements.items():
             expected = normalize(statement)

@@ -221,6 +221,19 @@ class MailDesignTests(unittest.TestCase):
         changed = RECORD.replace("Proposed. Mail remains read-only.", "`PROPOSED`.\n Mail remains\nread-only.")
         self.assertEqual(self.check(changed + verifier.STATUS_CONTEXT + "\n"), [])
 
+    def test_status_accepts_canonical_supersession(self):
+        self.assertEqual(self.check(RECORD + verifier.SUPERSESSION + "\n"), [])
+
+    def test_supersession_rejects_other_target(self):
+        changed = verifier.SUPERSESSION.replace("0005-mail-triage.md", "0003-download-boundary.md")
+        self.reject(RECORD + changed + "\n", "Status: unexpected status statement")
+
+    def test_supersession_rejects_appended_qualification(self):
+        self.reject(RECORD + verifier.SUPERSESSION + " Subject to confirmation.\n", "Status: unexpected status statement")
+
+    def test_supersession_rejects_appended_write_claim(self):
+        self.reject(RECORD + verifier.SUPERSESSION + " Mail writes are now enabled.\n", "Status: unexpected status statement")
+
     def test_hidden_contradictory_status_is_ignored(self):
         for hidden in (
             "<!-- Mail supports writes. -->",

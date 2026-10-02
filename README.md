@@ -4,7 +4,7 @@ Croton is a privacy-first, local stdio [Model Context Protocol](https://modelcon
 
 ## Status
 
-Early read-only implementation. The executable supports MCP `2026-07-28` by default and the legacy `2025-11-25` initialization flow for older clients. Its local Bridge adapter supports bounded folder, status, search, metadata, and body reads over verified loopback TLS; it does not expose mail mutation operations.
+Early read-only implementation. The executable supports MCP `2026-07-28` by default and the legacy `2025-11-25` initialization flow for older clients. Its local Bridge adapter supports bounded folder, status, search, metadata, and body reads over verified loopback TLS; it does not expose mail mutation operations. The [Mail triage design](docs/design/0005-mail-triage.md) plans default-off mark-read and folder-move tools limited to Seen `UID STORE` and native `UID MOVE`; they are not implemented.
 
 ## Croton Drive MCP (unofficial)
 

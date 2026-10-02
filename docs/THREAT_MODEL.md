@@ -83,7 +83,9 @@ constant time before checking its validity window and server-authentication
 usage. `bridge/dial.go` performs the connection and STARTTLS upgrade under a
 byte and time budget, and `bridge/config.go` documents the anchor-versus-pin
 choice. The adapter in `bridge` exposes no mutating IMAP operation, so nothing
-sent through it can alter the mailbox.
+sent through it can alter the mailbox. The planned, default-off triage writes
+in `docs/design/0005-mail-triage.md` are limited to Seen `UID STORE` and native
+`UID MOVE` over this same boundary and are not implemented.
 
 **How it fails closed.** A non-loopback endpoint, a hostname, a configuration
 with neither anchor nor pin, an unparseable anchor, a leaf that does not match,
@@ -307,6 +309,11 @@ Risks the code already admits and this model records rather than hides:
   configuration reserves an allowed-directory list and a disabled write policy.
   Download policies are decided in record 0003, but their runtime controls
   remain future work; client confirmation is an operator trust boundary.
+- **Planned Mail triage relies on the trusted client for approval.** Record
+  0005 plans default-off Seen and move writes behind a local file opt-in.
+  Croton cannot verify that a human approved a call, so once implemented and
+  enabled, an auto-approving or prompt-injected client could triage mail
+  within that allowlist. Nothing is implemented today.
 
 ## Out of scope
 
