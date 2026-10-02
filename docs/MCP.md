@@ -194,10 +194,9 @@ an exact `destination` mailbox name. There is no approval, ordinal or
 message-id argument. A missing, null, zero, negative, fractional,
 out-of-range, duplicate or unknown input fails the whole request with
 `invalid_argument` before any IMAP command. So does a `destination` that is
-empty, longer than 512 bytes, not UTF-8, contains a control character, `*` or
-`%`, or still contains a nonempty modified UTF-7 shift sequence such as
-`&A-`. A literal `&-`, as in `Folders/Research&-Development`, is an ordinary
-exact name.
+empty, longer than 512 bytes, not UTF-8, or contains a control character, `*`
+or `%`. Any other exact UTF-8 name is accepted as written, including one with
+an ampersand such as `Folders/R&D-2026`.
 
 The server selects the source mailbox read-write on its one authenticated
 session and compares the fresh UIDVALIDITY with `uidvalidity`. A mismatch
@@ -209,8 +208,11 @@ No other flag, STORE form, MOVE, COPY or EXPUNGE is sent, and the read tools
 keep their `BODY.PEEK` fetches.
 
 `move_mail` uses the same selection and presence check, then resolves its
-destination from a fresh ordinary `LIST "" "*"` on that same session before
-every UID, and sends one native `UID MOVE <uid> <destination>`. The
+destination from a fresh ordinary `LIST` on that same session before every
+UID, and sends one native `UID MOVE <uid> <destination>`. The `LIST` pattern
+is the exact destination, modified UTF-7 encoded, so it lists only that one
+well-formed wire name; a malformed wire name elsewhere in the account is never
+listed or matched. The
 destination must match exactly one listed name, INBOX case-insensitively and
 every other name exactly, and be selectable: not `\Noselect` or
 `\NonExistent`, and not a `\All` or `\Flagged` virtual view. It must then be

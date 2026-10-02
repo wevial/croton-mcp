@@ -80,7 +80,10 @@ func (adapter *Adapter) Move(ctx context.Context, mailbox string, uidValidity ui
 }
 
 // validateMoveDestination rejects destinations that are not one exact,
-// printable mailbox name before any connection is used.
+// printable UTF-8 mailbox name before any connection is used. Wildcards are
+// refused so the destination can serve as an exact LIST pattern. Malformed
+// modified UTF-7 is a property of wire names, not of decoded input, so it is
+// handled by the exact LIST in prepareMove rather than guessed here.
 func validateMoveDestination(destination string) error {
 	if destination == "" || !utf8.ValidString(destination) {
 		return errorCode(CodeInvalidRequest)
@@ -95,36 +98,7 @@ func validateMoveDestination(destination string) error {
 		}
 	}
 
-	// Names are exact UTF-8. One that still contains a nonempty modified
-	// UTF-7 shift sequence such as &A- reads as wire encoding, so it is never
-	// guessed. A literal "&-" is ordinary text and stays an exact name.
-	if containsModifiedUTF7Shift(destination) {
-		return errorCode(CodeInvalidRequest)
-	}
-
 	return nil
-}
-
-func containsModifiedUTF7Shift(name string) bool {
-	for index := 0; index < len(name); index++ {
-		if name[index] != '&' {
-			continue
-		}
-
-		end := index + 1
-		for end < len(name) && isModifiedBase64(name[end]) {
-			end++
-		}
-		if end > index+1 && end < len(name) && name[end] == '-' {
-			return true
-		}
-	}
-
-	return false
-}
-
-func isModifiedBase64(character byte) bool {
-	return 'A' <= character && character <= 'Z' || 'a' <= character && character <= 'z' || '0' <= character && character <= '9' || character == '+' || character == ','
 }
 
 func refuseRemaining(results []TriageResult, from int) {
@@ -167,8 +141,12 @@ func (adapter *Adapter) moveUID(ctx context.Context, session readSession, mover 
 }
 
 // prepareMove confirms one UID is present, then resolves the destination from
-// a fresh LIST on the dispatch session. It returns the exact wire target, or
-// an empty target with the UID's result and whether to stop the batch.
+// a fresh ordinary LIST on the dispatch session whose pattern is the exact,
+// wildcard-free destination. The client encodes it as modified UTF-7, so only
+// that one well-formed wire name can be listed; a malformed wire name
+// elsewhere in the account is never listed, decoded or matched. It returns
+// the exact target, or an empty target with the UID's result and whether to
+// stop the batch.
 func (adapter *Adapter) prepareMove(ctx context.Context, session readSession, mover moveSession, uid uint32, destination string) (string, TriageResult, bool) {
 	operationContext, cancel := adapter.operationContext(ctx)
 	defer cancel()
@@ -181,7 +159,7 @@ func (adapter *Adapter) prepareMove(ctx context.Context, session readSession, mo
 		return "", adapter.abandonUID(operationContext, session, uid, err), true
 	}
 
-	listing, err := mover.ListMailboxes(operationContext, adapter.config.Bounds.MaxFolderResults)
+	listing, err := mover.ListMailboxes(operationContext, destination, adapter.config.Bounds.MaxFolderResults)
 	if err != nil {
 		return "", adapter.abandonUID(operationContext, session, uid, err), true
 	}

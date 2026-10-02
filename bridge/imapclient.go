@@ -53,7 +53,7 @@ type seenSession interface {
 
 type moveSession interface {
 	SupportsMove() bool
-	ListMailboxes(context.Context, int) ([]listedMailbox, error)
+	ListMailboxes(context.Context, string, int) ([]listedMailbox, error)
 	MoveUID(context.Context, uint32, string) error
 }
 
@@ -143,7 +143,7 @@ func waitForCapabilities(client *imapclient.Client) error {
 }
 
 func (session *imapSession) List(ctx context.Context, limit int) ([]Folder, error) {
-	mailboxes, err := session.ListMailboxes(ctx, limit)
+	mailboxes, err := session.ListMailboxes(ctx, "*", limit)
 	if err != nil {
 		return nil, err
 	}
@@ -156,13 +156,13 @@ func (session *imapSession) List(ctx context.Context, limit int) ([]Folder, erro
 	return folders, nil
 }
 
-// ListMailboxes sends one ordinary LIST "" "*" without RETURN options and
-// keeps each entry's attributes.
-func (session *imapSession) ListMailboxes(ctx context.Context, limit int) ([]listedMailbox, error) {
+// ListMailboxes sends one ordinary LIST "" <pattern> without selection or
+// RETURN options and keeps each entry's attributes.
+func (session *imapSession) ListMailboxes(ctx context.Context, pattern string, limit int) ([]listedMailbox, error) {
 	var mailboxes []listedMailbox
 	err := session.withContext(ctx, func() error {
 		exceeded, listErr := session.withInputBudget(maxListResponseBytes, func() error {
-			command := session.client.List("", "*", nil)
+			command := session.client.List("", pattern, nil)
 			for {
 				data := command.Next()
 				if data == nil {
