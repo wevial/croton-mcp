@@ -77,3 +77,4 @@ select an approval mechanism or change config behavior.
 Proposed. Mail remains read-only. No Mail mutation tools are registered by this
 record. Implementation requires a separate decision resolving Reserved and
 future proof tests; publication of this proposal does not enable writes.
+Superseded by [Mail triage design](0005-mail-triage.md).

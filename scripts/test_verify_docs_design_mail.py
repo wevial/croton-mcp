@@ -4,10 +4,15 @@
 import contextlib
 import io
 import pathlib
+import subprocess
+import sys
 import tempfile
 import unittest
 
 import verify_docs_design_mail as verifier
+
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
 
 
 RECORD = r"""# Synthetic Mail proposal
@@ -221,6 +226,19 @@ class MailDesignTests(unittest.TestCase):
         changed = RECORD.replace("Proposed. Mail remains read-only.", "`PROPOSED`.\n Mail remains\nread-only.")
         self.assertEqual(self.check(changed + verifier.STATUS_CONTEXT + "\n"), [])
 
+    def test_status_accepts_canonical_supersession(self):
+        self.assertEqual(self.check(RECORD + verifier.SUPERSESSION + "\n"), [])
+
+    def test_supersession_rejects_other_target(self):
+        changed = verifier.SUPERSESSION.replace("0005-mail-triage.md", "0003-download-boundary.md")
+        self.reject(RECORD + changed + "\n", "Status: unexpected status statement")
+
+    def test_supersession_rejects_appended_qualification(self):
+        self.reject(RECORD + verifier.SUPERSESSION + " Subject to confirmation.\n", "Status: unexpected status statement")
+
+    def test_supersession_rejects_appended_write_claim(self):
+        self.reject(RECORD + verifier.SUPERSESSION + " Mail writes are now enabled.\n", "Status: unexpected status statement")
+
     def test_hidden_contradictory_status_is_ignored(self):
         for hidden in (
             "<!-- Mail supports writes. -->",
@@ -318,6 +336,27 @@ class MailDesignTests(unittest.TestCase):
         with contextlib.redirect_stdout(stdout):
             self.assertEqual(verifier.main(self.doc, self.mcp), 0)
         self.assertIn("proposal OK", stdout.getvalue())
+
+    def test_architecture_and_threat_model_verifiers_pass_on_this_tree(self):
+        for script in ("verify_docs_architecture.py", "verify_docs_threat_model.py"):
+            with self.subTest(script=script):
+                result = subprocess.run(
+                    [sys.executable, str(REPO / "scripts" / script)],
+                    cwd=REPO, capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        text = (REPO / "docs" / "ARCHITECTURE.md").read_text()
+        packages = text.split("\n## Packages\n", 1)[1].split("\n## ", 1)[0]
+        rows = [
+            [cell.strip() for cell in line.strip().strip("|").split("|")]
+            for line in packages.splitlines()
+            if line.startswith("| `internal/drivefs` |")
+        ]
+        self.assertEqual(len(rows), 1, "Packages table needs one internal/drivefs row")
+        self.assertEqual(len(rows[0]), 3)
+        self.assertTrue(rows[0][1], "internal/drivefs role cell is empty")
+        self.assertTrue(rows[0][2], "internal/drivefs must-never cell is empty")
 
 
 if __name__ == "__main__":
