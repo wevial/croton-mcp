@@ -203,15 +203,15 @@ var triageBuild struct {
 
 type triageBuffer struct {
 	sync.Mutex
-	buffer bytes.Buffer
+	bytes.Buffer
 }
 
 func (b *triageBuffer) Write(p []byte) (int, error) {
 	b.Lock()
 	defer b.Unlock()
-	return b.buffer.Write(p)
+	return b.Buffer.Write(p)
 }
-func (b *triageBuffer) text() string { b.Lock(); defer b.Unlock(); return b.buffer.String() }
+func (b *triageBuffer) text() string { b.Lock(); defer b.Unlock(); return b.Buffer.String() }
 
 type triageHarness struct {
 	fixture       *testkit.Server
