@@ -226,7 +226,7 @@ Where prose and block differ, the difference is a defect to fix in review.
     "same_authenticated_session": true,
     "move_requires_capability": "MOVE",
     "special_use_token_required": false,
-    "special_mapping": "exactly_one_selectable_attribute_match_then_apply_destination_refusals",
+    "special_mapping": "exactly_one_selectable_attribute_match",
     "archive_attribute": "\\Archive",
     "trash_attribute": "\\Trash",
     "name_matching": "exact_utf8",

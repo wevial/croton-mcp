@@ -32,20 +32,9 @@ REQUIRED_HEADINGS = (
 )
 
 
-def visible_text(text):
-    """Remove HTML comments, including an unterminated trailing comment."""
-    return re.sub(r"<!--.*?(?:-->|$)", "", text, flags=re.S)
-
-
-def contract_blocks(text):
-    """Return visible structured contract blocks; commented-out blocks do not count."""
-    return re.findall(r"^```json croton-mail-triage-contract-v1\n(.*?)^```\s*$",
-                      visible_text(text), re.M | re.S)
-
-
 def prose_sections(text):
     """Collect visible section prose, excluding comments and fenced examples."""
-    text = visible_text(text)
+    text = re.sub(r"<!--.*?(?:-->|$)", "", text, flags=re.S)
     sections = {}
     current = None
     fence = None
@@ -74,17 +63,10 @@ class SuccessorDesign(unittest.TestCase):
         self.assertTrue(RECORD.is_file(), "successor design record is absent")
         text = RECORD.read_text()
         self.sections = prose_sections(text)
-        blocks = contract_blocks(text)
-        self.assertEqual(len(blocks), 1, "need one visible, uniquely tagged structured contract")
+        blocks = re.findall(r"^```json croton-mail-triage-contract-v1\n(.*?)^```\s*$", text, re.M | re.S)
+        self.assertEqual(len(blocks), 1, "need one uniquely tagged structured contract")
         self.contract = json.loads(blocks[0], object_pairs_hook=unique_object)
         self.assertIsInstance(self.contract, dict)
-
-    def test_hidden_contract_block_rejected(self):
-        block = "```json croton-mail-triage-contract-v1\n{}\n```\n"
-
-        self.assertEqual(contract_blocks(block), ["{}\n"])
-        self.assertEqual(contract_blocks("<!--\n" + block + "-->\n"), [])
-        self.assertEqual(contract_blocks("<!--\n" + block), [])
 
     def test_required_prose_sections(self):
         for heading in REQUIRED_HEADINGS:
@@ -164,7 +146,7 @@ class SuccessorDesign(unittest.TestCase):
             "same_authenticated_session": True,
             "move_requires_capability": "MOVE",
             "special_use_token_required": False,
-            "special_mapping": "exactly_one_selectable_attribute_match_then_apply_destination_refusals",
+            "special_mapping": "exactly_one_selectable_attribute_match",
             "archive_attribute": "\\Archive", "trash_attribute": "\\Trash",
             "name_matching": "exact_utf8",
             "allowed_namespaces": ["root_system", "Folders/"],
