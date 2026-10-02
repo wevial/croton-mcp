@@ -322,9 +322,9 @@ Risks the code already admits and this model records rather than hides:
   plans default-off Seen and move writes behind a local file opt-in. Croton
   cannot verify that a human approved a call, so once enabled, an
   auto-approving or prompt-injected client could triage mail within that
-  allowlist. The Seen and `move_mail` writes are implemented and can then
-  change read state or move mail to a validated folder, including Trash;
-  `archive_mail` and `trash_mail` are not implemented. An `unknown` outcome is
+  allowlist. The Seen and move writes are implemented and can then change
+  read state or move mail to a validated folder, including the attribute-mapped
+  Archive or Trash; nothing is permanently deleted. An `unknown` outcome is
   never replayed, so its UID may or may not have changed until a fresh read
   shows it.
 

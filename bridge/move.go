@@ -18,15 +18,8 @@ var rootSystemAttributes = []string{`\Sent`, `\Drafts`, `\Junk`, `\Archive`, `\T
 var refusedDestinationAttributes = []string{`\Noselect`, `\NonExistent`, `\All`, `\Flagged`}
 
 // Move natively moves each UID of one source mailbox generation to one exact,
-// existing destination. Self-moves and servers without MOVE are refused for
-// every UID before any write. Otherwise it refreshes UIDVALIDITY on the
-// session that will write and fails the whole request before any write when
-// it differs. UIDs are then processed one at a time in input order: each is
-// confirmed present and the destination is revalidated from a fresh ordinary
-// LIST on the same session immediately before its single UID MOVE. A missing
-// UID or a definitive NO refuses that UID only, an unsupported destination
-// refuses every remaining UID, and an uncertain completion stops all further
-// writes and is never replayed. There is no COPY or EXPUNGE fallback.
+// existing destination. Self-moves are refused for every UID before any
+// connection is used; the shared batch rules are those of move.
 func (adapter *Adapter) Move(ctx context.Context, mailbox string, uidValidity uint32, uids []uint32, destination string) ([]TriageResult, error) {
 	if err := validateTriageRequest(mailbox, uidValidity, uids); err != nil {
 		return nil, err
@@ -35,15 +28,68 @@ func (adapter *Adapter) Move(ctx context.Context, mailbox string, uidValidity ui
 		return nil, err
 	}
 
-	results := make([]TriageResult, len(uids))
-	for index, uid := range uids {
-		results[index] = TriageResult{UID: uid, Outcome: OutcomeNotAttempted}
-	}
-
 	if mailboxIdentityMatches(mailbox, destination) {
+		results := pendingResults(uids)
 		refuseRemaining(results, 0)
 		return results, nil
 	}
+
+	return adapter.move(ctx, mailbox, uidValidity, uids, func(listing []listedMailbox) (string, bool) {
+		return resolveMoveDestination(listing, destination)
+	})
+}
+
+// Archive natively moves each UID to the one mailbox the fresh listing marks
+// with the \Archive attribute. See moveToAttribute.
+func (adapter *Adapter) Archive(ctx context.Context, mailbox string, uidValidity uint32, uids []uint32) ([]TriageResult, error) {
+	return adapter.moveToAttribute(ctx, mailbox, uidValidity, uids, `\Archive`)
+}
+
+// Trash natively moves each UID to the one mailbox the fresh listing marks
+// with the \Trash attribute. It never deletes, expunges or empties anything.
+// See moveToAttribute.
+func (adapter *Adapter) Trash(ctx context.Context, mailbox string, uidValidity uint32, uids []uint32) ([]TriageResult, error) {
+	return adapter.moveToAttribute(ctx, mailbox, uidValidity, uids, `\Trash`)
+}
+
+// moveToAttribute maps the destination from protocol attributes alone: no
+// SPECIAL-USE capability or LIST RETURN option is needed, and no English name
+// authorizes a target. The mapping is redone from every fresh listing, so a
+// mailbox that gained, lost or shares the attribute since an earlier listing
+// is resolved again. An unresolved mapping or one equal to the source refuses
+// every remaining UID without a write.
+func (adapter *Adapter) moveToAttribute(ctx context.Context, mailbox string, uidValidity uint32, uids []uint32, attribute string) ([]TriageResult, error) {
+	if err := validateTriageRequest(mailbox, uidValidity, uids); err != nil {
+		return nil, err
+	}
+
+	return adapter.move(ctx, mailbox, uidValidity, uids, func(listing []listedMailbox) (string, bool) {
+		target, ok := resolveAttributeDestination(listing, attribute)
+		if !ok || mailboxIdentityMatches(mailbox, target) {
+			return "", false
+		}
+
+		return target, true
+	})
+}
+
+// destinationResolver picks the exact move target from one fresh listing, or
+// reports that the destination is unsupported.
+type destinationResolver func([]listedMailbox) (string, bool)
+
+// move is the one native-move batch. Servers without MOVE are refused for
+// every UID before any write. Otherwise it refreshes UIDVALIDITY on the
+// session that will write and fails the whole request before any write when
+// it differs. UIDs are then processed one at a time in input order: each is
+// confirmed present and the destination is resolved from a fresh ordinary
+// LIST on the same session immediately before its single UID MOVE. A missing
+// UID or a definitive NO refuses that UID only, an unsupported destination
+// refuses every remaining UID, and an uncertain completion stops all further
+// writes and is never replayed. A batch that stops before any UID could have
+// been written fails as a whole request instead. There is no COPY or EXPUNGE
+// fallback.
+func (adapter *Adapter) move(ctx context.Context, mailbox string, uidValidity uint32, uids []uint32, resolve destinationResolver) ([]TriageResult, error) {
+	results := pendingResults(uids)
 
 	if err := adapter.acquire(ctx); err != nil {
 		return nil, err
@@ -64,26 +110,40 @@ func (adapter *Adapter) Move(ctx context.Context, mailbox string, uidValidity ui
 		return results, nil
 	}
 
+	written := false
 	for index, uid := range uids {
-		result, stop := adapter.moveUID(ctx, session, mover, uid, destination)
+		result, stop := adapter.moveUID(ctx, session, mover, uid, resolve)
 		results[index] = result
 		if result.Code == CodeUnsupported {
 			refuseRemaining(results, index+1)
 			break
 		}
+		if stop && !written && result.Outcome == OutcomeNotAttempted {
+			return nil, errorCode(result.Code)
+		}
 		if stop {
 			break
 		}
+		written = written || result.Outcome == OutcomeApplied
 	}
 
 	return results, nil
 }
 
+func pendingResults(uids []uint32) []TriageResult {
+	results := make([]TriageResult, len(uids))
+	for index, uid := range uids {
+		results[index] = TriageResult{UID: uid, Outcome: OutcomeNotAttempted}
+	}
+
+	return results
+}
+
 // validateMoveDestination rejects destinations that are not one exact,
 // printable UTF-8 mailbox name before any connection is used. Wildcards are
-// refused so the destination can serve as an exact LIST pattern. Malformed
-// modified UTF-7 is a property of wire names, not of decoded input, so it is
-// handled by the exact LIST in prepareMove rather than guessed here.
+// refused so a destination is only ever one exact name. Malformed modified
+// UTF-7 is a property of wire names, not of decoded input, so it is handled by
+// the LIST in prepareMove rather than guessed here.
 func validateMoveDestination(destination string) error {
 	if destination == "" || !utf8.ValidString(destination) {
 		return errorCode(CodeInvalidRequest)
@@ -109,8 +169,8 @@ func refuseRemaining(results []TriageResult, from int) {
 
 // moveUID dispatches one UID MOVE after prepareMove validated it. It reports
 // whether every later UID must be left unattempted.
-func (adapter *Adapter) moveUID(ctx context.Context, session readSession, mover moveSession, uid uint32, destination string) (TriageResult, bool) {
-	target, refusal, stop := adapter.prepareMove(ctx, session, mover, uid, destination)
+func (adapter *Adapter) moveUID(ctx context.Context, session readSession, mover moveSession, uid uint32, resolve destinationResolver) (TriageResult, bool) {
+	target, refusal, stop := adapter.prepareMove(ctx, session, mover, uid, resolve)
 	if target == "" {
 		return refusal, stop
 	}
@@ -144,13 +204,12 @@ func (adapter *Adapter) moveUID(ctx context.Context, session readSession, mover 
 }
 
 // prepareMove confirms one UID is present, then resolves the destination from
-// a fresh ordinary LIST on the dispatch session whose pattern is the exact,
-// wildcard-free destination. The client encodes it as modified UTF-7, so only
-// that one well-formed wire name can be listed; a malformed wire name
-// elsewhere in the account is never listed, decoded or matched. It returns
-// the exact target, or an empty target with the UID's result and whether to
-// stop the batch.
-func (adapter *Adapter) prepareMove(ctx context.Context, session readSession, mover moveSession, uid uint32, destination string) (string, TriageResult, bool) {
+// a fresh ordinary LIST "" "*" on the dispatch session, without selection or
+// RETURN options. Wire names are decoded from modified UTF-7, so a malformed
+// name anywhere in the account fails the listing and nothing is written. It
+// returns the exact target, or an empty target with the UID's result and
+// whether to stop the batch.
+func (adapter *Adapter) prepareMove(ctx context.Context, session readSession, mover moveSession, uid uint32, resolve destinationResolver) (string, TriageResult, bool) {
 	operationContext, cancel := adapter.operationContext(ctx)
 	defer cancel()
 
@@ -162,12 +221,12 @@ func (adapter *Adapter) prepareMove(ctx context.Context, session readSession, mo
 		return "", adapter.abandonUID(operationContext, session, uid, err), true
 	}
 
-	listing, err := mover.ListMailboxes(operationContext, destination, adapter.config.Bounds.MaxFolderResults)
+	listing, err := mover.ListMailboxes(operationContext, "*", adapter.config.Bounds.MaxFolderResults)
 	if err != nil {
 		return "", adapter.abandonUID(operationContext, session, uid, err), true
 	}
 
-	target, ok := resolveMoveDestination(listing, destination)
+	target, ok := resolve(listing)
 	if !ok {
 		return "", TriageResult{UID: uid, Outcome: OutcomeRefused, Code: CodeUnsupported}, false
 	}
@@ -210,6 +269,43 @@ func resolveMoveDestination(listing []listedMailbox, destination string) (string
 	default:
 		return "", false
 	}
+}
+
+// resolveAttributeDestination maps attribute to the one listed mailbox that
+// carries it. Several holders, selectable or not, are ambiguous. The holder
+// must then pass every explicit destination rule, so Labels/, virtual views
+// and nonselectable mailboxes are refused, and it must not be a Bridge
+// aggregate view even when that view's \All or \Flagged attribute is missing.
+// A name only ever narrows the mapping; it never authorizes one.
+func resolveAttributeDestination(listing []listedMailbox, attribute string) (string, bool) {
+	var holder *listedMailbox
+	for index := range listing {
+		if !hasAttribute(listing[index].Attributes, []string{attribute}) {
+			continue
+		}
+		if holder != nil {
+			return "", false
+		}
+		holder = &listing[index]
+	}
+	if holder == nil || isAggregateView(holder.Name) {
+		return "", false
+	}
+
+	return resolveMoveDestination(listing, holder.Name)
+}
+
+// aggregateViews are the Bridge mailboxes that show messages stored elsewhere.
+var aggregateViews = []string{"All Mail", "Starred"}
+
+func isAggregateView(name string) bool {
+	for _, view := range aggregateViews {
+		if strings.EqualFold(name, view) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func isHierarchyRoot(mailbox listedMailbox) bool {
