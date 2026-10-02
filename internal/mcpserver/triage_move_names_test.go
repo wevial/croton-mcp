@@ -29,17 +29,19 @@ func TestTriageMoveExactFolderWithLiteralAmpersand(t *testing.T) {
 	}
 }
 
-// A malformed modified UTF-7 wire name elsewhere in the account is never
-// listed by the exact destination LIST, so it cannot block a valid move.
-func TestTriageMoveIgnoresUnrelatedMalformedWireName(t *testing.T) {
+// Destinations are resolved from a full ordinary LIST, which decodes every
+// wire name. A malformed modified UTF-7 name anywhere in the account fails
+// that listing before any write, so the whole request fails closed.
+func TestTriageMoveFailsClosedOnMalformedWireName(t *testing.T) {
 	options := triageSeeds()
 	options.Mailboxes = append(options.Mailboxes, testkit.MailboxSeed{Name: "Folders/&A-", UIDValidity: 8100})
 	h := triageStart(t, options, map[string]any{"enabled": true})
 	h.requireTools(t, "move_mail")
 	before := h.fixture.Snapshot()
 
-	uids := []uint32{101}
-	triageResults(t, h.call(t, "move_mail", triageMoveArgs(uids, "Folders/Existing")), uids, []string{"applied"}, "")
-	triageMoved(t, before, h.fixture.Snapshot(), "INBOX", "Folders/Existing", uids)
-	triageMoveWire(t, h, uids, "Folders/Existing")
+	result := h.call(t, "move_mail", triageMoveArgs([]uint32{101}, "Folders/Existing"))
+	if result == nil || !result.IsError {
+		t.Fatal("move after an undecodable listing did not fail the request")
+	}
+	triageNoWrites(t, h, before)
 }

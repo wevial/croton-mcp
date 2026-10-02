@@ -71,7 +71,7 @@ func (auditor *Auditor) writeEvent(event any) {
 
 func sanitizeToolName(tool string) string {
 	switch tool {
-	case "list_folders", "search_mail", "get_message", "get_thread", "list_attachments", "select_digest_candidates", "mark_read", "mark_unread", "move_mail":
+	case "list_folders", "search_mail", "get_message", "get_thread", "list_attachments", "select_digest_candidates", "mark_read", "mark_unread", "move_mail", "archive_mail", "trash_mail":
 		return tool
 	default:
 		return "unknown_tool"

@@ -4,7 +4,7 @@ Croton is a privacy-first, local stdio [Model Context Protocol](https://modelcon
 
 ## Status
 
-Early implementation, read-only by default. The executable supports MCP `2026-07-28` by default and the legacy `2025-11-25` initialization flow for older clients. Its local Bridge adapter supports bounded folder, status, search, metadata, and body reads over verified loopback TLS. Unless the configuration file sets `mutations.enabled` to true, it exposes no mail mutation. With that opt-in, the `mark_read` and `mark_unread` tools from the [Mail triage design](docs/design/0005-mail-triage.md) change only the Seen flag, one UID per `UID STORE`, and `move_mail` moves messages to one exact, validated existing folder, one UID per native `UID MOVE`; `archive_mail` and `trash_mail` are not implemented, and no live account write has been exercised.
+Early implementation, read-only by default. The executable supports MCP `2026-07-28` by default and the legacy `2025-11-25` initialization flow for older clients. Its local Bridge adapter supports bounded folder, status, search, metadata, and body reads over verified loopback TLS. Unless the configuration file sets `mutations.enabled` to true, it exposes no mail mutation. With that opt-in, the `mark_read` and `mark_unread` tools from the [Mail triage design](docs/design/0005-mail-triage.md) change only the Seen flag, one UID per `UID STORE`, `move_mail` moves messages to one exact, validated existing folder, one UID per native `UID MOVE`, and `archive_mail` and `trash_mail` do the same into the one selectable mailbox the server marks `\Archive` or `\Trash`, never deleting anything; no live account write has been exercised.
 
 ## Croton Drive MCP (unofficial)
 

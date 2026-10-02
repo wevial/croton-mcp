@@ -17,10 +17,11 @@ The historical [proposed Mail mutation boundary](design/0002-mail-mutation.md)
 is superseded by the [Mail triage design](design/0005-mail-triage.md). The
 successor plans five default-off triage tools behind a local
 `mutations.enabled` file opt-in, limited to Seen `UID STORE` and native
-`UID MOVE`, with approval owned by the trusted client. The Seen tools,
-`mark_read` and `mark_unread`, and `move_mail` are implemented;
-`archive_mail` and `trash_mail` are not. With the opt-in absent or false, the
-default, the catalog is the six read tools below and Mail remains read-only.
+`UID MOVE`, with approval owned by the trusted client. All five are
+implemented: the Seen tools `mark_read` and `mark_unread`, and the move tools
+`move_mail`, `archive_mail` and `trash_mail`. With the opt-in absent or false,
+the default, the catalog is the six read tools below and Mail remains
+read-only.
 
 ## Protocol
 
@@ -68,7 +69,7 @@ user and must not grant group or world permissions (normally mode `0600`):
 
 The optional `mutations` object accepts only the boolean `enabled`. Absent or
 false, the default, registers only the six read tools; true also registers
-`mark_read`, `mark_unread` and `move_mail`. Any other type, including null, a string or a
+`mark_read`, `mark_unread`, `move_mail`, `archive_mail` and `trash_mail`. Any other type, including null, a string or a
 number, and any unknown key inside `mutations` fail startup with the static
 invalid-configuration error before any Bridge connection. Setting it is a
 local operator opt-in, not approval of any call. The example above and the
@@ -174,10 +175,10 @@ against a fresh UIDVALIDITY generation on every use.
 
 ### Triage tools
 
-When `mutations.enabled` is true, three more tools are registered with
+When `mutations.enabled` is true, five more tools are registered with
 `readOnlyHint: false` and `openWorldHint: false`. The Seen tools also publish
-`destructiveHint: false` and `idempotentHint: true`; `move_mail` publishes
-`destructiveHint: true` and `idempotentHint: false`, because it removes
+`destructiveHint: false` and `idempotentHint: true`; the move tools publish
+`destructiveHint: true` and `idempotentHint: false`, because they remove
 messages from their source. Annotations describe the tools; they neither
 prompt for nor prove approval, which belongs to the trusted client under the
 [Mail triage design](design/0005-mail-triage.md).
@@ -187,11 +188,13 @@ prompt for nor prove approval, which belongs to the trusted client under the
 | `mark_read` | Add `\Seen` to the given UIDs of one mailbox generation. |
 | `mark_unread` | Remove `\Seen` from the given UIDs of one mailbox generation. |
 | `move_mail` | Natively move the given UIDs of one mailbox generation to one exact existing destination. |
+| `archive_mail` | Natively move the given UIDs of one mailbox generation to the one selectable `\Archive` mailbox. |
+| `trash_mail` | Natively move the given UIDs of one mailbox generation to the one selectable `\Trash` mailbox. Nothing is deleted. |
 
-All three take exactly `mailbox`, `uidvalidity` and `uids`: a positive 32-bit
+All five take exactly `mailbox`, `uidvalidity` and `uids`: a positive 32-bit
 generation and 1 to 50 distinct positive 32-bit UIDs. `move_mail` also takes
-an exact `destination` mailbox name. There is no approval, ordinal or
-message-id argument. A missing, null, zero, negative, fractional,
+an exact `destination` mailbox name; `archive_mail` and `trash_mail` take no
+destination. There is no approval, ordinal or message-id argument. A missing, null, zero, negative, fractional,
 out-of-range, duplicate or unknown input fails the whole request with
 `invalid_argument` before any IMAP command. So does a `destination` that is
 empty, longer than 512 bytes, not UTF-8, or contains a control character, `*`
@@ -208,11 +211,11 @@ No other flag, STORE form, MOVE, COPY or EXPUNGE is sent, and the read tools
 keep their `BODY.PEEK` fetches.
 
 `move_mail` uses the same selection and presence check, then resolves its
-destination from a fresh ordinary `LIST` on that same session before every
-UID, and sends one native `UID MOVE <uid> <destination>`. The `LIST` pattern
-is the exact destination, modified UTF-7 encoded, so it lists only that one
-well-formed wire name; a malformed wire name elsewhere in the account is never
-listed or matched. The
+destination from a fresh ordinary `LIST "" "*"` on that same session before
+every UID, without selection or `RETURN` options, and sends one native
+`UID MOVE <uid> <destination>`. Every listed wire name is decoded from
+modified UTF-7, so a malformed wire name anywhere in the account fails the
+listing; if nothing has been moved yet the request fails with no write. The
 destination must match exactly one listed name, INBOX case-insensitively and
 every other name exactly, and be selectable: not `\Noselect` or
 `\NonExistent`, and not a `\All` or `\Flagged` virtual view. It must then be
@@ -223,13 +226,26 @@ mailbox are refused. A destination equal to the source, or a server that does
 not advertise `MOVE`, refuses every UID before any LIST or write. There is no
 COPY, STORE or EXPUNGE fallback.
 
+`archive_mail` and `trash_mail` follow `move_mail` exactly, except that each
+fresh listing maps the destination from protocol attributes: the one listed
+mailbox carrying `\Archive` or `\Trash` respectively. Neither the
+`SPECIAL-USE` capability nor `LIST RETURN (SPECIAL-USE)` is needed, and a
+name such as `Archive` or `Trash` without the attribute never maps. No holder,
+several holders, or a holder that fails any `move_mail` destination rule above,
+including `Labels/`, virtual views and nonselectable mailboxes, is
+`unsupported`. So is a holder named `All Mail` or `Starred`, Bridge's
+aggregate views, even without `\All` or `\Flagged`. A holder equal to the
+source mailbox is refused. Because the mapping is redone before every UID, a
+mailbox that gained, lost or now shares the attribute is resolved afresh.
+`trash_mail` only moves; it never deletes, expunges or empties Trash.
+
 The result is `{"results": [...]}` with one entry per input UID in input
 order, each with `uid`, `outcome` and an optional `code` from the error
 vocabulary below:
 
 - `applied`: the STORE or MOVE completed with OK.
 - `refused`: the UID is not present (`not_found`), or the server answered NO
-  or BAD (`unavailable`). Later UIDs continue. For `move_mail`, an
+  or BAD (`unavailable`). Later UIDs continue. For the move tools, an
   unsupported destination or a missing `MOVE` capability is `unsupported`
   and refuses that UID and every later one; a NO after validation, for
   example because the destination disappeared, refuses only that UID.
@@ -242,8 +258,8 @@ vocabulary below:
 
 Each IMAP step has its own `imap.commandTimeoutMs` deadline, so a batch is
 bounded. To reconcile an `unknown`, run a fresh read such as `search_mail`,
-then make a new, separately approved call. `TestStoryTriageSeen` and
-`TestStoryTriageMove` witness these boundaries against the built executable
+then make a new, separately approved call. `TestStoryTriageSeen`,
+`TestStoryTriageMove` and `TestStoryTriageSpecial` witness these boundaries against the built executable
 and the synthetic stateful fixture; no live account write has been exercised.
 
 ### Mail thread membership

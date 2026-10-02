@@ -13,6 +13,8 @@ import (
 type Triage interface {
 	SetSeen(ctx context.Context, mailbox string, uidValidity uint32, uids []uint32, seen bool) ([]bridge.TriageResult, error)
 	Move(ctx context.Context, mailbox string, uidValidity uint32, uids []uint32, destination string) ([]bridge.TriageResult, error)
+	Archive(ctx context.Context, mailbox string, uidValidity uint32, uids []uint32) ([]bridge.TriageResult, error)
+	Trash(ctx context.Context, mailbox string, uidValidity uint32, uids []uint32) ([]bridge.TriageResult, error)
 }
 
 // uidSchema advertises a positive 32-bit IMAP UID or UIDVALIDITY. It is a
@@ -81,6 +83,24 @@ func triageToolDefinitions() []triageTool {
 			},
 			destructive: true,
 		},
+		{
+			toolDefinition: toolDefinition{
+				name:        "archive_mail",
+				description: "Natively move the given UIDs of one mailbox generation to the one selectable mailbox the server marks with the \\Archive attribute. Call only for an exact payload the user approved.",
+				schema:      triageSchema(false),
+				run:         runArchiveMail,
+			},
+			destructive: true,
+		},
+		{
+			toolDefinition: toolDefinition{
+				name:        "trash_mail",
+				description: "Natively move the given UIDs of one mailbox generation to the one selectable mailbox the server marks with the \\Trash attribute. Never deletes permanently. Call only for an exact payload the user approved.",
+				schema:      triageSchema(false),
+				run:         runTrashMail,
+			},
+			destructive: true,
+		},
 	}
 }
 
@@ -137,6 +157,37 @@ func runMoveMail(ctx context.Context, deps Options, arguments json.RawMessage) (
 	}
 
 	outcomes, err := deps.Triage.Move(ctx, input.Mailbox, input.UIDValidity, input.UIDs, input.Destination)
+	if err != nil {
+		return nil, mapAdapterError(err)
+	}
+
+	return triageResults(input.UIDs, outcomes)
+}
+
+func runArchiveMail(ctx context.Context, deps Options, arguments json.RawMessage) (any, string) {
+	return runAttributeMove(ctx, deps, arguments, false)
+}
+
+func runTrashMail(ctx context.Context, deps Options, arguments json.RawMessage) (any, string) {
+	return runAttributeMove(ctx, deps, arguments, true)
+}
+
+// runAttributeMove serves archive_mail and trash_mail. The destination is
+// mapped by the adapter from protocol attributes; callers cannot name one.
+func runAttributeMove(ctx context.Context, deps Options, arguments json.RawMessage, trash bool) (any, string) {
+	var input triageInput
+	if !decodeArguments(arguments, &input) || !validTriageInput(input) {
+		return nil, errInvalidArgument
+	}
+	if deps.Triage == nil {
+		return nil, errUnavailable
+	}
+
+	move := deps.Triage.Archive
+	if trash {
+		move = deps.Triage.Trash
+	}
+	outcomes, err := move(ctx, input.Mailbox, input.UIDValidity, input.UIDs)
 	if err != nil {
 		return nil, mapAdapterError(err)
 	}
