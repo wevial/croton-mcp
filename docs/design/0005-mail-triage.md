@@ -66,9 +66,9 @@ Current shipped status: the configuration schema accepts the
 `mutations.enabled` boolean and rejects every other type and any unknown key
 inside `mutations`. Absent or false, the catalog is the six read tools, all
 with `readOnlyHint: true`, and the `bridge` adapter sends no mutating IMAP
-command. True registers only `mark_read` and `mark_unread` so far; the three
-move tools are not implemented. No installed configuration was changed and no
-live enablement was performed.
+command. True registers only `mark_read`, `mark_unread` and `move_mail` so
+far; `archive_mail` and `trash_mail` are not implemented. No installed
+configuration was changed and no live enablement was performed.
 
 ## Tool and result contract
 
@@ -358,9 +358,9 @@ never attempted and nothing is replayed.
 
 Partially implemented. It supersedes the historical
 [proposed Mail mutation boundary](0002-mail-mutation.md), whose body is
-preserved unchanged. The Seen tools `mark_read` and `mark_unread` are
-implemented behind the default-off `mutations.enabled` opt-in and witnessed by
-`TestStoryTriageSeen` against synthetic state only. `move_mail`,
-`archive_mail` and `trash_mail` are not implemented. Without the opt-in Mail
-remains read-only. Live acceptance and any live enablement each require a
-separate decision.
+preserved unchanged. The Seen tools `mark_read` and `mark_unread` and the
+native-move tool `move_mail` are implemented behind the default-off
+`mutations.enabled` opt-in and witnessed by `TestStoryTriageSeen` and
+`TestStoryTriageMove` against synthetic state only. `archive_mail` and
+`trash_mail` are not implemented. Without the opt-in Mail remains read-only.
+Live acceptance and any live enablement each require a separate decision.

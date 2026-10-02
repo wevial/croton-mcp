@@ -35,6 +35,7 @@ const (
 	errTimedOut        = "timed_out"
 	errCanceled        = "canceled"
 	errUnavailable     = "unavailable"
+	errUnsupported     = "unsupported"
 	errInternal        = "internal"
 )
 
@@ -133,17 +134,18 @@ func registerTools(server *mcp.Server, options Options) {
 	// Annotations describe the tools to clients; they neither prompt for nor
 	// prove human approval.
 	for _, definition := range triageToolDefinitions() {
+		destructive := definition.destructive
 		server.AddTool(&mcp.Tool{
 			Name:        definition.name,
 			Description: definition.description,
 			InputSchema: definition.schema,
 			Annotations: &mcp.ToolAnnotations{
 				ReadOnlyHint:    false,
-				DestructiveHint: &falseHint,
-				IdempotentHint:  true,
+				DestructiveHint: &destructive,
+				IdempotentHint:  definition.idempotent,
 				OpenWorldHint:   &falseHint,
 			},
-		}, makeHandler(definition, options))
+		}, makeHandler(definition.toolDefinition, options))
 	}
 }
 

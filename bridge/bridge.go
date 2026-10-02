@@ -8,8 +8,9 @@ import (
 
 type sessionFactory func(context.Context) (readSession, error)
 
-// Adapter serializes a single authenticated IMAP session. Its only write is
-// the opt-in, Seen-only SetSeen; every other operation is read-only.
+// Adapter serializes a single authenticated IMAP session. Its only writes are
+// the opt-in, Seen-only SetSeen and native Move; every other operation is
+// read-only.
 type Adapter struct {
 	config  ValidatedConfig
 	factory sessionFactory

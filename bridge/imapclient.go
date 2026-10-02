@@ -42,12 +42,26 @@ type readSession interface {
 	Abort() error
 }
 
-// seenSession is the only mutating surface: a read-write selection of the
-// source mailbox and a single-UID, Seen-only incremental STORE. It is kept
-// apart from readSession so the read tools can never reach it.
+// seenSession and moveSession are the only mutating surfaces: a read-write
+// selection of the source mailbox, a single-UID Seen-only incremental STORE
+// and a single-UID native MOVE. They are kept apart from readSession so the
+// read tools can never reach them.
 type seenSession interface {
 	SelectSource(context.Context, string) (mailboxSnapshot, error)
 	StoreSeen(context.Context, uint32, bool) error
+}
+
+type moveSession interface {
+	SupportsMove() bool
+	ListMailboxes(context.Context, int) ([]listedMailbox, error)
+	MoveUID(context.Context, uint32, string) error
+}
+
+// listedMailbox is one ordinary LIST entry with its protocol attributes.
+type listedMailbox struct {
+	Name       string
+	Delimiter  rune
+	Attributes []string
 }
 
 type mailboxSnapshot struct {
@@ -129,7 +143,23 @@ func waitForCapabilities(client *imapclient.Client) error {
 }
 
 func (session *imapSession) List(ctx context.Context, limit int) ([]Folder, error) {
-	var folders []Folder
+	mailboxes, err := session.ListMailboxes(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	folders := make([]Folder, 0, len(mailboxes))
+	for _, mailbox := range mailboxes {
+		folders = append(folders, Folder{Name: mailbox.Name, Delimiter: string(mailbox.Delimiter)})
+	}
+
+	return folders, nil
+}
+
+// ListMailboxes sends one ordinary LIST "" "*" without RETURN options and
+// keeps each entry's attributes.
+func (session *imapSession) ListMailboxes(ctx context.Context, limit int) ([]listedMailbox, error) {
+	var mailboxes []listedMailbox
 	err := session.withContext(ctx, func() error {
 		exceeded, listErr := session.withInputBudget(maxListResponseBytes, func() error {
 			command := session.client.List("", "*", nil)
@@ -138,11 +168,16 @@ func (session *imapSession) List(ctx context.Context, limit int) ([]Folder, erro
 				if data == nil {
 					break
 				}
-				if len(folders) == limit {
+				if len(mailboxes) == limit {
 					_ = session.conn.Close()
 					return errorCode(CodeBoundsExceeded)
 				}
-				folders = append(folders, Folder{Name: data.Mailbox, Delimiter: string(data.Delim)})
+
+				attributes := make([]string, 0, len(data.Attrs))
+				for _, attribute := range data.Attrs {
+					attributes = append(attributes, string(attribute))
+				}
+				mailboxes = append(mailboxes, listedMailbox{Name: data.Mailbox, Delimiter: data.Delim, Attributes: attributes})
 			}
 			return command.Close()
 		})
@@ -155,7 +190,7 @@ func (session *imapSession) List(ctx context.Context, limit int) ([]Folder, erro
 		return nil, err
 	}
 
-	return folders, nil
+	return mailboxes, nil
 }
 
 func (session *imapSession) Status(ctx context.Context, mailbox string) (MailboxStatus, error) {
@@ -247,6 +282,30 @@ func (session *imapSession) StoreSeen(ctx context.Context, uid uint32, seen bool
 
 	return session.withBoundedInput(ctx, maxControlResponseBytes, func() error {
 		return session.client.Store(imap.UIDSetNum(imap.UID(uid)), store, nil).Close()
+	})
+}
+
+// SupportsMove reports whether the authenticated server advertises native
+// MOVE, directly or through IMAP4rev2.
+func (session *imapSession) SupportsMove() bool {
+	return session.client.Caps().Has(imap.CapMove)
+}
+
+// MoveUID sends exactly one native UID MOVE of a single UID. go-imap would
+// silently substitute COPY, STORE and EXPUNGE when MOVE is not advertised, so
+// the capability is checked immediately before and the command is refused
+// without dispatch when it is absent.
+func (session *imapSession) MoveUID(ctx context.Context, uid uint32, destination string) error {
+	if uid == 0 || destination == "" {
+		return errorCode(CodeIMAPProtocol)
+	}
+	if !session.SupportsMove() {
+		return errorCode(CodeUnsupported)
+	}
+
+	return session.withBoundedInput(ctx, maxControlResponseBytes, func() error {
+		_, err := session.client.Move(imap.UIDSetNum(imap.UID(uid)), destination).Wait()
+		return err
 	})
 }
 

@@ -71,7 +71,7 @@ func (auditor *Auditor) writeEvent(event any) {
 
 func sanitizeToolName(tool string) string {
 	switch tool {
-	case "list_folders", "search_mail", "get_message", "get_thread", "list_attachments", "select_digest_candidates", "mark_read", "mark_unread":
+	case "list_folders", "search_mail", "get_message", "get_thread", "list_attachments", "select_digest_candidates", "mark_read", "mark_unread", "move_mail":
 		return tool
 	default:
 		return "unknown_tool"
@@ -88,7 +88,7 @@ func sanitizeOutcome(outcome string) string {
 
 func sanitizeErrorCode(code string) string {
 	switch code {
-	case "", errInvalidArgument, errNotFound, errStaleID, errBoundsExceeded, errTimedOut, errCanceled, errUnavailable, errInternal:
+	case "", errInvalidArgument, errNotFound, errStaleID, errBoundsExceeded, errTimedOut, errCanceled, errUnavailable, errUnsupported, errInternal:
 		return code
 	default:
 		return errInternal

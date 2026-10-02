@@ -85,9 +85,11 @@ byte and time budget, and `bridge/config.go` documents the anchor-versus-pin
 choice. With the default configuration the adapter in `bridge` sends no
 mutating IMAP command, so nothing sent through it can alter the mailbox. The
 default-off triage writes in `docs/design/0005-mail-triage.md` are limited to
-Seen `UID STORE` and native `UID MOVE` over this same boundary. Only the Seen
-write is implemented: `bridge/seen.go` sends one Seen-only `UID STORE` per UID,
-and only when `mutations.enabled` is true. The move write is not implemented.
+Seen `UID STORE` and native `UID MOVE` over this same boundary, and are sent
+only when `mutations.enabled` is true: `bridge/seen.go` sends one Seen-only
+`UID STORE` per UID, and `bridge/move.go` sends one native `UID MOVE` per UID
+to a destination revalidated from a fresh `LIST` on the same session. Without
+the `MOVE` capability no move is sent; there is no COPY or EXPUNGE fallback.
 
 **How it fails closed.** A non-loopback endpoint, a hostname, a configuration
 with neither anchor nor pin, an unparseable anchor, a leaf that does not match,
@@ -241,7 +243,7 @@ either executable, over standard input and standard output only. Neither
 executable listens on a socket.
 
 **What enforces it.** Both servers register only read-only tools by default
-(Mail adds its Seen triage tools only when `mutations.enabled` is true) and install an
+(Mail adds its Seen and move triage tools only when `mutations.enabled` is true) and install an
 allowlist middleware, `internal/mcpserver/tools.go` for Mail and
 `internal/drivemcp/tools.go` for Drive, that rejects every method outside a
 fixed set. Tool arguments are capped at 24 KiB and decoded strictly
@@ -316,9 +318,11 @@ Risks the code already admits and this model records rather than hides:
   plans default-off Seen and move writes behind a local file opt-in. Croton
   cannot verify that a human approved a call, so once enabled, an
   auto-approving or prompt-injected client could triage mail within that
-  allowlist. The Seen writes are implemented and can then change read state;
-  the move writes are not implemented. An `unknown` outcome is never
-  replayed, so its UID may or may not have changed until a fresh read shows it.
+  allowlist. The Seen and `move_mail` writes are implemented and can then
+  change read state or move mail to a validated folder, including Trash;
+  `archive_mail` and `trash_mail` are not implemented. An `unknown` outcome is
+  never replayed, so its UID may or may not have changed until a fresh read
+  shows it.
 
 ## Out of scope
 

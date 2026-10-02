@@ -17,10 +17,10 @@ The historical [proposed Mail mutation boundary](design/0002-mail-mutation.md)
 is superseded by the [Mail triage design](design/0005-mail-triage.md). The
 successor plans five default-off triage tools behind a local
 `mutations.enabled` file opt-in, limited to Seen `UID STORE` and native
-`UID MOVE`, with approval owned by the trusted client. Only the Seen tools,
-`mark_read` and `mark_unread`, are implemented; the move tools are not. With
-the opt-in absent or false, the default, the catalog is the six read tools
-below and Mail remains read-only.
+`UID MOVE`, with approval owned by the trusted client. The Seen tools,
+`mark_read` and `mark_unread`, and `move_mail` are implemented;
+`archive_mail` and `trash_mail` are not. With the opt-in absent or false, the
+default, the catalog is the six read tools below and Mail remains read-only.
 
 ## Protocol
 
@@ -68,7 +68,7 @@ user and must not grant group or world permissions (normally mode `0600`):
 
 The optional `mutations` object accepts only the boolean `enabled`. Absent or
 false, the default, registers only the six read tools; true also registers
-`mark_read` and `mark_unread`. Any other type, including null, a string or a
+`mark_read`, `mark_unread` and `move_mail`. Any other type, including null, a string or a
 number, and any unknown key inside `mutations` fail startup with the static
 invalid-configuration error before any Bridge connection. Setting it is a
 local operator opt-in, not approval of any call. The example above and the
@@ -174,22 +174,28 @@ against a fresh UIDVALIDITY generation on every use.
 
 ### Triage tools
 
-When `mutations.enabled` is true, two more tools are registered with
-`readOnlyHint: false`, `destructiveHint: false`, `idempotentHint: true` and
-`openWorldHint: false`. Annotations describe the tools; they neither prompt
-for nor prove approval, which belongs to the trusted client under the
+When `mutations.enabled` is true, three more tools are registered with
+`readOnlyHint: false` and `openWorldHint: false`. The Seen tools also publish
+`destructiveHint: false` and `idempotentHint: true`; `move_mail` publishes
+`destructiveHint: true` and `idempotentHint: false`, because it removes
+messages from their source. Annotations describe the tools; they neither
+prompt for nor prove approval, which belongs to the trusted client under the
 [Mail triage design](design/0005-mail-triage.md).
 
 | Tool | Purpose |
 | ---- | ------- |
 | `mark_read` | Add `\Seen` to the given UIDs of one mailbox generation. |
 | `mark_unread` | Remove `\Seen` from the given UIDs of one mailbox generation. |
+| `move_mail` | Natively move the given UIDs of one mailbox generation to one exact existing destination. |
 
-Both take exactly `mailbox`, `uidvalidity` and `uids`: a positive 32-bit
-generation and 1 to 50 distinct positive 32-bit UIDs. There is no approval,
-ordinal or message-id argument. A missing, null, zero, negative, fractional,
+All three take exactly `mailbox`, `uidvalidity` and `uids`: a positive 32-bit
+generation and 1 to 50 distinct positive 32-bit UIDs. `move_mail` also takes
+an exact `destination` mailbox name. There is no approval, ordinal or
+message-id argument. A missing, null, zero, negative, fractional,
 out-of-range, duplicate or unknown input fails the whole request with
-`invalid_argument` before any IMAP command.
+`invalid_argument` before any IMAP command. So does a `destination` that is
+empty, longer than 512 bytes, not UTF-8, contains a control character, `*` or
+`%`, or still contains a modified UTF-7 shift sequence such as `&A-`.
 
 The server selects the source mailbox read-write on its one authenticated
 session and compares the fresh UIDVALIDITY with `uidvalidity`. A mismatch
@@ -200,13 +206,29 @@ input order: `UID SEARCH` confirms the UID is present, and only then one
 No other flag, STORE form, MOVE, COPY or EXPUNGE is sent, and the read tools
 keep their `BODY.PEEK` fetches.
 
+`move_mail` uses the same selection and presence check, then resolves its
+destination from a fresh ordinary `LIST "" "*"` on that same session before
+every UID, and sends one native `UID MOVE <uid> <destination>`. The
+destination must match exactly one listed name, INBOX case-insensitively and
+every other name exactly, and be selectable: not `\Noselect` or
+`\NonExistent`, and not a `\All` or `\Flagged` virtual view. It must then be
+INBOX, an entry beneath `Folders/`, or a hierarchy-root mailbox carrying
+`\Sent`, `\Drafts`, `\Junk`, `\Archive` or `\Trash`. A name such as
+`Archive` without the attribute, anything under `Labels/` and every other
+mailbox are refused. A destination equal to the source, or a server that does
+not advertise `MOVE`, refuses every UID before any LIST or write. There is no
+COPY, STORE or EXPUNGE fallback.
+
 The result is `{"results": [...]}` with one entry per input UID in input
 order, each with `uid`, `outcome` and an optional `code` from the error
 vocabulary below:
 
-- `applied`: the STORE completed with OK.
+- `applied`: the STORE or MOVE completed with OK.
 - `refused`: the UID is not present (`not_found`), or the server answered NO
-  or BAD (`unavailable`). Later UIDs continue.
+  or BAD (`unavailable`). Later UIDs continue. For `move_mail`, an
+  unsupported destination or a missing `MOVE` capability is `unsupported`
+  and refuses that UID and every later one; a NO after validation, for
+  example because the destination disappeared, refuses only that UID.
 - `unknown`: the connection dropped or the command deadline expired after
   dispatch (`unavailable`, `timed_out` or `canceled`). The session is
   discarded, nothing is retried or replayed, and every later UID is
@@ -216,9 +238,9 @@ vocabulary below:
 
 Each IMAP step has its own `imap.commandTimeoutMs` deadline, so a batch is
 bounded. To reconcile an `unknown`, run a fresh read such as `search_mail`,
-then make a new, separately approved call. `TestStoryTriageSeen` witnesses
-these boundaries against the built executable and the synthetic stateful
-fixture; no live account write has been exercised.
+then make a new, separately approved call. `TestStoryTriageSeen` and
+`TestStoryTriageMove` witness these boundaries against the built executable
+and the synthetic stateful fixture; no live account write has been exercised.
 
 ### Mail thread membership
 
@@ -249,9 +271,9 @@ never byte-sliced.
 
 Adapter failures map to a stable, secret-free vocabulary:
 `invalid_argument`, `not_found`, `stale_id`, `bounds_exceeded`, `timed_out`,
-`canceled`, `unavailable`, `internal`. Unknown or wrapped errors collapse to
-`internal`; no credentials, endpoints, mailbox data, or stack details can
-reach the protocol stream.
+`canceled`, `unavailable`, `unsupported`, `internal`. Unknown or wrapped
+errors collapse to `internal`; no credentials, endpoints, mailbox data, or
+stack details can reach the protocol stream.
 
 ## Audit
 

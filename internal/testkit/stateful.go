@@ -245,6 +245,11 @@ func (mailbox *statefulMailbox) snapshot() MailboxState {
 		UIDValidity: mailbox.uidValidity,
 		UIDNext:     mailbox.uidNext,
 	}
+	// A mailbox emptied by MOVE snapshots as an empty slice, as a copy with
+	// its messages deleted would; one seeded without messages stays nil.
+	if mailbox.messages != nil {
+		state.Messages = make([]MessageState, 0, len(mailbox.messages))
+	}
 	for _, message := range mailbox.messages {
 		state.Messages = append(state.Messages, MessageState{
 			UID:   message.uid,
