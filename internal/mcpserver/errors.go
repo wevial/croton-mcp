@@ -11,6 +11,8 @@ func mapAdapterError(err error) string {
 		return errNotFound
 	case bridge.CodeInvalidRequest:
 		return errInvalidArgument
+	case bridge.CodeUnsupported:
+		return errUnsupported
 	case bridge.CodeStaleMessageID:
 		return errStaleID
 	case bridge.CodeBoundsExceeded:

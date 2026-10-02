@@ -1,5 +1,5 @@
 // Command croton-mcp serves Croton's six read-only mail tools over stdio, plus
-// the Seen triage tools when the configuration file opts in.
+// the Seen and move triage tools when the configuration file opts in.
 package main
 
 import (

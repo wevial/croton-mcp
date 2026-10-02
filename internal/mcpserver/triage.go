@@ -7,10 +7,12 @@ import (
 	"github.com/wevial/croton-mcp/bridge"
 )
 
-// Triage is the opt-in Seen mutation surface. *bridge.Adapter satisfies it.
-// The tools that use it are registered only when Options.Triage is non-nil.
+// Triage is the opt-in Seen and native-move mutation surface. *bridge.Adapter
+// satisfies it. The tools that use it are registered only when Options.Triage
+// is non-nil.
 type Triage interface {
 	SetSeen(ctx context.Context, mailbox string, uidValidity uint32, uids []uint32, seen bool) ([]bridge.TriageResult, error)
+	Move(ctx context.Context, mailbox string, uidValidity uint32, uids []uint32, destination string) ([]bridge.TriageResult, error)
 }
 
 // uidSchema advertises a positive 32-bit IMAP UID or UIDVALIDITY. It is a
@@ -25,6 +27,14 @@ type triageInput struct {
 	UIDs        []uint32 `json:"uids"`
 }
 
+// triageMoveInput adds the one exact destination an approval names.
+type triageMoveInput struct {
+	Mailbox     string   `json:"mailbox"`
+	UIDValidity uint32   `json:"uidvalidity"`
+	UIDs        []uint32 `json:"uids"`
+	Destination string   `json:"destination"`
+}
+
 type triageResultRow struct {
 	UID     uint32 `json:"uid"`
 	Outcome string `json:"outcome"`
@@ -35,29 +45,58 @@ type triageResult struct {
 	Results []triageResultRow `json:"results"`
 }
 
-func triageToolDefinitions() []toolDefinition {
-	return []toolDefinition{
+// triageTool is a mutation tool definition with its client-facing hints.
+type triageTool struct {
+	toolDefinition
+	destructive bool
+	idempotent  bool
+}
+
+func triageToolDefinitions() []triageTool {
+	return []triageTool{
 		{
-			name:        "mark_read",
-			description: "Set the Seen flag on the given UIDs of one mailbox generation. Call only for an exact payload the user approved.",
-			schema:      triageSchema(),
-			run:         runMarkRead,
+			toolDefinition: toolDefinition{
+				name:        "mark_read",
+				description: "Set the Seen flag on the given UIDs of one mailbox generation. Call only for an exact payload the user approved.",
+				schema:      triageSchema(false),
+				run:         runMarkRead,
+			},
+			idempotent: true,
 		},
 		{
-			name:        "mark_unread",
-			description: "Clear the Seen flag on the given UIDs of one mailbox generation. Call only for an exact payload the user approved.",
-			schema:      triageSchema(),
-			run:         runMarkUnread,
+			toolDefinition: toolDefinition{
+				name:        "mark_unread",
+				description: "Clear the Seen flag on the given UIDs of one mailbox generation. Call only for an exact payload the user approved.",
+				schema:      triageSchema(false),
+				run:         runMarkUnread,
+			},
+			idempotent: true,
+		},
+		{
+			toolDefinition: toolDefinition{
+				name:        "move_mail",
+				description: "Natively move the given UIDs of one mailbox generation to one exact existing destination: INBOX, a Folders/ folder, or a root Sent, Drafts, Junk, Archive or Trash mailbox. Call only for an exact payload the user approved.",
+				schema:      triageSchema(true),
+				run:         runMoveMail,
+			},
+			destructive: true,
 		},
 	}
 }
 
-func triageSchema() json.RawMessage {
-	return objectSchema(map[string]json.RawMessage{
+func triageSchema(destination bool) json.RawMessage {
+	properties := map[string]json.RawMessage{
 		"mailbox":     stringSchema(maxMailboxArgumentBytes),
 		"uidvalidity": json.RawMessage(uidSchema),
 		"uids":        json.RawMessage(`{"type":"array","minItems":1,"maxItems":` + itoa(bridge.MaxTriageUIDs) + `,"uniqueItems":true,"items":` + uidSchema + `}`),
-	}, []string{"mailbox", "uidvalidity", "uids"})
+	}
+	required := []string{"mailbox", "uidvalidity", "uids"}
+	if destination {
+		properties["destination"] = stringSchema(maxMailboxArgumentBytes)
+		required = append(required, "destination")
+	}
+
+	return objectSchema(properties, required)
 }
 
 func runMarkRead(ctx context.Context, deps Options, arguments json.RawMessage) (any, string) {
@@ -81,13 +120,40 @@ func runSetSeen(ctx context.Context, deps Options, arguments json.RawMessage, se
 	if err != nil {
 		return nil, mapAdapterError(err)
 	}
-	if len(outcomes) != len(input.UIDs) {
+
+	return triageResults(input.UIDs, outcomes)
+}
+
+func runMoveMail(ctx context.Context, deps Options, arguments json.RawMessage) (any, string) {
+	var input triageMoveInput
+	if !decodeArguments(arguments, &input) {
+		return nil, errInvalidArgument
+	}
+	if !validTriageInput(triageInput{Mailbox: input.Mailbox, UIDValidity: input.UIDValidity, UIDs: input.UIDs}) || !validMailboxArgument(input.Destination) {
+		return nil, errInvalidArgument
+	}
+	if deps.Triage == nil {
+		return nil, errUnavailable
+	}
+
+	outcomes, err := deps.Triage.Move(ctx, input.Mailbox, input.UIDValidity, input.UIDs, input.Destination)
+	if err != nil {
+		return nil, mapAdapterError(err)
+	}
+
+	return triageResults(input.UIDs, outcomes)
+}
+
+// triageResults pairs adapter outcomes with the requested UIDs in input order
+// and reduces every code to the stable tool vocabulary.
+func triageResults(uids []uint32, outcomes []bridge.TriageResult) (any, string) {
+	if len(outcomes) != len(uids) {
 		return nil, errInternal
 	}
 
 	result := triageResult{Results: make([]triageResultRow, 0, len(outcomes))}
 	for index, outcome := range outcomes {
-		if outcome.UID != input.UIDs[index] {
+		if outcome.UID != uids[index] {
 			return nil, errInternal
 		}
 

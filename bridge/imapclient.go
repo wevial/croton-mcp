@@ -42,12 +42,26 @@ type readSession interface {
 	Abort() error
 }
 
-// seenSession is the only mutating surface: a read-write selection of the
-// source mailbox and a single-UID, Seen-only incremental STORE. It is kept
-// apart from readSession so the read tools can never reach it.
+// seenSession and moveSession are the only mutating surfaces: a read-write
+// selection of the source mailbox, a single-UID Seen-only incremental STORE
+// and a single-UID native MOVE. They are kept apart from readSession so the
+// read tools can never reach them.
 type seenSession interface {
 	SelectSource(context.Context, string) (mailboxSnapshot, error)
 	StoreSeen(context.Context, uint32, bool) error
+}
+
+type moveSession interface {
+	SupportsMove() bool
+	ListMailboxes(context.Context, string, int) ([]listedMailbox, error)
+	MoveUID(context.Context, uint32, string) error
+}
+
+// listedMailbox is one ordinary LIST entry with its protocol attributes.
+type listedMailbox struct {
+	Name       string
+	Delimiter  rune
+	Attributes []string
 }
 
 type mailboxSnapshot struct {
@@ -64,6 +78,7 @@ type imapSession struct {
 	client *imapclient.Client
 	conn   *deadlineConn
 	budget *readBudgetConn
+	guard  *dispatchGuardConn
 }
 
 func newIMAPSession(ctx context.Context, connection *Connection) (*imapSession, error) {
@@ -72,15 +87,22 @@ func newIMAPSession(ctx context.Context, connection *Connection) (*imapSession, 
 		return nil, err
 	}
 
+	return newIMAPSessionOver(ctx, transport, startTLS)
+}
+
+// newIMAPSessionOver builds the client stack over an established transport.
+// Every client write passes through the dispatch guard.
+func newIMAPSessionOver(ctx context.Context, transport net.Conn, startTLS bool) (*imapSession, error) {
 	wrapped := &deadlineConn{Conn: transport}
-	budget := newReadBudgetConn(wrapped, maxControlResponseBytes)
+	guard := &dispatchGuardConn{Conn: wrapped}
+	budget := newReadBudgetConn(guard, maxControlResponseBytes)
 	clientTransport := net.Conn(budget)
 	if startTLS {
 		clientTransport = &syntheticGreetingConn{Conn: budget, greeting: []byte(syntheticStartTLSGreeting)}
 	}
 
 	client := imapclient.New(clientTransport, nil)
-	session := &imapSession{client: client, conn: wrapped, budget: budget}
+	session := &imapSession{client: client, conn: wrapped, budget: budget, guard: guard}
 	if err := session.withBoundedInput(ctx, maxControlResponseBytes, func() error {
 		if err := client.WaitGreeting(); err != nil {
 			return err
@@ -129,20 +151,41 @@ func waitForCapabilities(client *imapclient.Client) error {
 }
 
 func (session *imapSession) List(ctx context.Context, limit int) ([]Folder, error) {
-	var folders []Folder
+	mailboxes, err := session.ListMailboxes(ctx, "*", limit)
+	if err != nil {
+		return nil, err
+	}
+
+	folders := make([]Folder, 0, len(mailboxes))
+	for _, mailbox := range mailboxes {
+		folders = append(folders, Folder{Name: mailbox.Name, Delimiter: string(mailbox.Delimiter)})
+	}
+
+	return folders, nil
+}
+
+// ListMailboxes sends one ordinary LIST "" <pattern> without selection or
+// RETURN options and keeps each entry's attributes.
+func (session *imapSession) ListMailboxes(ctx context.Context, pattern string, limit int) ([]listedMailbox, error) {
+	var mailboxes []listedMailbox
 	err := session.withContext(ctx, func() error {
 		exceeded, listErr := session.withInputBudget(maxListResponseBytes, func() error {
-			command := session.client.List("", "*", nil)
+			command := session.client.List("", pattern, nil)
 			for {
 				data := command.Next()
 				if data == nil {
 					break
 				}
-				if len(folders) == limit {
+				if len(mailboxes) == limit {
 					_ = session.conn.Close()
 					return errorCode(CodeBoundsExceeded)
 				}
-				folders = append(folders, Folder{Name: data.Mailbox, Delimiter: string(data.Delim)})
+
+				attributes := make([]string, 0, len(data.Attrs))
+				for _, attribute := range data.Attrs {
+					attributes = append(attributes, string(attribute))
+				}
+				mailboxes = append(mailboxes, listedMailbox{Name: data.Mailbox, Delimiter: data.Delim, Attributes: attributes})
 			}
 			return command.Close()
 		})
@@ -155,7 +198,7 @@ func (session *imapSession) List(ctx context.Context, limit int) ([]Folder, erro
 		return nil, err
 	}
 
-	return folders, nil
+	return mailboxes, nil
 }
 
 func (session *imapSession) Status(ctx context.Context, mailbox string) (MailboxStatus, error) {
@@ -248,6 +291,47 @@ func (session *imapSession) StoreSeen(ctx context.Context, uid uint32, seen bool
 	return session.withBoundedInput(ctx, maxControlResponseBytes, func() error {
 		return session.client.Store(imap.UIDSetNum(imap.UID(uid)), store, nil).Close()
 	})
+}
+
+// SupportsMove reports whether the authenticated server advertises native
+// MOVE, directly or through IMAP4rev2.
+func (session *imapSession) SupportsMove() bool {
+	return session.client.Caps().Has(imap.CapMove)
+}
+
+// MoveUID sends exactly one native UID MOVE of a single UID. go-imap
+// substitutes COPY, STORE \Deleted and EXPUNGE whenever its cached
+// capabilities lack MOVE, and a server response can replace that cache at any
+// moment, so a capability check alone cannot keep the dispatch native. The
+// check refuses early; the dispatch guard is what enforces it.
+func (session *imapSession) MoveUID(ctx context.Context, uid uint32, destination string) error {
+	if uid == 0 || destination == "" {
+		return errorCode(CodeIMAPProtocol)
+	}
+	if !session.SupportsMove() {
+		return errorCode(CodeUnsupported)
+	}
+
+	return session.dispatchMove(ctx, uid, destination)
+}
+
+// dispatchMove arms the guard so the only bytes that can leave the session are
+// one complete "<tag> UID MOVE <uid> ..." line. A fallback write is refused
+// before reaching the transport and closes the connection, so the outcome is
+// a definite refusal with nothing sent.
+func (session *imapSession) dispatchMove(ctx context.Context, uid uint32, destination string) error {
+	session.guard.arm(uid)
+
+	err := session.withBoundedInput(ctx, maxControlResponseBytes, func() error {
+		_, err := session.client.Move(imap.UIDSetNum(imap.UID(uid)), destination).Wait()
+		return err
+	})
+
+	if session.guard.disarm() {
+		return errorCode(CodeUnsupported)
+	}
+
+	return err
 }
 
 func (session *imapSession) UIDSearchWindow(ctx context.Context, query SearchQuery, window uidWindow, limit int) ([]uint32, error) {
@@ -848,6 +932,74 @@ func trailingIMAPLiteralSize(line string) (uint64, bool) {
 		return ^uint64(0), true
 	}
 	return size, true
+}
+
+var errDispatchRefused = errors.New("IMAP write outside the armed native MOVE")
+
+// dispatchGuardConn enforces the native-MOVE-only write allowlist. While
+// armed it forwards exactly one write, which must be one complete
+// "<tag> UID MOVE <uid> <mailbox>" line. Any other write, including a
+// COPY/STORE/EXPUNGE fallback, a capability refresh, a second command or a
+// split or literal-bearing line, is refused without forwarding a byte and
+// closes the connection. Disarmed, it is a pass-through.
+type dispatchGuardConn struct {
+	net.Conn
+	mu      sync.Mutex
+	armed   bool
+	used    bool
+	tripped bool
+	prefix  string
+}
+
+func (connection *dispatchGuardConn) arm(uid uint32) {
+	connection.mu.Lock()
+	defer connection.mu.Unlock()
+
+	connection.armed, connection.used, connection.tripped = true, false, false
+	connection.prefix = "UID MOVE " + strconv.FormatUint(uint64(uid), 10) + " "
+}
+
+// disarm reports whether a write was refused while armed.
+func (connection *dispatchGuardConn) disarm() bool {
+	connection.mu.Lock()
+	defer connection.mu.Unlock()
+
+	connection.armed = false
+	return connection.tripped
+}
+
+func (connection *dispatchGuardConn) Write(buffer []byte) (int, error) {
+	connection.mu.Lock()
+	if connection.armed {
+		if connection.tripped || connection.used || !nativeMoveLine(buffer, connection.prefix) {
+			connection.tripped = true
+			connection.mu.Unlock()
+			_ = connection.Conn.Close()
+			return 0, errDispatchRefused
+		}
+		connection.used = true
+	}
+	connection.mu.Unlock()
+
+	return connection.Conn.Write(buffer)
+}
+
+// nativeMoveLine accepts only "<tag> " + prefix + "<mailbox>\r\n" with no
+// other line break and no literal, whose body would need a second write.
+func nativeMoveLine(buffer []byte, prefix string) bool {
+	line := string(buffer)
+	body, complete := strings.CutSuffix(line, "\r\n")
+	if !complete || strings.ContainsAny(body, "\r\n") {
+		return false
+	}
+
+	tag, command, found := strings.Cut(body, " ")
+	if !found || tag == "" {
+		return false
+	}
+
+	mailbox, native := strings.CutPrefix(command, prefix)
+	return native && mailbox != "" && !strings.HasSuffix(mailbox, "}")
 }
 
 type deadlineConn struct {

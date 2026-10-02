@@ -22,6 +22,7 @@ const (
 	CodeStaleMessageID     = "stale_message_id"
 	CodeMessageNotFound    = "message_not_found"
 	CodeInvalidRequest     = "invalid_request"
+	CodeUnsupported        = "unsupported"
 	CodeIMAPCommand        = "imap_command_failed"
 	CodeIMAPProtocol       = "imap_protocol_error"
 	CodeAdapterClosed      = "adapter_closed"
