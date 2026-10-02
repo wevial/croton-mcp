@@ -42,6 +42,14 @@ type readSession interface {
 	Abort() error
 }
 
+// seenSession is the only mutating surface: a read-write selection of the
+// source mailbox and a single-UID, Seen-only incremental STORE. It is kept
+// apart from readSession so the read tools can never reach it.
+type seenSession interface {
+	SelectSource(context.Context, string) (mailboxSnapshot, error)
+	StoreSeen(context.Context, uint32, bool) error
+}
+
 type mailboxSnapshot struct {
 	UIDNext     uint32
 	UIDValidity uint32
@@ -203,6 +211,43 @@ func (session *imapSession) Examine(ctx context.Context, mailbox string) (mailbo
 		return nil
 	})
 	return snapshot, err
+}
+
+// SelectSource opens mailbox read-write so a later StoreSeen can apply. It
+// returns the fresh generation the caller must compare before any write.
+func (session *imapSession) SelectSource(ctx context.Context, mailbox string) (mailboxSnapshot, error) {
+	var snapshot mailboxSnapshot
+	err := session.withBoundedInput(ctx, maxControlResponseBytes, func() error {
+		data, err := session.client.Select(mailbox, &imap.SelectOptions{ReadOnly: false}).Wait()
+		if err != nil {
+			return err
+		}
+		snapshot.UIDNext = uint32(data.UIDNext)
+		snapshot.UIDValidity = data.UIDValidity
+		if snapshot.UIDNext == 0 || snapshot.UIDValidity == 0 {
+			return errorCode(CodeIMAPProtocol)
+		}
+		return nil
+	})
+	return snapshot, err
+}
+
+// StoreSeen sends exactly one UID STORE of +FLAGS.SILENT or -FLAGS.SILENT
+// with the single flag \Seen. No other flag or STORE form is reachable.
+func (session *imapSession) StoreSeen(ctx context.Context, uid uint32, seen bool) error {
+	if uid == 0 {
+		return errorCode(CodeIMAPProtocol)
+	}
+
+	operation := imap.StoreFlagsDel
+	if seen {
+		operation = imap.StoreFlagsAdd
+	}
+	store := &imap.StoreFlags{Op: operation, Silent: true, Flags: []imap.Flag{imap.FlagSeen}}
+
+	return session.withBoundedInput(ctx, maxControlResponseBytes, func() error {
+		return session.client.Store(imap.UIDSetNum(imap.UID(uid)), store, nil).Close()
+	})
 }
 
 func (session *imapSession) UIDSearchWindow(ctx context.Context, query SearchQuery, window uidWindow, limit int) ([]uint32, error) {

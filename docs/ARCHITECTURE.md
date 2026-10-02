@@ -46,16 +46,20 @@ flowchart LR
 `cmd/croton-mcp` loads one Mail configuration through `internal/config`,
 constructs the six-tool server in `internal/mcpserver`, and serves it over
 stdio. The server owns the MCP catalog; `bridge.Adapter` owns exactly one
-authenticated read-only IMAP session and does not dial the Bridge or run the
+authenticated IMAP session and does not dial the Bridge or run the
 credential command until the first operation. The connection is loopback-only
 over TLS with explicit trust material; certificate-authority bundles are
 rejected. The six tools are listed in [docs/MCP.md](MCP.md#tools).
 
-Planned Mail triage is specified in the
+Mail triage is specified in the
 [Mail triage design](design/0005-mail-triage.md): five default-off tools behind
 the local `mutations.enabled` file opt-in, limited to Seen `UID STORE` and
-native `UID MOVE`. Nothing in the tree implements it; the shipped catalog is
-the six read tools and the adapter remains read-only.
+native `UID MOVE`. Only the Seen tools are implemented. When the opt-in is
+absent or false, the default, the catalog is the six read tools and the
+adapter sends no write. When it is true, `cmd/croton-mcp` also registers
+`mark_read` and `mark_unread`, whose only write is `bridge.Adapter.SetSeen`:
+one Seen-only `UID STORE` per UID on the same session, after a read-write
+SELECT confirms the source UIDVALIDITY. The move tools are not implemented.
 
 ### `croton-drive-mcp` (Drive)
 
@@ -101,14 +105,14 @@ never cross. The role column follows the package doc comments.
 
 | Package | Role | Must never |
 | --- | --- | --- |
-| `bridge` | Bounded, read-only, MCP-neutral connection boundary and mail normalization primitives for Proton Mail Bridge; `Adapter` serializes one authenticated read-only IMAP session. | Import MCP types, add a mutating IMAP operation outside the planned Seen `UID STORE` and native `UID MOVE` allowlist of design 0005, or connect anywhere but loopback over TLS. |
-| `cmd/croton-mcp` | The Mail stdio executable: loads one Mail configuration and serves the six read-only mail tools. | Write anything but protocol to stdout, or link the Drive server. |
+| `bridge` | Bounded, MCP-neutral connection boundary and mail normalization primitives for Proton Mail Bridge; `Adapter` serializes one authenticated IMAP session that is read-only except for the opt-in Seen `SetSeen`. | Import MCP types, add a mutating IMAP operation outside the planned Seen `UID STORE` and native `UID MOVE` allowlist of design 0005, or connect anywhere but loopback over TLS. |
+| `cmd/croton-mcp` | The Mail stdio executable: loads one Mail configuration and serves the six read-only mail tools, plus the Seen triage tools when `mutations.enabled` is true. | Write anything but protocol to stdout, or link the Drive server. |
 | `cmd/croton-drive-mcp` | The Drive stdio executable: serves Croton Drive's independent MCP lifecycle. | Write anything but protocol to stdout, link the Mail server, or read a Proton password. |
 | `internal/config` | Secure configuration opener shared by the Mail and Drive schemas; one descriptor-relative, no-follow `load` path both `Load` and `LoadDrive` use. | Offer a path-based fallback open, follow a symlink, or accept a file readable by group or world. |
 | `internal/drivecli` | Bounded Proton Drive CLI subprocess adapter; `Client` is the fail-closed boundary that runs only the frozen allowlist after an exact-version handshake. | Run a command line outside `AllowedCommandLines()`, skip the handshake, or handle Proton credentials. |
 | `internal/drivefs` | Unregistered, descriptor-bound Drive output primitives: resolution-time confined opening, transactional publication and bounded cancellable copying. | Reopen a validated destination pathname, follow a symlink, fall back to weaker resolution flags, or be called from a registered production path before download policy ships. |
 | `internal/drivemcp` | Croton Drive's independently runnable MCP server and its three-tool catalog. | Register a write-capable or download tool, share an adapter with Mail, or return a public link's password. |
-| `internal/mcpserver` | Croton's Mail MCP server: the six-tool catalog, bounded argument decoding, and the stdio transport. | Register a mutating tool outside the planned default-off triage catalog of design 0005, expose attachment bytes, or add Roots, Sampling, or MCP Logging. |
+| `internal/mcpserver` | Croton's Mail MCP server: the six-tool read catalog, the opt-in Seen triage tools, bounded argument decoding, and the stdio transport. | Register a mutating tool outside the planned default-off triage catalog of design 0005, expose attachment bytes, or add Roots, Sampling, or MCP Logging. |
 | `internal/stdioframe` | The bounded newline-delimited stdio transport shared by every Croton executable: each inbound frame is proven to be one strictly decoded JSON object within the 64 KiB ceiling before the SDK sees it. | Pass an oversize or ambiguous frame to the SDK, close standard output, or write anything but JSON-RPC to it. |
 | `internal/strictjson` | Bounded, unambiguous JSON decoding shared by both servers. | Accept duplicate keys, trailing values, or unbounded input. |
 | `internal/testkit` | Deterministic IMAP and Proton Drive CLI fixtures: a synthetic loopback IMAP server and the fake-Drive builder. | Contain live account material, or be imported by non-test code. |
@@ -125,7 +129,7 @@ boundary exists in the tree but nothing ships behind it, with no date.
 | Mail and Drive `separately runnable` with separate configuration, credentials or authentication boundaries, and tool registries | Two executables; `config.Load` and `config.LoadDrive` decode separate schemas; Mail authenticates via `credentialCommand` in `bridge`, Drive via the CLI's own store behind the `internal/drivecli` handshake; catalogs in `internal/mcpserver` and `internal/drivemcp/tools.go`. |
 | Go implementation with a reusable, `MCP-neutral` Mail Bridge adapter | `bridge` imports no MCP types; `internal/mcpserver` is its only in-tree consumer. |
 | Independent, `unofficial` community project | README's Drive section and the non-affiliation statement; no Proton logos or branding in the tree. |
-| Public, installable open-source product with `account material` and personal automation kept outside | Apache 2.0 `LICENSE`; `SECURITY.md` sensitive-data rules; only synthetic `.test` fixtures in `internal/testkit`; see "Outside the module". Reserved: Drive download (`Download` is disabled by the CLI allowlist, no tool, `allowedDownloadDirectories` unused), sharing mutation, writes (`writes.enabled` defaults to disabled), Mail triage writes (planned default-off in design 0005, not implemented), and additional Proton services. |
+| Public, installable open-source product with `account material` and personal automation kept outside | Apache 2.0 `LICENSE`; `SECURITY.md` sensitive-data rules; only synthetic `.test` fixtures in `internal/testkit`; see "Outside the module". Reserved: Drive download (`Download` is disabled by the CLI allowlist, no tool, `allowedDownloadDirectories` unused), sharing mutation, writes (`writes.enabled` defaults to disabled), Mail move writes (planned default-off in design 0005, not implemented; the Seen writes are implemented behind the same default-off opt-in), and additional Proton services. |
 
 ## Outside the module
 

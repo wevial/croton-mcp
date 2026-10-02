@@ -20,6 +20,8 @@ const (
 	CodeAuthentication     = "authentication_failed"
 	CodeMailboxNotFound    = "mailbox_not_found"
 	CodeStaleMessageID     = "stale_message_id"
+	CodeMessageNotFound    = "message_not_found"
+	CodeInvalidRequest     = "invalid_request"
 	CodeIMAPCommand        = "imap_command_failed"
 	CodeIMAPProtocol       = "imap_protocol_error"
 	CodeAdapterClosed      = "adapter_closed"

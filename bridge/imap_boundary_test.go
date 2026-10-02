@@ -38,6 +38,7 @@ func TestIMAPDependencyAndMutationMethodsStayInsideFacade(t *testing.T) {
 			}
 		}
 		if filepath.Base(sourcePath) == "imapclient.go" {
+			// Store is reachable only through StoreSeen: one UID, \Seen only.
 			allowedClientMethods := map[string]bool{
 				"WaitGreeting": true,
 				"Caps":         true,
@@ -47,6 +48,7 @@ func TestIMAPDependencyAndMutationMethodsStayInsideFacade(t *testing.T) {
 				"List":         true,
 				"Status":       true,
 				"Select":       true,
+				"Store":        true,
 				"UIDSearch":    true,
 				"Fetch":        true,
 				"Logout":       true,

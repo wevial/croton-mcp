@@ -1,6 +1,8 @@
 # Croton MCP server
 
-`croton-mcp` exposes the read-only bridge layer as an MCP server over stdio.
+`croton-mcp` exposes the bridge layer as an MCP server over stdio. It is
+read-only unless its configuration file opts in to the Seen
+[triage tools](#triage-tools).
 Stdout carries protocol frames only; all diagnostics go to stderr. There is no
 network listener, and no MCP resources, prompts, Roots, Sampling, or Logging —
 a fail-closed method allowlist rejects everything except initialization,
@@ -15,8 +17,10 @@ The historical [proposed Mail mutation boundary](design/0002-mail-mutation.md)
 is superseded by the [Mail triage design](design/0005-mail-triage.md). The
 successor plans five default-off triage tools behind a local
 `mutations.enabled` file opt-in, limited to Seen `UID STORE` and native
-`UID MOVE`, with approval owned by the trusted client. None is implemented:
-the six read tools below are unchanged and Mail remains read-only.
+`UID MOVE`, with approval owned by the trusted client. Only the Seen tools,
+`mark_read` and `mark_unread`, are implemented; the move tools are not. With
+the opt-in absent or false, the default, the catalog is the six read tools
+below and Mail remains read-only.
 
 ## Protocol
 
@@ -61,6 +65,14 @@ user and must not grant group or world permissions (normally mode `0600`):
   "audit": {"enabled": true}
 }
 ```
+
+The optional `mutations` object accepts only the boolean `enabled`. Absent or
+false, the default, registers only the six read tools; true also registers
+`mark_read` and `mark_unread`. Any other type, including null, a string or a
+number, and any unknown key inside `mutations` fail startup with the static
+invalid-configuration error before any Bridge connection. Setting it is a
+local operator opt-in, not approval of any call. The example above and the
+installation guides leave it absent.
 
 Validation and clamping remain the bridge's responsibility; the loader only
 reads and decodes. `SIGTERM` and `SIGINT` shut the server down cleanly and log
@@ -138,7 +150,7 @@ registration (in the throwaway profile above, it lists nothing at all).
 
 ## Tools
 
-Exactly six read-only tools are registered, each with `readOnlyHint: true`,
+By default exactly six read-only tools are registered, each with `readOnlyHint: true`,
 a closed (`additionalProperties: false`) bounded input schema, and
 server-authoritative validation and clamping that does not trust schema
 enforcement by the caller. Raw argument objects are capped at 24 KiB and reject
@@ -159,6 +171,54 @@ transport admits only one unambiguous newline-delimited JSON object of at most
 
 Message identifiers are the bridge's opaque HMAC-bound ids; they are validated
 against a fresh UIDVALIDITY generation on every use.
+
+### Triage tools
+
+When `mutations.enabled` is true, two more tools are registered with
+`readOnlyHint: false`, `destructiveHint: false`, `idempotentHint: true` and
+`openWorldHint: false`. Annotations describe the tools; they neither prompt
+for nor prove approval, which belongs to the trusted client under the
+[Mail triage design](design/0005-mail-triage.md).
+
+| Tool | Purpose |
+| ---- | ------- |
+| `mark_read` | Add `\Seen` to the given UIDs of one mailbox generation. |
+| `mark_unread` | Remove `\Seen` from the given UIDs of one mailbox generation. |
+
+Both take exactly `mailbox`, `uidvalidity` and `uids`: a positive 32-bit
+generation and 1 to 50 distinct positive 32-bit UIDs. There is no approval,
+ordinal or message-id argument. A missing, null, zero, negative, fractional,
+out-of-range, duplicate or unknown input fails the whole request with
+`invalid_argument` before any IMAP command.
+
+The server selects the source mailbox read-write on its one authenticated
+session and compares the fresh UIDVALIDITY with `uidvalidity`. A mismatch
+fails with `stale_id`, and a mailbox that cannot be selected fails the
+request; neither sends a write. The server then handles one UID at a time in
+input order: `UID SEARCH` confirms the UID is present, and only then one
+`UID STORE <uid> +FLAGS.SILENT (\Seen)` or `-FLAGS.SILENT (\Seen)` is sent.
+No other flag, STORE form, MOVE, COPY or EXPUNGE is sent, and the read tools
+keep their `BODY.PEEK` fetches.
+
+The result is `{"results": [...]}` with one entry per input UID in input
+order, each with `uid`, `outcome` and an optional `code` from the error
+vocabulary below:
+
+- `applied`: the STORE completed with OK.
+- `refused`: the UID is not present (`not_found`), or the server answered NO
+  or BAD (`unavailable`). Later UIDs continue.
+- `unknown`: the connection dropped or the command deadline expired after
+  dispatch (`unavailable`, `timed_out` or `canceled`). The session is
+  discarded, nothing is retried or replayed, and every later UID is
+  `not_attempted`.
+- `not_attempted`: never dispatched. If the presence check itself fails, that
+  UID carries a code and every later UID is also not attempted.
+
+Each IMAP step has its own `imap.commandTimeoutMs` deadline, so a batch is
+bounded. To reconcile an `unknown`, run a fresh read such as `search_mail`,
+then make a new, separately approved call. `TestStoryTriageSeen` witnesses
+these boundaries against the built executable and the synthetic stateful
+fixture; no live account write has been exercised.
 
 ### Mail thread membership
 
@@ -199,7 +259,8 @@ With `audit.enabled`, one JSON line per tool call is written to stderr using
 only the allowlisted vocabulary `event`, `tool`, `outcome`, `code`,
 `truncated`. Tool names, outcomes, and codes are re-validated against fixed
 sets before logging; caller inputs, folder names, identifiers, subjects,
-addresses, and error text never appear.
+addresses, and error text never appear. A triage call that returns per-UID
+results logs `outcome` `ok`; its UIDs and per-UID outcomes are not logged.
 
 With the same opt-in setting, Mail `Serve` completion writes exactly one
 independent lifecycle JSON line to the diagnostic stream (stderr), never to
