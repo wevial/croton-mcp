@@ -42,10 +42,11 @@ def visible(text):
     text = re.sub(r"<!--.*?(?:-->|\Z)", "", text, flags=re.S)
     lines, fence = [], None
     for line in text.splitlines():
-        marker = re.match(r"\s{0,3}(`{3,}|~{3,})", line)
+        marker = re.match(r" {0,3}(`{3,}|~{3,})", line)
+        closing = re.fullmatch(r" {0,3}(`{3,}|~{3,})[ \t]*", line)
         if fence is None and marker:
             fence = marker.group(1)
-        elif fence is not None and marker and marker.group(1).startswith(fence):
+        elif fence is not None and closing and closing.group(1).startswith(fence):
             fence = None
         elif fence is None:
             lines.append(line)
