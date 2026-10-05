@@ -2,9 +2,10 @@
 """Structural checks: the README states Croton's purpose and trust boundary.
 
 Only visible prose counts. HTML comments, including an unterminated one, and
-fenced code blocks are removed before matching, and whitespace is collapsed so
-that wrapped lines still match. These are documentation witnesses, not runtime
-proof of consent or confidentiality.
+fenced code blocks, including those inside blockquotes or list items, are
+removed before matching, and whitespace is collapsed so that wrapped lines
+still match. These are documentation witnesses, not runtime proof of consent or
+confidentiality.
 """
 from pathlib import Path
 import re
@@ -36,14 +37,16 @@ RETAINED = (
     "](docs/THREAT_MODEL.md)",
     "](docs/USER-INSTALL.md)",
 )
+# Blockquote and list-item prefixes a fence can sit behind.
+CONTAINER = r"[ \t]*(?:>[ \t]*|(?:[-*+]|\d{1,9}[.)])[ \t]+)*"
 
 
 def visible(text):
     text = re.sub(r"<!--.*?(?:-->|\Z)", "", text, flags=re.S)
     lines, fence = [], None
     for line in text.splitlines():
-        marker = re.match(r" {0,3}(`{3,}|~{3,})", line)
-        closing = re.fullmatch(r" {0,3}(`{3,}|~{3,})[ \t]*", line)
+        marker = re.match(CONTAINER + r"(`{3,}|~{3,})", line)
+        closing = re.fullmatch(CONTAINER + r"(`{3,}|~{3,})[ \t]*", line)
         if fence is None and marker:
             fence = marker.group(1)
         elif fence is not None and closing and closing.group(1).startswith(fence):
