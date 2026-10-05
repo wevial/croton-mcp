@@ -2,6 +2,21 @@
 
 Croton is a privacy-first, local stdio [Model Context Protocol](https://modelcontextprotocol.io/) server that provides controlled access to Proton Mail through Proton Mail Bridge. The repository includes a production Bridge adapter, read-only by default, and synthetic protocol fixtures; it does not bundle Proton credentials, account identifiers, mailbox content, or live fixture data.
 
+## Why Croton
+
+Croton makes Proton usable by AI assistants without handing them unrestricted access to your account. Privacy is the purpose; prompt-injection resistance is a supporting safeguard.
+
+An assistant connected to Croton reaches Proton only through a small set of
+named tools served by a local process on your machine. Mail goes through Proton
+Mail Bridge over loopback, and Drive is a separate server with its own
+configuration. The same approach can extend to other Proton services where a
+supported local interface exists; this README describes only what ships today.
+Tools return metadata first and read message bodies only on request, within
+fixed bounds, and credentials are kept out of every tool response. Croton's own
+audit records name the tool and its outcome, never the content. An assistant
+steered by a prompt injection remains limited to what those tools and your
+configuration allow.
+
 ## Status
 
 Early implementation, read-only by default. The executable supports MCP `2026-07-28` by default and the legacy `2025-11-25` initialization flow for older clients. Its local Bridge adapter supports bounded folder, status, search, metadata, and body reads over verified loopback TLS. Unless the configuration file sets `mutations.enabled` to true, it exposes no mail mutation. With that opt-in, the `mark_read` and `mark_unread` tools from the [Mail triage design](docs/design/0005-mail-triage.md) change only the Seen flag, one UID per `UID STORE`, `move_mail` moves messages to one exact, validated existing folder, one UID per native `UID MOVE`, and `archive_mail` and `trash_mail` do the same into the one selectable mailbox the server marks `\Archive` or `\Trash`, never deleting anything; no live account write has been exercised.
@@ -98,6 +113,7 @@ for prerequisites, verification, the exact tool names, and removal.
 - `internal/mcpserver`: Mail MCP server
 - `internal/drivemcp`: Drive MCP server
 - `internal/drivecli`: bounded Drive CLI subprocess adapter
+- `internal/drivefs`: internal confined-output primitives (confined opening, transactional publication, bounded copying) that no registered Drive tool uses; Drive downloads are not shipped
 - `internal/stdioframe`: the bounded newline-framed stdio reader both servers share
 - `internal/strictjson`: strict JSON decoding
 - `internal/testkit`: synthetic loopback IMAP server and fake-Drive builder for tests
@@ -110,6 +126,23 @@ for prerequisites, verification, the exact tool names, and removal.
 See [SECURITY.md](SECURITY.md) and the threat model in
 [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), which names the assets, trust
 boundaries, residual risks and what Croton does not defend against. Never commit credentials, account identifiers, mailbox contents, or unredacted protocol logs.
+
+Croton keeps access local and narrow, but the assistant you connect decides
+where returned content goes. Content returned to a cloud-backed assistant can reach that assistant's model provider. Croton limits disclosure; it does not guarantee confidentiality after that handoff or that returned content stays on your machine.
+A local stdio transport means Croton runs locally, not that the model does.
+Croton's audit records exclude content, but Croton does not control what the
+assistant, its CLI or its model provider logs.
+
+Croton does not protect a compromised operating system, user account, Proton account or Bridge.
+It runs as you and trusts them, so an attacker holding any of them already
+holds what Croton guards. Its controls bound what a connected client, including
+a prompt-injected one, can reach through the tools.
+
+Croton cannot verify that a human approved a tool call. Any approval prompt
+comes from your MCP client. If you set `mutations.enabled` to true, an
+auto-approving or prompt-injected client could change read state, move,
+archive or trash mail within the configured limits, so enable actions only with
+a client whose approval settings you trust.
 
 A single accepted transport replay opens a fresh authenticated session and may invoke the configured credential helper one additional time. Credential helpers should therefore be idempotent and free of unrelated side effects.
 
