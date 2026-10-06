@@ -4,8 +4,10 @@
 Clauses are matched in visible prose: HTML comments, including an unterminated
 one, and top-level fenced code blocks are removed, and whitespace is collapsed
 so wrapped lines still match. The marked tagged shell recipe in Source build is
-inspected separately as text. Nothing here calls git, gh, the network, a build
-or an installer, and passing is not evidence that any release exists.
+inspected separately as text, as are the marked download recipe in the release
+guide and the first-install copy fences in User-owned layout. Nothing here calls
+git, gh, the network, a build or an installer, and passing is not evidence that
+any release exists.
 """
 
 import argparse
@@ -18,6 +20,8 @@ import verify_docs_user_install as installer
 ROOT = Path(__file__).resolve().parents[1]
 PATHS = {"release": "docs/RELEASE.md", "guide": "docs/USER-INSTALL.md", "readme": "README.md"}
 RECIPE = re.compile(r"<!-- mail-release-tagged-recipe -->\s*```sh\n(.*?)\n```", re.S)
+DOWNLOAD = re.compile(r"<!-- mail-release-download-recipe -->\s*```sh\n(.*?)\n```", re.S)
+FENCE = re.compile(r"^```sh\n(.*?)\n```", re.S | re.M)
 
 # (document, section, clause name, exact phrase) per witness.
 CLAUSES = {
@@ -69,6 +73,14 @@ CLAUSES = {
          "independently hash the published bytes, and compare them with the release notes and the published manifest `sha256`."),
         ("release", "Maintainer release checklist", "no in-place replacement",
          "Do not replace accepted assets in place or retarget the tag"),
+        ("release", "Accepting published bytes", "host platform identity",
+         "Identify the host platform with `go env GOHOSTOS GOHOSTARCH`"),
+        ("release", "Accepting published bytes", "configured target is not the host",
+         "Do not use `go env GOOS GOARCH`: those report the configured build target"),
+        ("release", "Accepting published bytes", "absent downloaded asset STOP",
+         "if either native asset is absent, STOP the binary path."),
+        ("release", "Accepting published bytes", "manifest matches host platform",
+         "`go1.26.6` and the host `GOHOSTOS` and `GOHOSTARCH`."),
     ),
     "test_tagged_selection": (
         ("guide", "Source build", "published RELEASE_TAG start",
@@ -99,6 +111,14 @@ CLAUSES = {
          "Pilot acceptance installs the published staged binary for the operator's native platform, not a local rebuild."),
         ("release", "Accepting published bytes", "acceptance mismatch STOP",
          "On any mismatch, STOP; do not edit expected checksums."),
+        ("release", "Accepting published bytes", "published-byte first install",
+         "it copies the accepted asset to `croton-mcp.candidate` exactly once instead of the source-build copy"),
+        ("guide", "User-owned layout", "occupied candidate STOP",
+         "if either is occupied, STOP rather than overwrite it."),
+        ("guide", "User-owned layout", "published-byte entry skips source copy",
+         "Published-byte entry: for pilot acceptance, skip the source-build copy"),
+        ("guide", "User-owned layout", "published candidate hash before rename",
+         "confirm it equals the release-note SHA-256 and the published manifest `sha256` before renaming it."),
         ("guide", "Source build", "retained checksum is not a signature",
          "Checksums provide integrity, not signatures or provenance attestation."),
         ("guide", "Source build", "source build distinguished",
@@ -164,6 +184,17 @@ RECIPE_ORDER = (
     ("unchanged helper",
      'python3 scripts/stage_mail_candidate.py --revision "$REVIEWED_REVISION" --output "$MAIL_CANDIDATE_DIR"'),
 )
+DOWNLOAD_LINES = (
+    ("host platform", 'HOST_PLATFORM="$(go env GOHOSTOS)-$(go env GOHOSTARCH)"'),
+    ("platform asset name", 'MAIL_RELEASE_ASSET="croton-mcp-$RELEASE_TAG-$HOST_PLATFORM"'),
+    ("absent download directory", 'test ! -e "$MAIL_RELEASE_DIR"'),
+    ("two-asset download",
+     'gh release download "$RELEASE_TAG" --repo wevial/croton-mcp --dir "$MAIL_RELEASE_DIR" '
+     '--pattern "$MAIL_RELEASE_ASSET" --pattern "$MAIL_RELEASE_ASSET.manifest.json"'),
+)
+TARGET = re.compile(r"\bgo env (?:GOOS|GOARCH)\b|\$\(go env (?:GOOS|GOARCH)\)")
+SOURCE_COPY = 'install -m 0700 "$MAIL_CANDIDATE_DIR/croton-mcp" "$CROTON_BIN_DIR/croton-mcp.candidate"'
+PUBLISHED_COPY = 'install -m 0700 "$MAIL_RELEASE_DIR/$MAIL_RELEASE_ASSET" "$CROTON_BIN_DIR/croton-mcp.candidate"'
 MOVING = re.compile(r"\b(?:main|master|trunk|develop)\b|origin/|refs/heads/|HEAD[~^]|@\{|FETCH_HEAD"
                     r"|--branch\b|\b[0-9a-f]{40}\b|\b[0-9a-f]{64}\b|<full-reviewed-commit-sha>")
 
@@ -232,8 +263,25 @@ def test_publication_boundary(docs):
     return failures
 
 
+def download_errors(release):
+    bodies = sections(release).get("Accepting published bytes", [])
+    recipes = DOWNLOAD.findall(release)
+    if len(bodies) != 1 or len(recipes) != 1 or recipes[0] not in bodies[0]:
+        return ["download recipe: expected one marked recipe in Accepting published bytes"]
+
+    failures = []
+    lines = [line.strip() for line in recipes[0].splitlines() if line.strip()]
+    for name, expected in DOWNLOAD_LINES:
+        if lines.count(expected) != 1:
+            failures.append(f"download recipe: missing {name}")
+    if any(TARGET.search(line) for line in lines):
+        failures.append("download recipe: configured target used as host platform")
+
+    return failures
+
+
 def test_manifest_and_published_bytes(docs):
-    return check_clauses(docs, "test_manifest_and_published_bytes")
+    return check_clauses(docs, "test_manifest_and_published_bytes") + download_errors(docs["release"])
 
 
 def recipe_errors(guide):
@@ -273,8 +321,25 @@ def test_tagged_selection(docs):
     return check_clauses(docs, "test_tagged_selection") + recipe_errors(docs["guide"])
 
 
+def first_install_errors(guide):
+    bodies = sections(guide).get("User-owned layout", [])
+    if len(bodies) != 1:
+        return ["first install: need one User-owned layout section"]
+
+    # Each entry has its own fence so the published candidate is never overwritten by a source copy.
+    blocks = [[line.strip() for line in block.splitlines()] for block in FENCE.findall(bodies[0])]
+    source = [block for block in blocks if SOURCE_COPY in block]
+    published = [block for block in blocks if PUBLISHED_COPY in block]
+    if len(source) != 1 or SOURCE_COPY not in source[0] or PUBLISHED_COPY in source[0]:
+        return ["first install: expected one separate source-build copy"]
+    if len(published) != 1 or SOURCE_COPY in published[0] or published[0].count(PUBLISHED_COPY) != 1:
+        return ["first install: expected one separate published-byte copy"]
+
+    return []
+
+
 def test_integrity_limitations(docs):
-    return check_clauses(docs, "test_integrity_limitations")
+    return check_clauses(docs, "test_integrity_limitations") + first_install_errors(docs["guide"])
 
 
 def test_update_boundaries(docs):
@@ -364,6 +429,22 @@ def self_test(docs):
             docs, "guide", RECIPE_ORDER[-1][1], 'python3 scripts/stage_mail_candidate.py --revision "$(git rev-parse HEAD)" '
             '--output "$MAIL_CANDIDATE_DIR"'),
          test_tagged_selection, "recipe: missing unchanged helper"),
+        ("configured target platform", reword(
+            docs, "release", DOWNLOAD_LINES[0][1], 'HOST_PLATFORM="$(go env GOOS)-$(go env GOARCH)"'),
+         test_manifest_and_published_bytes, "download recipe: configured target used as host platform"),
+        ("download pattern without value", reword(
+            docs, "release", DOWNLOAD_LINES[3][1], 'gh release download "$RELEASE_TAG" --repo wevial/croton-mcp --pattern'),
+         test_manifest_and_published_bytes, "download recipe: missing two-asset download"),
+        ("manifest asset not downloaded", reword(
+            docs, "release", DOWNLOAD_LINES[3][1], DOWNLOAD_LINES[3][1].rsplit(" --pattern", 1)[0]),
+         test_manifest_and_published_bytes, "download recipe: missing two-asset download"),
+        ("missing download marker", reword(docs, "release", "<!-- mail-release-download-recipe -->", ""),
+         test_manifest_and_published_bytes, "download recipe: expected one marked recipe"),
+        ("source copy over published candidate", reword(docs, "guide", PUBLISHED_COPY, SOURCE_COPY),
+         test_integrity_limitations, "first install: expected one separate"),
+        ("published entry also copies source build", reword(
+            docs, "guide", PUBLISHED_COPY, PUBLISHED_COPY + "\n" + SOURCE_COPY),
+         test_integrity_limitations, "first install: expected one separate"),
         ("missing recipe marker", reword(docs, "guide", "<!-- mail-release-tagged-recipe -->", ""),
          test_tagged_selection, "recipe: expected one marked tagged shell recipe"),
         ("retained rollback guard removed", reword(

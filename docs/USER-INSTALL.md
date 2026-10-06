@@ -107,8 +107,11 @@ symlink aliases. Keep directories and artifacts operator-owned and unwritable
 by other users. This is operator policy for the binary, helper and trust file.
 
 For a first install, ensure both final and candidate names are absent (including
-dangling symlinks). Create the selected directories with mode `0700`, then stage
-the build in the selected bin directory, for example:
+dangling symlinks); if either is occupied, STOP rather than overwrite it. Create
+the selected directories with mode `0700`, then stage exactly one binary as
+`croton-mcp.candidate` in the selected bin directory, from exactly one entry.
+
+Source-build entry: copy the helper output from Source build, for example:
 
 ```sh
 umask 077
@@ -116,8 +119,25 @@ CROTON_BIN_DIR=/absolute/operator/bin
 install -m 0700 "$MAIL_CANDIDATE_DIR/croton-mcp" "$CROTON_BIN_DIR/croton-mcp.candidate"
 ```
 
-Compare the staged binary's SHA-256 with the build artifact using the platform's
-local hash utility. Prepare and verify the config, trust and helper below before
+Compare the staged binary's SHA-256 with the helper manifest `sha256` using the
+platform's local hash utility.
+
+Published-byte entry: for pilot acceptance, skip the source-build copy and copy
+the platform-named asset accepted under Accepting published bytes in the
+[Mail release guide](RELEASE.md) exactly once, for example:
+
+```sh
+umask 077
+CROTON_BIN_DIR=/absolute/operator/bin
+install -m 0700 "$MAIL_RELEASE_DIR/$MAIL_RELEASE_ASSET" "$CROTON_BIN_DIR/croton-mcp.candidate"
+```
+
+Hash the staged candidate with `sha256sum` on Linux or `shasum -a 256` on macOS
+and confirm it equals the release-note SHA-256 and the published manifest
+`sha256` before renaming it. Never copy a local rebuild over this candidate. On
+any mismatch, STOP; remove only that candidate and do not edit expected checksums.
+
+For either entry, prepare and verify the config, trust and helper below before
 renaming the candidate to `croton-mcp` in the same directory. Existing installs
 must use the backup and replacement procedure under Update and rollback.
 
@@ -269,7 +289,11 @@ credentials, protocol captures or unredacted diagnostics to agents or tickets.
    Back up each existing artifact with its permissions intact. Keep private
    backups local and protected; record the previous source SHA and client
    executable/argument settings. Do not log config or secret contents.
-4. Stage the candidate under a new unused filename in the selected bin directory.
+4. Stage the candidate under a new unused filename in the selected bin directory,
+   copied once from either the Source build helper output or, for published-byte
+   acceptance, the accepted platform-named asset. Compare its SHA-256 with the
+   helper manifest `sha256`, or with the release-note SHA-256 and the published
+   manifest `sha256` respectively; on mismatch, STOP.
    Stage every required reviewed config, helper and trust change as a regular
    file under a new unused name in its target directory with restrictive
    permissions. Verify staged hashes, ownership and modes, and confirm that

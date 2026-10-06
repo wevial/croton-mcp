@@ -86,19 +86,39 @@ Checksums provide integrity, not signatures or provenance.
 Pilot acceptance installs the published staged binary for the operator's native
 platform, not a local rebuild. Select a published `RELEASE_TAG`, confirm its
 GitHub release `tagName` and `isDraft` as in step 7, and resolve the tag to its
-full commit SHA in a fresh clone. Run `go env GOOS GOARCH` or an equivalent
-local check to identify the native platform. Select the binary and manifest
-assets whose names carry that exact `GOOS` and `GOARCH`.
+full commit SHA in a fresh clone. Identify the host platform with
+`go env GOHOSTOS GOHOSTARCH`, as the staging helper does. Do not use
+`go env GOOS GOARCH`: those report the configured build target, which an
+environment override can change. Select the binary and manifest assets whose
+names carry that exact host `GOHOSTOS` and `GOHOSTARCH`.
 
-Download both assets into a new absent operator-owned directory, for example
-with `gh release download "$RELEASE_TAG" --repo wevial/croton-mcp --pattern`
-for each exact asset name. Independently hash the binary asset with
-`sha256sum` on Linux or `shasum -a 256` on macOS. Accept it only if that hash
-equals the release-note SHA-256 and the published manifest `sha256`, and the
-manifest `revision`, `toolchain`, `GOOS` and `GOARCH` equal the tag-resolved
-SHA, `go1.26.6` and the native platform. On any mismatch, STOP; do not edit
-expected checksums. Then stage the accepted bytes with mode `0700` as
-`croton-mcp.candidate` and continue with the user-owned installation guide.
+Download both assets into a new absent operator-owned directory, passing each
+exact asset name as its own pattern, for example:
+
+<!-- mail-release-download-recipe -->
+```sh
+HOST_PLATFORM="$(go env GOHOSTOS)-$(go env GOHOSTARCH)"
+MAIL_RELEASE_ASSET="croton-mcp-$RELEASE_TAG-$HOST_PLATFORM"
+MAIL_RELEASE_DIR=/absolute/operator/candidates/mail-release
+test ! -e "$MAIL_RELEASE_DIR"
+gh release download "$RELEASE_TAG" --repo wevial/croton-mcp --dir "$MAIL_RELEASE_DIR" --pattern "$MAIL_RELEASE_ASSET" --pattern "$MAIL_RELEASE_ASSET.manifest.json"
+```
+
+Confirm that both files were downloaded; if either native asset is absent, STOP
+the binary path. Independently hash the binary asset with `sha256sum` on Linux
+or `shasum -a 256` on macOS. Accept it only if that hash equals the release-note
+SHA-256 and the published manifest `sha256`, and the manifest `revision`,
+`toolchain`, `GOOS` and `GOARCH` equal the tag-resolved SHA, `go1.26.6` and the
+host `GOHOSTOS` and `GOHOSTARCH`. On any mismatch, STOP; do not edit expected
+checksums.
+
+Acceptance itself stages and installs nothing. For a first install, use the
+published-byte entry under User-owned layout in the
+[user-owned installation guide](USER-INSTALL.md): it copies the accepted asset
+to `croton-mcp.candidate` exactly once instead of the source-build copy, and
+compares the candidate's SHA-256 with the published SHA-256 before renaming it.
+For an update, stage the accepted asset under a new unused name as in step 4 of
+its Update and rollback procedure.
 
 ## Integrity limitations
 
