@@ -53,6 +53,11 @@ See [the user-owned installation guide](docs/USER-INSTALL.md) for source builds,
 configuration and credential-helper prerequisites, catalog verification, and
 staged updates and rollback.
 
+The non-executing [Mail triage pilot runbook](docs/MAIL-TRIAGE-PILOT.md)
+describes a later, separately authorized pilot of the opt-in triage tools on
+self-sent test messages, with a NOT RUN evidence template. It grants no
+installation, enablement or live-write authority.
+
 ## Platform support
 
 Linux and macOS are supported and receive identical configuration-loading
