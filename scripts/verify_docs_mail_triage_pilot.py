@@ -18,6 +18,8 @@ LINK = "docs/MAIL-TRIAGE-PILOT.md"
 GUIDE_LINKS = ("USER-INSTALL.md", "MCP.md", "design/0005-mail-triage.md")
 CONTRACT = re.compile(r"<!-- mail-triage-pilot-contract -->\s*```json\n(.*?)\n```", re.S)
 EVIDENCE = re.compile(r"<!-- mail-triage-pilot-evidence -->\n((?:\|[^\n]*\n)+)")
+READ_TOOLS = ["list_folders", "search_mail", "get_message", "get_thread",
+              "list_attachments", "select_digest_candidates"]
 ACTIONS = ["mark_read", "mark_unread", "move_mail", "archive_mail", "trash_mail"]
 EVIDENCE_STEPS = ACTIONS + ["refusal probe", "rollback rehearsal"]
 # Checksum steps must appear in this order: staged comparison before install
@@ -193,6 +195,24 @@ def order_errors(guide):
     return failures
 
 
+def catalog_errors(section):
+    bullets = re.findall(r"^- (.*?)(?=^- |^\s*$|\Z)", section, re.M | re.S)
+    catalogs = (("disabled", "disabled catalog is the six-tool set", "", READ_TOOLS),
+                ("enabled", "enabled catalog is the eleven-tool set", "those six plus", ACTIONS))
+
+    failures = []
+    for name, label, base, members in catalogs:
+        bullet = next((normalize(b) for b in bullets if label in normalize(b)), None)
+        if bullet is None:
+            failures.append(f"catalog: {name} bullet missing")
+            continue
+        listed = [tool for tool in re.findall(r"`([^`]+)`", bullet) if tool != "mutations"]
+        if listed != members or base not in bullet:
+            failures.append(f"catalog: {name} members expected {members}, found {listed}")
+
+    return failures
+
+
 def action_errors(section):
     failures = []
     rows = table_rows(section)
@@ -258,6 +278,7 @@ def verify(guide, readme, exists):
     else:
         failures.extend(contract_errors(contracts[0]))
 
+    failures.extend(catalog_errors(sections.get("Catalog and rollback rehearsal", "")))
     failures.extend(action_errors(sections.get("Action procedure", "")))
     failures.extend(evidence_errors(guide, sections.get("Public evidence template", "")))
 
@@ -362,6 +383,20 @@ def self_test(guide, readme):
         phrase_case("older binary assumed eleven tools", catalog,
                     "Do not assume an older binary has eleven tools"),
         phrase_case("missing first-install absence", catalog, "first-install absence"),
+        ("disabled members omitted", edit(
+            catalog, ": `list_folders`, `search_mail`, `get_message`, `get_thread`, "
+            "`list_attachments` and `select_digest_candidates`."), readme, repository_file,
+         "catalog: disabled members expected"),
+        ("disabled member missing", edit(catalog, "`get_thread`, "), readme,
+         repository_file, "catalog: disabled members expected"),
+        ("enabled members omitted", edit(
+            catalog, ": those six plus `mark_read`, `mark_unread`, `move_mail`, "
+            "`archive_mail` and `trash_mail`."), readme, repository_file,
+         "catalog: enabled members expected"),
+        ("enabled member missing", edit(catalog, "`mark_unread`, "), readme,
+         repository_file, "catalog: enabled members expected"),
+        ("enabled base set omitted", edit(catalog, "those six plus", "plus"), readme,
+         repository_file, "catalog: enabled members expected"),
         ("contract enabled catalog changed", edit_contract(
             lambda c: c["catalog"].update(enabled_tools=6)), readme, repository_file,
          "contract: catalog.enabled_tools changed"),
