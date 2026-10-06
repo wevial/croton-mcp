@@ -14,7 +14,10 @@ LINK = "docs/USER-INSTALL.md"
 FIXTURE = re.compile(r"<!-- user-install-config -->\s*```json\n(.*?)\n```", re.S)
 REQUIRED = {
     "Source build": ("REVIEWED_REVISION", "checkout --detach", "go1.26.6",
-                     "./cmd/croton-mcp", "go build", "go vet", "go test -race"),
+                     "./cmd/croton-mcp", "go build", "go vet", "go test -race",
+                     "published `RELEASE_TAG`", "matching published non-draft GitHub release",
+                     "Do not build a moving branch or a directly chosen untagged SHA",
+                     "`isDraft` is false; otherwise STOP"),
     "User-owned layout": ("absolute", "operator-owned", "0700", "umask 077",
                           "croton-mcp.candidate", "SHA-256"),
     "TLS and configuration prerequisites": (
@@ -41,6 +44,8 @@ REQUIRED = {
         "Explicitly authorized live read", "separately authorizes", "tools/call",
         "no validated Claude Code or Codex compatibility"),
     "Update and rollback": (
+        "Select another published release tag, never a moving branch or an untagged SHA",
+        "Publication grants no authority to install or enable anything",
         "reviewed revision", "backup", "hash", "permissions", "rename",
         "rename the staged executable and every staged config, helper and trust file",
         "Do not reopen the client session until the complete matched set is installed and verified",
@@ -48,8 +53,9 @@ REQUIRED = {
         "Restore", "previously absent", "catalog-only", "user-service",
         "self-update", "transient", "no commands to modify or restart running services"),
     "Troubleshooting": ("Configuration unreadable", "Catalog succeeds", "synthetic stubs"),
-    "Distribution limitations": ("source-build", "does not currently provide published binary releases",
-                                 "install packages", "release updater"),
+    "Distribution limitations": ("source-build path from a published release tag",
+                                 "does not claim that any release has been published",
+                                 "install packages", "release updater", "binary signing"),
 }
 
 
@@ -148,6 +154,14 @@ def self_test(guide, readme):
     if match is None:
         raise ValueError("self-test requires the baseline fixture")
 
+    def reword(phrase, replacement):
+        # Guide prose wraps, so match the phrase across any whitespace.
+        pattern = r"\s+".join(map(re.escape, phrase.split()))
+        reworded, count = re.subn(pattern, replacement, guide)
+        if count == 0:
+            raise ValueError(f"self-test phrase absent: {phrase!r}")
+        return reworded
+
     def mutate_config(change):
         cfg = json.loads(match[1])
         change(cfg)
@@ -180,6 +194,22 @@ def self_test(guide, readme):
          readme, "unexpected bounds or audit fields"),
         ("inline credentials", mutate_config(lambda c: c["imap"].update(password="synthetic")),
          readme, "invalid JSON configuration shape"),
+        ("untagged source selection", reword(
+            "Do not build a moving branch or a directly chosen untagged SHA",
+            "Select any reviewed SHA"),
+         readme, "missing contract phrase 'Do not build a moving branch"),
+        ("missing draft check", reword(
+            "`isDraft` is false; otherwise STOP",
+            "it looks right"),
+         readme, "missing contract phrase '`isDraft` is false; otherwise STOP'"),
+        ("untagged update", reword(
+            "Select another published release tag, never a moving branch or an untagged SHA",
+            "Select another explicit reviewed revision"),
+         readme, "missing contract phrase 'Select another published release tag"),
+        ("claimed publication", reword(
+            "does not claim that any release has been published",
+            "documents the published first release"),
+         readme, "missing contract phrase 'does not claim that any release has been published'"),
         ("missing link", guide, readme.replace(LINK, "docs/MISSING.md"), "guide link missing"),
         ("missing no-follow caution", guide.replace("no-follow", "ordinary"),
          readme, "missing contract phrase 'no-follow'"),

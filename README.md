@@ -53,6 +53,9 @@ See [the user-owned installation guide](docs/USER-INSTALL.md) for source builds,
 configuration and credential-helper prerequisites, catalog verification, and
 staged updates and rollback.
 
+See [the Mail release guide](docs/RELEASE.md) for the manual tagged-release
+checklist, staged per-platform checksums and acceptance of published bytes.
+
 ## Platform support
 
 Linux and macOS are supported and receive identical configuration-loading
