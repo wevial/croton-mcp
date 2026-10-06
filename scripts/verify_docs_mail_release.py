@@ -187,6 +187,7 @@ RECIPE_ORDER = (
 DOWNLOAD_LINES = (
     ("host platform", 'HOST_PLATFORM="$(go env GOHOSTOS)-$(go env GOHOSTARCH)"'),
     ("platform asset name", 'MAIL_RELEASE_ASSET="croton-mcp-$RELEASE_TAG-$HOST_PLATFORM"'),
+    ("download directory", "MAIL_RELEASE_DIR=/absolute/operator/candidates/mail-release"),
     ("absent download directory", 'test ! -e "$MAIL_RELEASE_DIR"'),
     ("two-asset download",
      'gh release download "$RELEASE_TAG" --repo wevial/croton-mcp --dir "$MAIL_RELEASE_DIR" '
@@ -271,9 +272,18 @@ def download_errors(release):
 
     failures = []
     lines = [line.strip() for line in recipes[0].splitlines() if line.strip()]
+    positions = []
     for name, expected in DOWNLOAD_LINES:
         if lines.count(expected) != 1:
             failures.append(f"download recipe: missing {name}")
+        else:
+            positions.append(lines.index(expected))
+    if positions != sorted(positions):
+        failures.append("download recipe: steps out of order")
+
+    # The directory checked for absence and passed to --dir is assigned only once.
+    if any(re.match(r"(?:export\s+)?MAIL_RELEASE_DIR=", line) and line != DOWNLOAD_LINES[2][1] for line in lines):
+        failures.append("download recipe: download directory assigned other than once")
     if any(TARGET.search(line) for line in lines):
         failures.append("download recipe: configured target used as host platform")
 
@@ -432,11 +442,20 @@ def self_test(docs):
         ("configured target platform", reword(
             docs, "release", DOWNLOAD_LINES[0][1], 'HOST_PLATFORM="$(go env GOOS)-$(go env GOARCH)"'),
          test_manifest_and_published_bytes, "download recipe: configured target used as host platform"),
+        ("download directory removed", reword(docs, "release", DOWNLOAD_LINES[2][1], ""),
+         test_manifest_and_published_bytes, "download recipe: missing download directory"),
+        ("download directory after download", reword(
+            reword(docs, "release", DOWNLOAD_LINES[2][1], ""), "release",
+            DOWNLOAD_LINES[-1][1], DOWNLOAD_LINES[-1][1] + "\n" + DOWNLOAD_LINES[2][1]),
+         test_manifest_and_published_bytes, "download recipe: steps out of order"),
+        ("download directory reassigned", reword(
+            docs, "release", DOWNLOAD_LINES[3][1], "MAIL_RELEASE_DIR=/tmp/other\n" + DOWNLOAD_LINES[3][1]),
+         test_manifest_and_published_bytes, "download recipe: download directory assigned other than once"),
         ("download pattern without value", reword(
-            docs, "release", DOWNLOAD_LINES[3][1], 'gh release download "$RELEASE_TAG" --repo wevial/croton-mcp --pattern'),
+            docs, "release", DOWNLOAD_LINES[-1][1], 'gh release download "$RELEASE_TAG" --repo wevial/croton-mcp --pattern'),
          test_manifest_and_published_bytes, "download recipe: missing two-asset download"),
         ("manifest asset not downloaded", reword(
-            docs, "release", DOWNLOAD_LINES[3][1], DOWNLOAD_LINES[3][1].rsplit(" --pattern", 1)[0]),
+            docs, "release", DOWNLOAD_LINES[-1][1], DOWNLOAD_LINES[-1][1].rsplit(" --pattern", 1)[0]),
          test_manifest_and_published_bytes, "download recipe: missing two-asset download"),
         ("missing download marker", reword(docs, "release", "<!-- mail-release-download-recipe -->", ""),
          test_manifest_and_published_bytes, "download recipe: expected one marked recipe"),
