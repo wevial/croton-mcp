@@ -20,8 +20,8 @@ agent conversations or the public evidence template.
 
 ## Release selection prerequisite
 
-The pilot is blocked until a suitable tagged release is published. Before the
-install gate, the operator records privately:
+The pilot is blocked until a suitable tagged release is published. Before
+install approval, the operator records privately:
 
 1. An operator-selected published git tag in the public repository.
 2. A matching GitHub release for that same tag. A tag without a matching
@@ -29,11 +29,18 @@ install gate, the operator records privately:
 3. The resolved full revision: the full 40-hex commit SHA the tag points to,
    reviewed by the maintainer. Use it as `REVIEWED_REVISION` in the source
    build; never build a moving branch or an unresolved tag name.
-4. The staged-manifest SHA-256: the `sha256` recorded in the candidate
-   `manifest.json`, whose `revision` must equal the resolved full revision.
-5. An independent installed-binary checksum: compute the SHA-256 of the
-   installed executable with the platform's local hash utility and compare it
-   with the manifest SHA-256. A mismatch stops the pilot.
+4. The staged-manifest SHA-256: build the candidate with the installation
+   guide's staging helper into a new candidate directory, outside the install
+   layout, and record the `sha256` from its `manifest.json`, whose `revision`
+   must equal the resolved full revision.
+5. A staged-binary checksum: compute the SHA-256 of the candidate directory's
+   `croton-mcp` with the platform's local hash utility and compare it with the
+   manifest SHA-256. A mismatch stops the pilot.
+
+Staging a candidate installs nothing and changes no installed executable. The
+independent installed-binary checksum cannot exist yet: a first install has no
+executable, and an upgrade's existing executable is the previous release. It is
+verified after installation instead, as described under Installation.
 
 Do not download a release binary; build from the resolved revision. Checksums
 provide integrity, not signatures or provenance attestation.
@@ -62,6 +69,12 @@ that guide: its source build, staging, layout, configuration, credential-helper
 and update procedures apply unchanged, and its Distribution limitations still
 hold. Leave `mutations` absent for the install gate.
 
+After the authorized installation, and before any later gate, verify the
+independent installed-binary checksum: compute the SHA-256 of the final
+installed executable with the platform's local hash utility and compare it
+with the manifest SHA-256. A mismatch stops the pilot; keep launches blocked
+and restore the prior set with the installation guide's rollback step.
+
 ## Catalog and rollback rehearsal
 
 Use catalog-only verification from the installation guide, restricted to
@@ -81,10 +94,12 @@ absence by removing only the exact targets recorded as previously absent.
 After restoring, check the catalog against the prior release's own documented
 catalog. Do not assume an older binary has eleven tools or any triage tool;
 after a first-install rollback there is no Croton catalog to check. Then
-reinstall the selected release and repeat the six-tool check.
+reinstall the selected release, verify the independent installed-binary
+checksum again against the manifest SHA-256, and repeat the six-tool check.
 
-Enable only by staging a reviewed configuration with `mutations.enabled` set to
-true through the same update procedure, then confirm the eleven-tool catalog.
+Only after both installed-binary checks match, enable by staging a reviewed
+configuration with `mutations.enabled` set to true through the same update
+procedure, then confirm the eleven-tool catalog.
 Catalog checks do not invoke the helper, connect to Bridge or read mail.
 
 ## Pilot selection and approval
@@ -214,7 +229,8 @@ does not enforce anything at runtime.
     "matching_github_release": true,
     "full_revision": "resolved_and_reviewed",
     "manifest_sha256": "recorded_from_staged_manifest",
-    "installed_binary_sha256": "independently_compared",
+    "staged_binary_sha256": "compared_before_install_approval",
+    "installed_binary_sha256": "verified_after_install_and_reinstall_before_enablement",
     "pilot_blocked_until_published": true
   },
   "gates": ["install", "rollback_rehearsal", "local_enablement", "bounded_live_read_write"],

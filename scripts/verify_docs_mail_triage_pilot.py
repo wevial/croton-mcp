@@ -20,6 +20,14 @@ CONTRACT = re.compile(r"<!-- mail-triage-pilot-contract -->\s*```json\n(.*?)\n``
 EVIDENCE = re.compile(r"<!-- mail-triage-pilot-evidence -->\n((?:\|[^\n]*\n)+)")
 ACTIONS = ["mark_read", "mark_unread", "move_mail", "archive_mail", "trash_mail"]
 EVIDENCE_STEPS = ACTIONS + ["refusal probe", "rollback rehearsal"]
+# Checksum steps must appear in this order: staged comparison before install
+# approval, installed verification after installation and reinstallation, then
+# enablement. A first install has no executable to hash beforehand.
+ORDER = ("Before install approval, the operator records privately",
+         "A staged-binary checksum", "1. Install approval:",
+         "verify the independent installed-binary checksum:",
+         "verify the independent installed-binary checksum again",
+         "Only after both installed-binary checks match, enable")
 PREAMBLE = ("non-executing procedure",
             "grants no installation, enablement, account access or live-write authority",
             "nothing in it has been run", "intentionally stricter")
@@ -31,7 +39,8 @@ EXPECTED = {
         "matching_github_release": True,
         "full_revision": "resolved_and_reviewed",
         "manifest_sha256": "recorded_from_staged_manifest",
-        "installed_binary_sha256": "independently_compared",
+        "staged_binary_sha256": "compared_before_install_approval",
+        "installed_binary_sha256": "verified_after_install_and_reinstall_before_enablement",
         "pilot_blocked_until_published": True,
     },
     "gates": ["install", "rollback_rehearsal", "local_enablement", "bounded_live_read_write"],
@@ -75,21 +84,27 @@ REQUIRED = {
     "Release selection prerequisite": (
         "blocked until a suitable tagged release is published",
         "operator-selected published git tag", "matching GitHub release",
-        "resolved full revision", "full 40-hex commit SHA", "staged-manifest SHA-256",
-        "independent installed-binary checksum", "compare it with the manifest SHA-256",
-        "A mismatch stops the pilot", "Do not download a release binary"),
+        "Before install approval", "resolved full revision", "full 40-hex commit SHA",
+        "staged-manifest SHA-256", "A staged-binary checksum",
+        "compare it with the manifest SHA-256", "A mismatch stops the pilot",
+        "Staging a candidate installs nothing", "cannot exist yet",
+        "Do not download a release binary"),
     "Authorization gates": (
         "four gates", "Approval of one gate grants nothing for the next",
         "Install approval:", "Rollback-rehearsal approval:", "Enablement approval:",
         "Bounded live read/write approval:", "per-payload confirmation"),
     "Installation": (
         "[user-owned installation guide](USER-INSTALL.md)",
-        "does not rewrite or relax that guide", "Leave `mutations` absent"),
+        "does not rewrite or relax that guide", "Leave `mutations` absent",
+        "After the authorized installation", "independent installed-binary checksum",
+        "final installed executable"),
     "Catalog and rollback rehearsal": (
         "disabled catalog is the six-tool set", "enabled catalog is the eleven-tool set",
         "complete matched artifact set", "first-install absence",
         "prior release's own documented catalog",
-        "Do not assume an older binary has eleven tools"),
+        "Do not assume an older binary has eleven tools",
+        "verify the independent installed-binary checksum again",
+        "Only after both installed-binary checks match"),
     "Pilot selection and approval": (
         "Own-account scope", "about ten self-sent messages", "one initial pilot folder",
         "Real-inbox prohibition", "Five-UID limit", "at most five UIDs",
@@ -164,6 +179,20 @@ def contract_errors(raw):
     return failures
 
 
+def order_errors(guide):
+    normalized = normalize(guide)
+    positions = [normalized.find(marker) for marker in ORDER]
+    if -1 in positions:
+        return [f"order: checksum step missing: {ORDER[positions.index(-1)]!r}"]
+
+    failures = []
+    for earlier, later, first, second in zip(ORDER, ORDER[1:], positions, positions[1:]):
+        if first >= second:
+            failures.append(f"order: {earlier!r} must precede {later!r}")
+
+    return failures
+
+
 def action_errors(section):
     failures = []
     rows = table_rows(section)
@@ -220,6 +249,8 @@ def verify(guide, readme, exists):
         for phrase in phrases:
             if phrase not in normalized:
                 failures.append(f"{heading}: missing contract phrase {phrase!r}")
+
+    failures.extend(order_errors(guide))
 
     contracts = CONTRACT.findall(guide)
     if len(contracts) != 1:
@@ -294,13 +325,27 @@ def self_test(guide, readme):
         phrase_case("missing tag selection", release, "operator-selected published git tag"),
         phrase_case("missing full revision", release, "full 40-hex commit SHA"),
         phrase_case("missing manifest checksum", release, "staged-manifest SHA-256"),
-        phrase_case("missing binary checksum", release, "independent installed-binary checksum"),
+        phrase_case("missing staged-binary checksum", release, "A staged-binary checksum"),
+        phrase_case("missing installed-binary checksum", "Installation",
+                    "independent installed-binary checksum"),
+        phrase_case("missing reinstall checksum", catalog,
+                    "verify the independent installed-binary checksum again"),
+        phrase_case("enablement not after checksums", catalog,
+                    "Only after both installed-binary checks match"),
+        ("installed hash before install approval", edit(
+            release, "Do not download a release binary",
+            "Then verify the independent installed-binary checksum: hash the installed "
+            "executable. Do not download a release binary"), readme, repository_file,
+         "order: '1. Install approval:' must precede 'verify the independent installed-binary"),
         ("contract without publication gate", edit_contract(
             lambda c: c["release"].pop("matching_github_release")), readme, repository_file,
          "contract: release.matching_github_release missing"),
         ("contract without binary comparison", edit_contract(
             lambda c: c["release"].update(installed_binary_sha256="trusted")), readme,
          repository_file, "contract: release.installed_binary_sha256 changed"),
+        ("contract installed hash before install", edit_contract(
+            lambda c: c["release"].update(installed_binary_sha256="recorded_before_install")),
+         readme, repository_file, "contract: release.installed_binary_sha256 changed"),
         phrase_case("missing install approval", gates, "Install approval:"),
         phrase_case("missing enablement approval", gates, "Enablement approval:"),
         phrase_case("missing per-payload confirmation", gates, "per-payload confirmation"),
