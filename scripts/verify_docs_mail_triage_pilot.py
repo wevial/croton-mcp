@@ -62,6 +62,13 @@ EXPECTED = {
         "session_approval": False,
         "real_inbox": "prohibited",
     },
+    "identities": {
+        "search_mail_supplies_uids": False,
+        "source": "blocked_until_release_documents_supported_source",
+        "decode_or_guess": False,
+        "subject_marker": "per_run_unique",
+        "result_check": "known_pilot_messages_or_stop",
+    },
     "actions": ACTIONS,
     "refusal": {
         "probe": "move_mail_source_equals_destination_single_message",
@@ -112,8 +119,14 @@ REQUIRED = {
         "Real-inbox prohibition", "Five-UID limit", "at most five UIDs",
         "Exact payload confirmation",
         "the tool, source mailbox, UIDVALIDITY, ordered UIDs and the move destination when present",
-        "no reusable session approval"),
-    "Action procedure": ("existing MCP contract", "Proton app state"),
+        "no reusable session approval", "no shipped read tool supplies triage identities",
+        "opaque HMAC-bound message ids", "triage tools accept no message id",
+        "blocked until a published release documents a supported, bounded source",
+        "Never decode, derive or guess identities", "Put one per-run unique marker",
+        "not a pilot-only boundary", "compare every result with the known pilot messages",
+        "stop if any result does not match"),
+    "Action procedure": ("existing MCP contract", "Proton app state",
+                         "only after the supported identity source above exists"),
     "Definitive refusal observation": (
         "safe source-equals-destination probe", "single-message `move_mail` call",
         "explicit payload confirmation", "Observe the refusal privately",
@@ -412,6 +425,23 @@ def self_test(guide, readme):
         ("contract session approval allowed", edit_contract(
             lambda c: c["scope"].update(session_approval=True)), readme, repository_file,
          "contract: scope.session_approval changed"),
+        phrase_case("search_mail assumed to supply identities", scope,
+                    "no shipped read tool supplies triage identities"),
+        phrase_case("missing identity-source block", scope,
+                    "blocked until a published release documents a supported, bounded source"),
+        phrase_case("identity decoding allowed", scope, "Never decode, derive or guess identities"),
+        phrase_case("missing per-run marker", scope, "Put one per-run unique marker"),
+        phrase_case("missing known-pilot result check", scope,
+                    "compare every result with the known pilot messages"),
+        phrase_case("missing mismatch stop", scope, "stop if any result does not match"),
+        phrase_case("actions not blocked on identity source", "Action procedure",
+                    "only after the supported identity source above exists"),
+        ("contract search_mail supplies identities", edit_contract(
+            lambda c: c["identities"].update(search_mail_supplies_uids=True)), readme,
+         repository_file, "contract: identities.search_mail_supplies_uids changed"),
+        ("contract result check omitted", edit_contract(
+            lambda c: c["identities"].pop("result_check")), readme, repository_file,
+         "contract: identities.result_check missing"),
     ]
     for tool in ACTIONS:
         cases.append((f"missing {tool} row", edit("Action procedure", row(tool)), readme,

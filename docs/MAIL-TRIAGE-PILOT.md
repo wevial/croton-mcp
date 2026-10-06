@@ -106,7 +106,8 @@ Catalog checks do not invoke the helper, connect to Bridge or read mail.
 
 - Own-account scope: use only the operator's own Proton account.
 - Send about ten self-sent messages with synthetic subjects and bodies and no
-  attachments, personal data or forwarded content.
+  attachments, personal data or forwarded content. Every subject carries the
+  per-run unique marker described below.
 - Using the Proton app, not Croton, create one initial pilot folder under
   `Folders/` and move the test messages there. Also create one empty pilot
   destination folder under `Folders/` for `move_mail`.
@@ -121,14 +122,29 @@ Catalog checks do not invoke the helper, connect to Bridge or read mail.
   payload. A direct request is not enough, and there is no reusable session
   approval.
 
-Obtain identities only from a separately authorized fresh read of the pilot
-folder, such as a bounded `search_mail`, and keep them private. When pilot
-messages are in Archive or Trash, which also hold real mail, restrict that read
-with a `search_mail` subject filter matching only the synthetic pilot subjects.
+Identity source: no shipped read tool supplies triage identities.
+`search_mail` and the other read tools return opaque HMAC-bound message ids,
+not the mailbox UIDVALIDITY or numeric UIDs, and the triage tools accept no
+message id. The action procedure, refusal probe and any return move are
+therefore blocked until a published release documents a supported, bounded
+source of UIDVALIDITY and numeric UIDs for selected messages; providing that
+source is separate approved work, not part of this runbook. Never decode,
+derive or guess identities from opaque ids, and never obtain them through
+another IMAP client or any path outside the documented MCP interface.
+
+Once that supported source exists, obtain identities only from a separately
+authorized fresh read of the pilot folder and keep them private. Put one
+per-run unique marker, a fresh random string absent from real mail, in every
+synthetic pilot subject. When pilot messages are in Archive or Trash, which
+also hold real mail, restrict that read to subjects containing the marker,
+for example with a `search_mail` subject filter. A substring filter is not a
+pilot-only boundary, so compare every result with the known pilot messages
+before using any identity for a write; stop if any result does not match.
 
 ## Action procedure
 
-Run each action once, in table order, on pilot messages only. Before and after
+Run each action once, in table order, on pilot messages only, and only after
+the supported identity source above exists. Before and after
 each call, privately compare the Proton app state described in its row, and
 record only the outcome category in the template below.
 
@@ -249,6 +265,13 @@ does not enforce anything at runtime.
     "confirmation": "each_displayed_exact_payload",
     "session_approval": false,
     "real_inbox": "prohibited"
+  },
+  "identities": {
+    "search_mail_supplies_uids": false,
+    "source": "blocked_until_release_documents_supported_source",
+    "decode_or_guess": false,
+    "subject_marker": "per_run_unique",
+    "result_check": "known_pilot_messages_or_stop"
   },
   "actions": ["mark_read", "mark_unread", "move_mail", "archive_mail", "trash_mail"],
   "refusal": {
