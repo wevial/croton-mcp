@@ -10,18 +10,27 @@ unchanged; this guide does not authorize that deployment.
 
 ## Source build
 
-Obtain the source from the repository and explicitly select a full reviewed
-commit SHA. Do not build an unreviewed moving branch or infer a release from a
-tag. The commands below are examples for the operator, run in a new checkout;
-stop on any failure. Git and Go must already be installed. Dependency download
-may require network access; these are not offline build instructions.
+Select a release only by an operator-selected published `RELEASE_TAG`: a
+reviewed git tag plus a matching published non-draft GitHub release, as defined
+in the [Mail release guide](RELEASE.md). Do not build a moving branch or a
+directly chosen untagged SHA. Check that the GitHub release `tagName` exactly
+equals `RELEASE_TAG` and `isDraft` is false; otherwise STOP. Resolve that exact
+tag to its full commit SHA as `REVIEWED_REVISION`; `targetCommitish` alone is
+not proof of the tag's resolved SHA. The commands below are examples for the
+operator, run in a new checkout; stop on any failure. Git, Go and an
+authenticated GitHub CLI must already be installed. Dependency download may
+require network access; these are not offline build instructions.
 
+<!-- mail-release-tagged-recipe -->
 ```sh
+RELEASE_TAG='<published-release-tag>'
+gh release view "$RELEASE_TAG" --repo wevial/croton-mcp --json tagName,isDraft
 git clone https://github.com/wevial/croton-mcp.git /absolute/operator/source/croton-mcp
 cd /absolute/operator/source/croton-mcp
-REVIEWED_REVISION='<full-reviewed-commit-sha>'
+REVIEWED_REVISION="$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")"
+printf '%s\n' "$REVIEWED_REVISION"
 git checkout --detach "$REVIEWED_REVISION"
-git rev-parse HEAD
+test "$(git rev-parse HEAD)" = "$REVIEWED_REVISION"
 export GOTOOLCHAIN=go1.26.6
 go version
 go build ./...
@@ -31,10 +40,10 @@ MAIL_CANDIDATE_DIR=/absolute/operator/candidates/mail-reviewed
 python3 scripts/stage_mail_candidate.py --revision "$REVIEWED_REVISION" --output "$MAIL_CANDIDATE_DIR"
 ```
 
-Confirm HEAD equals the reviewed SHA and `go version` reports Go 1.26.6,
-matching the repository's `go.mod` toolchain. Review and retain the candidate
-manifest with its SHA, toolchain, platform, and binary SHA-256 locally. Race tests
-require a supported C compiler.
+Record the printed full SHA and confirm HEAD equals it. Confirm `go version`
+reports Go 1.26.6, matching the repository's `go.mod` toolchain. Review and
+retain the candidate manifest with its SHA, toolchain, platform, and binary
+SHA-256 locally. Race tests require a supported C compiler.
 Build only the Mail executable for installation; Drive has a separate setup.
 
 The local staging helper requires Python 3.12 or newer, a full maintainer-reviewed
@@ -58,6 +67,15 @@ Nothing is published or installed by the helper; it makes no profile or service
 changes and accesses no live accounts. Synthetic subprocess tests verify the
 helper contract only; they are not evidence that a real release was built.
 Actual candidate acceptance remains a separate operator step.
+
+A source build and published-byte acceptance are different paths. Locally
+rebuilt bytes are not assumed equal to a release asset: builds are not
+guaranteed reproducible, so a binary built here from a release tag can hash
+differently from the binary published for that tag. Pilot acceptance requires
+the selected published staged bytes whose SHA-256 matches the release notes, as
+described in the release guide; stage those bytes, not a local rebuild, for the
+pilot. If the platform is unsupported or no native asset is published for it,
+STOP the binary path.
 
 Candidate publication is not atomic. If linking the candidate files fails, the
 helper attempts to remove its linked files and the output directory. Cleanup
@@ -89,8 +107,11 @@ symlink aliases. Keep directories and artifacts operator-owned and unwritable
 by other users. This is operator policy for the binary, helper and trust file.
 
 For a first install, ensure both final and candidate names are absent (including
-dangling symlinks). Create the selected directories with mode `0700`, then stage
-the build in the selected bin directory, for example:
+dangling symlinks); if either is occupied, STOP rather than overwrite it. Create
+the selected directories with mode `0700`, then stage exactly one binary as
+`croton-mcp.candidate` in the selected bin directory, from exactly one entry.
+
+Source-build entry: copy the helper output from Source build, for example:
 
 ```sh
 umask 077
@@ -98,8 +119,25 @@ CROTON_BIN_DIR=/absolute/operator/bin
 install -m 0700 "$MAIL_CANDIDATE_DIR/croton-mcp" "$CROTON_BIN_DIR/croton-mcp.candidate"
 ```
 
-Compare the staged binary's SHA-256 with the build artifact using the platform's
-local hash utility. Prepare and verify the config, trust and helper below before
+Compare the staged binary's SHA-256 with the helper manifest `sha256` using the
+platform's local hash utility.
+
+Published-byte entry: for pilot acceptance, skip the source-build copy and copy
+the platform-named asset accepted under Accepting published bytes in the
+[Mail release guide](RELEASE.md) exactly once, for example:
+
+```sh
+umask 077
+CROTON_BIN_DIR=/absolute/operator/bin
+install -m 0700 "$MAIL_RELEASE_DIR/$MAIL_RELEASE_ASSET" "$CROTON_BIN_DIR/croton-mcp.candidate"
+```
+
+Hash the staged candidate with `sha256sum` on Linux or `shasum -a 256` on macOS
+and confirm it equals the release-note SHA-256 and the published manifest
+`sha256` before renaming it. Never copy a local rebuild over this candidate. On
+any mismatch, STOP; remove only that candidate and do not edit expected checksums.
+
+For either entry, prepare and verify the config, trust and helper below before
 renaming the candidate to `croton-mcp` in the same directory. Existing installs
 must use the backup and replacement procedure under Update and rollback.
 
@@ -236,9 +274,13 @@ credentials, protocol captures or unredacted diagnostics to agents or tickets.
 
 ## Update and rollback
 
-1. Select another explicit reviewed revision and repeat Source build in a fresh
-   checkout. Record its SHA, Go version and binary hash. Review configuration
-   changes before using an older config with a newer executable.
+1. Select another published release tag, never a moving branch or an untagged
+   SHA, and repeat Source build in a fresh checkout, or accept that tag's
+   published bytes as described in the release guide. Record the tag, its
+   reviewed revision, Go version and binary hash. Publication grants no
+   authority to install or enable anything; the update and any live read need
+   separate explicit operator approval. Review configuration changes before
+   using an older config with a newer executable.
 2. Before replacing anything, close the client's Croton session and prevent new
    launches through the client's normal controls. Confirm that its Croton child
    has exited. Do not overwrite a running binary or alter Bridge services.
@@ -247,7 +289,11 @@ credentials, protocol captures or unredacted diagnostics to agents or tickets.
    Back up each existing artifact with its permissions intact. Keep private
    backups local and protected; record the previous source SHA and client
    executable/argument settings. Do not log config or secret contents.
-4. Stage the candidate under a new unused filename in the selected bin directory.
+4. Stage the candidate under a new unused filename in the selected bin directory,
+   copied once from either the Source build helper output or, for published-byte
+   acceptance, the accepted platform-named asset. Compare its SHA-256 with the
+   helper manifest `sha256`, or with the release-note SHA-256 and the published
+   manifest `sha256` respectively; on mismatch, STOP.
    Stage every required reviewed config, helper and trust change as a regular
    file under a new unused name in its target directory with restrictive
    permissions. Verify staged hashes, ownership and modes, and confirm that
@@ -302,9 +348,14 @@ Never bypass certificate verification to make an update or rollback pass.
 
 ## Distribution limitations
 
-This is a source-build path. The repository does not currently provide published
-binary releases, supported install packages, a release updater, or a validated
-binary download channel through this guide. No release automation or publishing
-is performed here. Operators review revisions, build, stage, update and retain
-rollback artifacts themselves. Compilation on another platform is not proof of
-supported secure configuration loading or client compatibility.
+This is a source-build path from a published release tag, with optional
+acceptance of platform-identified staged binaries published with a matching
+release; see the [Mail release guide](RELEASE.md). This guide does not claim
+that any release has been published, and a tag without a matching published
+non-draft GitHub release means STOP. The repository does not provide supported
+install packages, a release updater, binary signing, installer automation, or
+a validated binary download channel beyond the manual checksum comparison in
+the release guide. No release automation or publishing is performed here.
+Operators select tags, build, stage, update and retain rollback artifacts
+themselves. Compilation on another platform is not proof of supported secure
+configuration loading or client compatibility.

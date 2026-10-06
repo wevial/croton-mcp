@@ -58,6 +58,9 @@ describes a later, separately authorized pilot of the opt-in triage tools on
 self-sent test messages, with a NOT RUN evidence template. It grants no
 installation, enablement or live-write authority.
 
+See [the Mail release guide](docs/RELEASE.md) for the manual tagged-release
+checklist, staged per-platform checksums and acceptance of published bytes.
+
 ## Platform support
 
 Linux and macOS are supported and receive identical configuration-loading
