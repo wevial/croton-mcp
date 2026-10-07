@@ -161,6 +161,10 @@ type Options struct {
 	// Stateful opts into mutable synthetic mailboxes; see STATEFUL.md. It
 	// cannot be combined with Messages, Seen or Scenario. Nil keeps legacy behavior.
 	Stateful *StatefulOptions
+
+	// Labels opts into the linked folder and label-view model; see STATEFUL.md.
+	// It cannot be combined with Stateful, Messages, Seen or Scenario.
+	Labels *LabelOptions
 }
 
 // Command is one client command observed by a Server.
@@ -181,6 +185,7 @@ type Server struct {
 	spkiPin   [sha256.Size]byte
 	options   Options
 	stateful  *mailboxStore
+	labels    *labelStore
 	done      chan struct{}
 
 	mu               sync.Mutex
@@ -255,6 +260,19 @@ func Start(options Options) (*Server, error) {
 		}
 	}
 
+	var labels *labelStore
+	if options.Labels != nil {
+		if options.Stateful != nil || len(options.Messages) > 0 || len(options.Seen) > 0 || options.Scenario != (Scenario{}) {
+			return nil, errors.New("testkit: label mode cannot be combined with Stateful, Messages, Seen or Scenario")
+		}
+
+		var err error
+		labels, err = newLabelStore(*options.Labels)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	options.Messages = append([]string(nil), options.Messages...)
 	options.Seen = append([]bool(nil), options.Seen...)
 
@@ -284,6 +302,7 @@ func Start(options Options) (*Server, error) {
 		spkiPin:     sha256.Sum256(leaf.RawSubjectPublicKeyInfo),
 		options:     options,
 		stateful:    stateful,
+		labels:      labels,
 		done:        make(chan struct{}),
 		connections: make(map[net.Conn]struct{}),
 	}
@@ -449,7 +468,7 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 	authenticated := false
 	connectionCommands := 0
 	var session *statefulSession
-	if server.stateful != nil {
+	if server.stateful != nil || server.labels != nil {
 		session = &statefulSession{}
 	}
 	for {
@@ -489,7 +508,12 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 				return
 			}
 
-			handled, keep := server.serveStateful(session, writer, tag, name, raw, tlsEstablished, authenticated)
+			serve := server.serveStateful
+			if server.labels != nil {
+				serve = server.serveLabels
+			}
+
+			handled, keep := serve(session, writer, tag, name, raw, tlsEstablished, authenticated)
 			if !keep {
 				return
 			}
