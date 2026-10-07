@@ -210,7 +210,11 @@ func mailboxNameMatches(stored, requested string) bool {
 }
 
 func (mailbox *statefulMailbox) selectable() bool {
-	for _, attribute := range mailbox.attributes {
+	return selectableAttributes(mailbox.attributes)
+}
+
+func selectableAttributes(attributes []string) bool {
+	for _, attribute := range attributes {
 		if strings.EqualFold(attribute, "\\Noselect") || strings.EqualFold(attribute, "\\NonExistent") {
 			return false
 		}
@@ -391,14 +395,8 @@ func (server *Server) withMailbox(name string, change func(*statefulMailbox) err
 // command was handled and whether the connection should remain open. Commands
 // it leaves unhandled use the shared TLS, authentication, NOOP and LOGOUT paths.
 func (server *Server) serveStateful(session *statefulSession, writer *bufio.Writer, tag, name, raw string, tlsEstablished, authenticated bool) (bool, bool) {
-	if match := trailingLiteral.FindStringSubmatch(raw); match != nil {
-		// Refuse before any continuation so a synchronizing literal is never
-		// transmitted. A non-synchronizing literal cannot be resynchronized.
-		if match[1] == "+" {
-			return true, false
-		}
-
-		return true, server.writeLine(writer, tagged(tag, "NO [CANNOT] literals are refused by the stateful fixture")) == nil
+	if handled, keep := server.refuseLiteral(writer, tag, raw); handled {
+		return true, keep
 	}
 
 	switch name {
@@ -445,11 +443,36 @@ func (server *Server) serveStateful(session *statefulSession, writer *bufio.Writ
 	return true, server.writeLines(writer, lines...)
 }
 
+// refuseLiteral reports whether raw ends in a literal and whether the
+// connection should remain open after refusing it.
+func (server *Server) refuseLiteral(writer *bufio.Writer, tag, raw string) (bool, bool) {
+	match := trailingLiteral.FindStringSubmatch(raw)
+	if match == nil {
+		return false, true
+	}
+
+	// Refuse before any continuation so a synchronizing literal is never
+	// transmitted. A non-synchronizing literal cannot be resynchronized.
+	if match[1] == "+" {
+		return true, false
+	}
+
+	return true, server.writeLine(writer, tagged(tag, "NO [CANNOT] literals are refused by the stateful fixture")) == nil
+}
+
 func refused(tag, command string) string {
 	return tagged(tag, "NO [CANNOT] "+command+" is refused by the stateful fixture")
 }
 
 func (server *Server) statefulList(tag string, arguments []imapToken) []string {
+	server.stateful.mu.Lock()
+	defer server.stateful.mu.Unlock()
+
+	return listLines(tag, arguments, server.stateful.mailboxes)
+}
+
+// listLines answers LIST from mailboxes the caller holds locked.
+func listLines(tag string, arguments []imapToken, mailboxes []*statefulMailbox) []string {
 	if len(arguments) != 2 || arguments[0].isList || arguments[1].isList {
 		return []string{tagged(tag, "BAD LIST requires a reference and a pattern")}
 	}
@@ -463,11 +486,8 @@ func (server *Server) statefulList(tag string, arguments []imapToken) []string {
 		return []string{"* LIST (\\Noselect) \"/\" \"\"", tagged(tag, "OK LIST completed")}
 	}
 
-	server.stateful.mu.Lock()
-	defer server.stateful.mu.Unlock()
-
-	lines := make([]string, 0, len(server.stateful.mailboxes)+1)
-	for _, mailbox := range server.stateful.mailboxes {
+	lines := make([]string, 0, len(mailboxes)+1)
+	for _, mailbox := range mailboxes {
 		if listPatternMatches(pattern, mailbox.name) || mailboxNameMatches(mailbox.name, pattern) {
 			lines = append(lines, fmt.Sprintf("* LIST (%s) %q %s", strings.Join(mailbox.attributes, " "), statefulDelimiter, quoteMailbox(mailbox.name)))
 		}
@@ -538,14 +558,19 @@ func (server *Server) statefulSelect(session *statefulSession, tag, name string,
 }
 
 func (server *Server) statefulStatus(tag string, arguments []imapToken) []string {
+	server.stateful.mu.Lock()
+	defer server.stateful.mu.Unlock()
+
+	return statusLines(tag, arguments, server.stateful.find)
+}
+
+// statusLines answers STATUS; find runs while the caller holds its state lock.
+func statusLines(tag string, arguments []imapToken, find func(string) *statefulMailbox) []string {
 	if len(arguments) != 2 || arguments[0].isList || !arguments[1].isList || len(arguments[1].list) == 0 {
 		return []string{tagged(tag, "BAD STATUS requires a mailbox and an item list")}
 	}
 
-	server.stateful.mu.Lock()
-	defer server.stateful.mu.Unlock()
-
-	mailbox := server.stateful.find(arguments[0].value)
+	mailbox := find(arguments[0].value)
 	if mailbox == nil || !mailbox.selectable() {
 		return []string{tagged(tag, "NO mailbox does not exist or is not selectable")}
 	}

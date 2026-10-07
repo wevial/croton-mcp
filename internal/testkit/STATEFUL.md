@@ -116,7 +116,8 @@ return `BAD`.
 Not implemented: ENVELOPE, BODYSTRUCTURE, sequence-number FETCH or SEARCH,
 IDLE, UNSELECT, NAMESPACE, CONDSTORE, UIDPLUS, extended LIST, COPY, EXPUNGE,
 arbitrary flag changes, and Scenario fault injection. Use the mutation faults
-below instead.
+below instead. Scoped COPY, `\Deleted` STORE and UID EXPUNGE exist only in the
+separate label mode below.
 
 ## Mutation faults
 
@@ -213,3 +214,99 @@ through `Options.Stateful`, the controls above and `InjectFault`. For a
 lost-completion or no-replay witness, arm the fault before the tool call, wait
 on `Finished()`, then compare the snapshot and count parsed `UID STORE` or
 `UID MOVE` entries per `ConnectionID`. Never use live mailbox data.
+
+## Label mode
+
+`Options.Labels` opts into a separate linked folder and label-view model. It
+is the first prerequisite for future label-safety witnesses, not a label
+adapter, a registered tool or proof of installed Bridge behavior. It cannot be
+combined with `Stateful`, `Messages`, `Seen` or `Scenario`, and it leaves the
+legacy and ordinary stateful modes, `AssertReadOnlyCommands` and the shipped
+Seen and MOVE guards unchanged. `InjectFault` and the mailbox controls above
+return an error in label mode.
+
+```go
+server, err := testkit.Start(testkit.Options{
+	Mode: testkit.ImplicitTLS,
+	Labels: &testkit.LabelOptions{
+		UIDPlus: true, // advertise UIDPLUS after login, emit COPYUID, accept UID EXPUNGE
+		Messages: []testkit.LabelMessage{
+			{ID: "A", Body: "...", Flags: []string{`\Seen`}},
+			{ID: "B", Body: "..."},
+		},
+		Views: []testkit.LabelViewSeed{
+			{Name: "INBOX", Role: testkit.FolderRole, UIDValidity: 7001, Members: []testkit.Membership{
+				{Message: "A", UID: 101}, {Message: "B", UID: 501},
+			}},
+			{Name: "Labels/One", Role: testkit.LabelRole, UIDValidity: 8001, Members: []testkit.Membership{
+				{Message: "B", UID: 101}, {Message: "A", UID: 501, Deleted: true},
+			}},
+		},
+	},
+})
+```
+
+- A message `ID` is a stable synthetic identity. It is never sent on the wire
+  and is not a UID mapping API. Identity is never inferred from bodies,
+  Message-ID or equal UID numbers; a client addresses each view by that view's
+  own UID and UIDVALIDITY.
+- Body and message `Flags`, such as `\Seen`, are shared by every view of a
+  message. `\Deleted` is view-local: it belongs to one `Membership` and is
+  rejected in message flags. FETCH returns the shared flags followed by the
+  view's `\Deleted`.
+- Every view needs an explicit `Role`. Behavior follows the role, never the
+  name: a `FolderRole` view named `Labels/...` is still a folder.
+- Seeds are rejected for a missing role, an empty or duplicate message ID, a
+  reference to an unknown message, a duplicate membership of one message in
+  one view, a duplicate or zero view UID, or a message without exactly one
+  folder membership. Members may be listed in any order and are stored in UID
+  order. UIDVALIDITY and UIDNEXT follow the ordinary stateful rules.
+- `LabelSnapshot()` returns a detached `LabelState` with messages in seed order
+  and views in LIST order. It reports false outside label mode, and
+  `Snapshot()` returns nil in label mode.
+
+Selection belongs to one connection and is lost on reconnect, as above. Other
+connections are not sent unsolicited updates.
+
+| Command | Behavior |
+| --- | --- |
+| `CAPABILITY` | `IMAP4rev1 AUTH=PLAIN`, plus `UIDPLUS` after authentication when enabled; never `MOVE` |
+| `LIST`, `STATUS` | as in ordinary stateful mode |
+| `SELECT` / `EXAMINE` | as in ordinary stateful mode; a read-write label view has `PERMANENTFLAGS (\Deleted)`, a folder `()` |
+| `UID SEARCH`, `UID FETCH` | ordinary stateful grammar over the selected view |
+| `UID COPY <uid> <mailbox>` | read-write folder selection, one existing selectable `LabelRole` target |
+| `UID STORE <uid> +FLAGS.SILENT (\Deleted)` | read-write label view selection only |
+| `UID EXPUNGE <uid>` | read-write label view selection and `UIDPlus: true` only |
+
+The new forms take exactly one UID number. A well-formed range, list or `*`
+returns `NO [CANNOT]`; a malformed set returns `BAD`.
+
+- UID COPY adds the folder message to the label view with the next UID from
+  the view's UIDNEXT. The folder, its UID, the body, shared flags and other
+  label memberships are unchanged. With UIDPLUS the tagged OK carries
+  `[COPYUID <uidvalidity> <source> <destination>]`. A missing source UID, or a
+  message already in the target, completes OK with no change and no COPYUID.
+- `\Deleted` STORE marks only that view's membership and returns no FETCH
+  update. A missing UID completes OK with no change.
+- UID EXPUNGE removes the membership only if it is marked `\Deleted` in the
+  selected view, sending one `* <n> EXPUNGE` before the tagged OK. The message
+  stays in its folder and other labels, and other marked entries in the view
+  are kept. An absent or unmarked UID completes OK with no change. These empty
+  completions are protocol results, not product refusals; a later tool must
+  check identities itself.
+
+Refusals are recorded and leave state unchanged:
+
+- UID EXPUNGE without UIDPLUS, or any new form without a selection: `BAD`
+- EXAMINE selection: `NO [READ-ONLY]`
+- missing COPY target: `NO [TRYCREATE]`
+- COPY from a label view, to a folder or to a nonselectable label view;
+  `\Deleted` STORE or UID EXPUNGE in a folder: `NO [CANNOT]`
+- `FLAGS` replacement, `-FLAGS`, non-silent `+FLAGS`, and any flag list other
+  than exactly `\Deleted`, including `\Seen`: `NO [CANNOT]`
+- `UID MOVE`, `COPY`, `STORE`, `EXPUNGE`, `CLOSE`, `MOVE`, `DELETE`, `APPEND`,
+  `CREATE`, `RENAME`, `SUBSCRIBE` and `UNSUBSCRIBE`: `NO [CANNOT]`
+
+Literals are refused as in ordinary stateful mode. Not modeled: fault
+injection, label creation, deletion or rename, rename or recreate races, and
+any implicit expunge.
