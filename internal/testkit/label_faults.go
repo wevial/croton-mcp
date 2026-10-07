@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -141,7 +142,7 @@ func (server *Server) claimLabelFault(session *statefulSession, command Command,
 
 // labelDispatchable returns the canonical target of a command that the label
 // dispatcher would apply: an exact single-UID COPY from a read-write folder to
-// a selectable label view, or an exact \Deleted STORE or, with UIDPLUS, UID
+// a selectable label view with a UID left for a new membership, or an exact \Deleted STORE or, with UIDPLUS, UID
 // EXPUNGE in a read-write label view.
 func (server *Server) labelDispatchable(session *statefulSession, command Command) (labelFaultKey, bool) {
 	parsed, err := ParseTranscriptCommand(command)
@@ -185,6 +186,12 @@ func (server *Server) labelDispatchable(session *statefulSession, command Comman
 		return labelFaultKey{}, false
 	}
 	key.destination = destination.name
+
+	// labelCopy refuses a new membership once the destination has no UIDs left.
+	member := view.byUID(parsed.Ranges[0].Start)
+	if member != nil && destination.byMessage(member.message) == nil && destination.uidNext == math.MaxUint32 {
+		return labelFaultKey{}, false
+	}
 
 	return key, true
 }

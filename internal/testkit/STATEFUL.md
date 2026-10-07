@@ -340,7 +340,8 @@ fault, err := server.InjectLabelFault(testkit.LabelFault{
   would apply, issued in the selector's view selected read-write, whose parsed
   verb, exact `Set` and COPY destination equal the selector. UID STORE must be
   exactly `+FLAGS.SILENT (\Deleted)`, and UID EXPUNGE needs `UIDPlus`. COPY
-  needs a folder selection and a selectable label destination; STORE and
+  needs a folder selection and a selectable label destination with a UID left
+  for a new membership, so a `NO [LIMIT]` COPY never matches; STORE and
   EXPUNGE need a label view. Any other command, including EXAMINE selections,
   refusals, reads and commands that do not parse exactly, runs normally and
   leaves the fault armed. Faults are consumed in injection order.

@@ -235,6 +235,34 @@ func TestLabelFaults(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+
+		// A COPY the dispatcher refuses for UID exhaustion leaves its fault
+		// armed. A COPY of an existing member still completes there, so it
+		// remains eligible.
+		exhausted := LabelOptions{
+			UIDPlus:  true,
+			Messages: []LabelMessage{{ID: "A", Body: labelBody("A")}, {ID: "B", Body: labelBody("B")}},
+			Views: []LabelViewSeed{
+				{Name: "INBOX", Role: FolderRole, UIDValidity: 7001, Members: []Membership{{Message: "A", UID: 101}, {Message: "B", UID: 102}}},
+				{Name: "Labels/Full", Role: LabelRole, UIDValidity: 8009, Members: []Membership{{Message: "B", UID: 4294967294}}},
+			},
+		}
+		server := startLabels(t, ImplicitTLS, exhausted)
+		limited := injectLabelFault(t, server, LabelFault{Command: "UID COPY", View: "INBOX", UID: "101", Destination: "Labels/Full", Boundary: BeforeApplication, Action: DropConnection})
+		existing := injectLabelFault(t, server, LabelFault{Command: "UID COPY", View: "INBOX", UID: "102", Destination: "Labels/Full", Boundary: BeforeApplication, Action: DropConnection})
+
+		session := labelSession(t, server, ImplicitTLS, "u", "INBOX")
+		requireExchange(t, session, "u3", `UID COPY 101 "Labels/Full"`, "u3 NO [LIMIT] destination mailbox has no UIDs left")
+		requireNotTriggered(t, limited, existing)
+		requireArmedLabelFaults(t, server, 2)
+		requireLabelSnapshot(t, server, seedLabelState(exhausted))
+
+		requireLost(t, session, `u4 UID COPY 102 "Labels/Full"`)
+		awaitSignal(t, existing.Finished(), "existing-member COPY fault close")
+		requireSessionTarget(t, server, existing, "u2", "u4")
+		requireNotTriggered(t, limited)
+		requireArmedLabelFaults(t, server, 1)
+		requireLabelSnapshot(t, server, seedLabelState(exhausted))
 	})
 
 	t.Run("lost_stage_responses", func(t *testing.T) {
