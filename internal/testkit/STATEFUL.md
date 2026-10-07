@@ -188,17 +188,18 @@ allowlist.
   comes only from the position after the tag. UID forms become `UID STORE`,
   `UID MOVE` and so on, so `UID COPY 1 "UID MOVE 1 Trash"` is a `UID COPY`.
   An unknown verb such as `XMOVE` is not a MOVE.
-- `STORE`, `COPY` and `MOVE`, with or without `UID`, get structured operands.
-  `Set` is the exact set text, and `Ranges` decodes it in wire order, with 0
-  meaning `*`. For STORE, `Store` is `FLAGS`, `+FLAGS` or `-FLAGS`, `Silent`
+- `STORE`, `COPY` and `MOVE`, with or without `UID`, and `UID EXPUNGE` get
+  structured operands. `Set` is the exact set text, and `Ranges` decodes it in
+  wire order, with 0 meaning `*`. `UID EXPUNGE` takes exactly one set and
+  nothing after it. Bare `EXPUNGE` keeps no operands and no `Set`. For STORE, `Store` is `FLAGS`, `+FLAGS` or `-FLAGS`, `Silent`
   reports `.SILENT`, and `Flags` lists the flags as sent from a parenthesized
   or bare list. For COPY and MOVE, `Destination` is the atom or the unquoted
   string with `\"` and `\\` escapes decoded. Mailbox names are not
   modified-UTF-7 decoded.
 - Every other verb keeps only its raw `Arguments`.
 - Malformed input returns an error, never a partial result. This covers
-  missing, extra or doubled spaces, trailing operands, zero,
-  leading-zero or out-of-range set numbers, unknown STORE operations, nested or
+  missing, extra or doubled spaces, missing or trailing operands, zero,
+  leading-zero or out-of-range set numbers, quoted sets, unknown STORE operations, nested or
   unbalanced flag lists, bad escapes, unterminated strings and literals.
   `ParseTranscript` stops at the first error and names its sequence number.
   Errors never include raw command text.
@@ -223,7 +224,7 @@ adapter, a registered tool or proof of installed Bridge behavior. It cannot be
 combined with `Stateful`, `Messages`, `Seen` or `Scenario`, and it leaves the
 legacy and ordinary stateful modes, `AssertReadOnlyCommands` and the shipped
 Seen and MOVE guards unchanged. `InjectFault` and the mailbox controls above
-return an error in label mode.
+return an error in label mode; use `InjectLabelFault` below.
 
 ```go
 server, err := testkit.Start(testkit.Options{
@@ -307,6 +308,60 @@ Refusals are recorded and leave state unchanged:
 - `UID MOVE`, `COPY`, `STORE`, `EXPUNGE`, `CLOSE`, `MOVE`, `DELETE`, `APPEND`,
   `CREATE`, `RENAME`, `SUBSCRIBE` and `UNSUBSCRIBE`: `NO [CANNOT]`
 
-Literals are refused as in ordinary stateful mode. Not modeled: fault
-injection, label creation, deletion or rename, rename or recreate races, and
-any implicit expunge.
+Literals are refused as in ordinary stateful mode. Not modeled: label
+creation, deletion or rename, rename or recreate races, and any implicit
+expunge.
+
+## Label faults
+
+`InjectLabelFault` arms a one-shot fault around one label-mode `UID COPY`,
+`\Deleted` `UID STORE` or `UID EXPUNGE`. It is fixture proof infrastructure
+for later witnesses, not Croton result handling: a dropped, held or refused
+fixture response does not show how a future tool classifies, aborts or avoids
+replay. Those claims need the real public entrypoint, with its transcript and
+state compared against this fixture.
+
+```go
+fault, err := server.InjectLabelFault(testkit.LabelFault{
+	Command:     "UID COPY",   // or "UID STORE", "UID EXPUNGE"
+	View:        "INBOX",      // the selected view
+	UID:         "101",        // exactly one UID as sent
+	Destination: "Labels/Two", // UID COPY only
+	Boundary:    testkit.AfterApplication,
+	Action:      testkit.DropConnection, // or HoldResponse, RejectCommand
+})
+```
+
+- Selector: `Command`, an existing `View`, a single nonzero `UID` without
+  leading zeros, `Boundary` and `Action` are required. UID COPY needs an
+  existing `Destination`; the other forms reject one. Ranges, lists, `*`,
+  other verbs and use outside label mode return an error and arm nothing.
+- The fault matches the first authenticated command that the label dispatcher
+  would apply, issued in the selector's view selected read-write, whose parsed
+  verb, exact `Set` and COPY destination equal the selector. UID STORE must be
+  exactly `+FLAGS.SILENT (\Deleted)`, and UID EXPUNGE needs `UIDPlus`. COPY
+  needs a folder selection and a selectable label destination with a UID left
+  for a new membership, so a `NO [LIMIT]` COPY never matches; STORE and
+  EXPUNGE need a label view. Any other command, including EXAMINE selections,
+  refusals, reads and commands that do not parse exactly, runs normally and
+  leaves the fault armed. Faults are consumed in injection order.
+- `BeforeApplication` never applies the target. `AfterApplication`
+  dispatches it once through the label dispatcher, releases the store lock,
+  and then fires; `Completion()` returns the withheld tagged line. That line
+  is a fixture oracle only; the client never sees it.
+- `DropConnection` closes the connection without a response line.
+- `HoldResponse` writes nothing. Unlike the ordinary hold, every further
+  input line is recorded in `Commands()` with the connection's ID and TLS
+  state, but never dispatched, until the client or `Server.Close` ends the
+  connection. A replay sent on a held connection is therefore visible in the
+  transcript and absent from state.
+- `RejectCommand` is accepted only for UID EXPUNGE at `BeforeApplication`.
+  It writes exactly `<tag> NO [UNAVAILABLE] UID EXPUNGE refused by fixture
+  fault`, with no EXPUNGE response, and keeps the connection open. A
+  `\Deleted` marker stored earlier stays visible; nothing repairs it. A later,
+  explicitly issued UID EXPUNGE runs normally.
+
+`Triggered()`, `Finished()`, `Command()` and `Completion()` behave as for
+ordinary faults. After `RejectCommand`, `Finished()` closes when that
+connection later ends. The ordinary `InjectFault`, its selectors and its hold
+semantics are unchanged and still return an error in label mode.

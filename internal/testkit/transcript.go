@@ -8,7 +8,8 @@ import (
 )
 
 // TranscriptCommand is one recorded command parsed by an exact grammar. Only
-// STORE, COPY and MOVE forms, with or without UID, get structured operands.
+// STORE, COPY and MOVE forms, with or without UID, and UID EXPUNGE get
+// structured operands.
 type TranscriptCommand struct {
 	Sequence     int
 	ConnectionID int
@@ -105,11 +106,13 @@ func ParseTranscriptCommand(command Command) (TranscriptCommand, error) {
 	}
 
 	var err error
-	switch strings.TrimPrefix(parsed.Verb, "UID ") {
-	case "STORE":
+	switch parsed.Verb {
+	case "STORE", "UID STORE":
 		err = parsed.parseStore(cursor)
-	case "COPY", "MOVE":
+	case "COPY", "UID COPY", "MOVE", "UID MOVE":
 		err = parsed.parseTransfer(cursor)
+	case "UID EXPUNGE":
+		err = parsed.parseSetOperand(cursor)
 	default:
 		return parsed, nil
 	}
@@ -124,7 +127,9 @@ func ParseTranscriptCommand(command Command) (TranscriptCommand, error) {
 	return parsed, nil
 }
 
-func (parsed *TranscriptCommand) parseSet(cursor *commandCursor) error {
+// parseSetOperand parses one set. As the last operand, as in UID EXPUNGE, any
+// text after it is rejected as trailing.
+func (parsed *TranscriptCommand) parseSetOperand(cursor *commandCursor) error {
 	parsed.Set = cursor.run(isSequenceSetChar)
 
 	ranges, err := parseSequenceSet(parsed.Set)
@@ -132,6 +137,14 @@ func (parsed *TranscriptCommand) parseSet(cursor *commandCursor) error {
 		return err
 	}
 	parsed.Ranges = ranges
+
+	return nil
+}
+
+func (parsed *TranscriptCommand) parseSet(cursor *commandCursor) error {
+	if err := parsed.parseSetOperand(cursor); err != nil {
+		return err
+	}
 
 	if !cursor.space() {
 		return errors.New("missing operand after set")

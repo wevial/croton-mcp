@@ -195,6 +195,7 @@ type Server struct {
 	nextConnectionID int
 	commands         []Command
 	faults           []*FaultHandle
+	labelFaults      []*FaultHandle
 	connections      map[net.Conn]struct{}
 	closeOnce        sync.Once
 	closeErr         error
@@ -471,6 +472,20 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 	if server.stateful != nil || server.labels != nil {
 		session = &statefulSession{}
 	}
+
+	// Label faults consumed on this connection finish once it is closed.
+	var labelFaults []*FaultHandle
+	defer func() {
+		if len(labelFaults) == 0 {
+			return
+		}
+
+		_ = connection.Close()
+		for _, fault := range labelFaults {
+			fault.finish()
+		}
+	}()
+
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
@@ -505,6 +520,14 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 				server.runFault(fault, session, reader, command, tag)
 				_ = connection.Close()
 				fault.finish()
+				return
+			}
+
+			if fault := server.claimLabelFault(session, command, authenticated); fault != nil {
+				labelFaults = append(labelFaults, fault)
+				if server.runLabelFault(fault, session, reader, writer, command, tag) {
+					continue
+				}
 				return
 			}
 
