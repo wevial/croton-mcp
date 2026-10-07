@@ -40,7 +40,12 @@ const (
 	DropConnection FaultAction = iota + 1
 	// HoldResponse writes nothing and discards further input until the client
 	// closes the connection or the fixture is closed. There is no release.
+	// A label fault records that input instead; see InjectLabelFault.
 	HoldResponse
+	// RejectCommand writes a definitive tagged NO instead of applying the
+	// target and keeps the connection open. Only a BeforeApplication label
+	// fault on UID EXPUNGE accepts it.
+	RejectCommand
 )
 
 // MutationFault selects one stateful mutation for a one-shot fault.
@@ -56,6 +61,8 @@ type MutationFault struct {
 // FaultHandle observes one armed fault.
 type FaultHandle struct {
 	selector  MutationFault
+	label     LabelFault
+	labelKey  labelFaultKey
 	triggered chan struct{}
 	finished  chan struct{}
 
@@ -104,6 +111,7 @@ func (handle *FaultHandle) Triggered() <-chan struct{} {
 }
 
 // Finished is closed after the fixture has closed the faulted connection.
+// After a RejectCommand label fault, that is when the connection later ends.
 func (handle *FaultHandle) Finished() <-chan struct{} {
 	return handle.finished
 }
