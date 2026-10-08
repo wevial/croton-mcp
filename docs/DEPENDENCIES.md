@@ -1,6 +1,6 @@
 # Dependency rationale
 
-Reviewed: 2026-08-05.
+Reviewed: 2026-08-05; Model Context Protocol SDK section reviewed 2026-10-08.
 
 ## Model Context Protocol SDK
 
