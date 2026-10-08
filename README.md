@@ -19,7 +19,10 @@ configuration allow.
 
 ## Status
 
-Early implementation, read-only by default. The executable supports MCP `2026-07-28` by default and the legacy `2025-11-25` initialization flow for older clients. Its local Bridge adapter supports bounded folder, status, search, metadata, and body reads over verified loopback TLS. Unless the configuration file sets `mutations.enabled` to true, it exposes no mail mutation. With that opt-in, the `mark_read` and `mark_unread` tools from the [Mail triage design](docs/design/0005-mail-triage.md) change only the Seen flag, one UID per `UID STORE`, `move_mail` moves messages to one exact, validated existing folder, one UID per native `UID MOVE`, and `archive_mail` and `trash_mail` do the same into the one selectable mailbox the server marks `\Archive` or `\Trash`, never deleting anything; no live account write has been exercised.
+Early implementation, read-only by default. The executable supports MCP `2026-07-28` by default and the legacy `2025-11-25` initialization flow for older clients. Its local Bridge adapter supports bounded folder, status, search, metadata, thread, attachment-metadata, and body reads over verified loopback TLS. Unless the configuration file sets `mutations.enabled` to true, it exposes no mail mutation. With that opt-in, the `mark_read` and `mark_unread` tools from the [Mail triage design](docs/design/0005-mail-triage.md) change only the Seen flag, one UID per `UID STORE`, `move_mail` moves messages to one exact, validated existing folder, one UID per native `UID MOVE`, and `archive_mail` and `trash_mail` do the same into the one selectable mailbox the server marks `\Archive` or `\Trash`, never deleting anything; no live account write has been exercised.
+
+No release tag exists yet, so the tagged-release steps in the installation and
+release guides cannot be followed until one is cut.
 
 Mail labels are planned, not shipped. The [Mail label design](docs/design/0006-mail-labels.md)
 records a separately gated contract for adding and removing existing labels;
@@ -81,9 +84,9 @@ cannot offer the same guarantees.
 ## Local development
 
 ```sh
-/usr/local/go/bin/go test ./...
-/usr/local/go/bin/go vet ./...
-/usr/local/go/bin/go run ./cmd/croton-mcp
+go test ./...
+go vet ./...
+go run ./cmd/croton-mcp --config /absolute/path/to/croton.json
 ```
 
 The server speaks JSON-RPC over standard input/output. Diagnostics must go to standard error; standard output is protocol-only.
@@ -103,7 +106,9 @@ remain intentionally separate from the core contract checks.
 ## Use with Hermes
 
 Croton registers with Hermes as a local stdio server exposing six read-only
-tools and no resources or prompts:
+tools by default and no resources or prompts. Setting `mutations.enabled` adds
+the five [triage tools](docs/MCP.md#triage-tools) `mark_read`, `mark_unread`,
+`move_mail`, `archive_mail` and `trash_mail`. Register it with:
 
 ```sh
 hermes mcp add croton --connect-timeout 60 \
@@ -120,7 +125,7 @@ for prerequisites, verification, the exact tool names, and removal.
 
 - `cmd/croton-mcp`: Mail stdio executable
 - `cmd/croton-drive-mcp`: Drive stdio executable
-- `bridge`: read-only IMAP adapter over Proton Mail Bridge
+- `bridge`: IMAP adapter over Proton Mail Bridge, read-only except the opt-in Seen and move writes
 - `internal/config`: secure configuration opener for the separate Mail and Drive schemas
 - `internal/mcpserver`: Mail MCP server
 - `internal/drivemcp`: Drive MCP server
@@ -128,7 +133,7 @@ for prerequisites, verification, the exact tool names, and removal.
 - `internal/drivefs`: internal confined-output primitives (confined opening, transactional publication, bounded copying) that no registered Drive tool uses; Drive downloads are not shipped
 - `internal/stdioframe`: the bounded newline-framed stdio reader both servers share
 - `internal/strictjson`: strict JSON decoding
-- `internal/testkit`: synthetic loopback IMAP server and fake-Drive builder for tests
+- `internal/testkit`: synthetic loopback IMAP server, opt-in stateful mailbox, synthetic label views and faults, and fake-Drive builder for tests
 - `internal/testkit/fakedrive`: the fake Proton Drive CLI executable for tests
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): the two servers, the packages behind them, and where the product vision lives in the tree
 - `docs/DEPENDENCIES.md`: reviewed dependency choices and adoption constraints
