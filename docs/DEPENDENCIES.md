@@ -1,12 +1,12 @@
 # Dependency rationale
 
-Reviewed: 2026-08-05.
+Reviewed: 2026-08-05; Model Context Protocol SDK section reviewed 2026-10-08.
 
 ## Model Context Protocol SDK
 
-Croton uses the official [`github.com/modelcontextprotocol/go-sdk`](https://github.com/modelcontextprotocol/go-sdk) at `v1.7.0`. That release implements MCP `2026-07-28` while preserving compatibility with `2025-11-25` and earlier clients. Croton therefore uses one server implementation—not parallel hand-written protocol stacks—and pins tests for both the current stateless discovery path and the legacy `initialize` fallback.
+Croton uses the official [`github.com/modelcontextprotocol/go-sdk`](https://github.com/modelcontextprotocol/go-sdk) at `v1.8.0` (2026-09-14). That release implements MCP `2026-07-28`, which is still the newest revision it negotiates, while preserving compatibility with `2025-11-25` and earlier clients. It hardens the transports against resource exhaustion and fixes session leaks, deadlocks, and teardown hangs without adding a protocol revision. Croton therefore uses one server implementation—not parallel hand-written protocol stacks—and pins tests for both the current stateless discovery path and the legacy `initialize` fallback.
 
-For `2026-07-28`, Croton relies on the SDK's per-request protocol metadata and required `server/discover` implementation. New Croton features will not adopt roots, sampling, or protocol logging because those capabilities are deprecated in this revision. The stdio transport remains persistent at the process level, but protocol requests do not depend on hidden session state.
+For `2026-07-28`, Croton relies on the SDK's per-request protocol metadata and required `server/discover` implementation. New Croton features will not adopt roots, sampling, or protocol logging because those capabilities are deprecated in this revision. The stdio transport remains persistent at the process level, but protocol requests do not depend on hidden session state. Both executables keep Croton's own bounded stdio transports rather than the SDK's `StdioTransport.MaxLineLength`, and Croton sets no `MCPGODEBUG` options.
 
 ## `github.com/emersion/go-imap/v2`
 
