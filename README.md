@@ -52,7 +52,7 @@ never accesses credentials and registers no write-capable tools.
 
 ## Requirements
 
-- Go 1.26.6 (the module's `toolchain` directive enforces this release)
+- Go 1.26.9 (the module's `toolchain` directive enforces this release)
 
 ## User-owned Mail installation
 

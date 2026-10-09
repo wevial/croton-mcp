@@ -285,7 +285,7 @@ func triageEnv(root string, build bool) []string {
 			env = append(env, key+"="+value)
 		}
 		env = append(env, "GOPATH="+filepath.Join(root, "GOPATH"))
-		env = append(env, "GOFLAGS=-mod=readonly -modcacherw", "GOTELEMETRY=off", "GOTOOLCHAIN=go1.26.6", "GOSUMDB=sum.golang.org", "GOPROXY=https://proxy.golang.org", "GONOSUMDB=", "GONOPROXY=", "GOPRIVATE=")
+		env = append(env, "GOFLAGS=-mod=readonly -modcacherw", "GOTELEMETRY=off", "GOTOOLCHAIN=go1.26.9", "GOSUMDB=sum.golang.org", "GOPROXY=https://proxy.golang.org", "GONOSUMDB=", "GONOPROXY=", "GOPRIVATE=")
 	}
 	return env
 }
@@ -310,7 +310,7 @@ func triageBinary(t *testing.T) string {
 		}
 		goexe, err := exec.LookPath("go")
 		if err != nil {
-			triageBuild.err = fmt.Errorf("Go1.26.6 build launcher unavailable: %w", err)
+			triageBuild.err = fmt.Errorf("Go1.26.9 build launcher unavailable: %w", err)
 			return
 		}
 		goexe, err = filepath.Abs(goexe)
@@ -329,8 +329,8 @@ func triageBinary(t *testing.T) string {
 		cmd.Env = triageEnv(root, true)
 		cmd.Dir = module
 		out, err := cmd.CombinedOutput()
-		if err != nil || !strings.Contains(string(out), "go1.26.6") {
-			triageBuild.err = fmt.Errorf("require Go1.26.6: %v %s", err, out)
+		if err != nil || !strings.Contains(string(out), "go1.26.9") {
+			triageBuild.err = fmt.Errorf("require Go1.26.9: %v %s", err, out)
 			return
 		}
 		triageBuild.binary = filepath.Join(root, "croton-mcp")
