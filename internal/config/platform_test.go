@@ -108,7 +108,7 @@ var requiredHermesInstallPhrases = append([]string{
 // independently exercises the secure loader without installing any MCP client.
 var requiredMacOSJobPhrases = []string{
 	"runs-on: macos-latest",
-	"go-version: 1.26.6",
+	"go-version: 1.26.9",
 	"go build ./...",
 	"go vet ./...",
 	"go test -race ./...",

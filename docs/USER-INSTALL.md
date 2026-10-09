@@ -31,7 +31,7 @@ REVIEWED_REVISION="$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")"
 printf '%s\n' "$REVIEWED_REVISION"
 git checkout --detach "$REVIEWED_REVISION"
 test "$(git rev-parse HEAD)" = "$REVIEWED_REVISION"
-export GOTOOLCHAIN=go1.26.6
+export GOTOOLCHAIN=go1.26.9
 go version
 go build ./...
 go vet ./...
@@ -41,7 +41,7 @@ python3 scripts/stage_mail_candidate.py --revision "$REVIEWED_REVISION" --output
 ```
 
 Record the printed full SHA and confirm HEAD equals it. Confirm `go version`
-reports Go 1.26.6, matching the repository's `go.mod` toolchain. Review and
+reports Go 1.26.9, matching the repository's `go.mod` toolchain. Review and
 retain the candidate manifest with its SHA, toolchain, platform, and binary
 SHA-256 locally. Race tests require a supported C compiler.
 Build only the Mail executable for installation; Drive has a separate setup.
@@ -53,7 +53,7 @@ It does not fetch or check out revisions. It builds only `./cmd/croton-mcp` with
 `-trimpath` from a temporary Git archive of the selected revision; ignored and
 untracked checkout inputs are excluded. Git archive export attributes apply.
 Only native Linux and macOS targets are supported; cross-compilation is rejected
-before building. The helper selects Go 1.26.6, disables Go workspace and persisted
+before building. The helper selects Go 1.26.9, disables Go workspace and persisted
 Go environment settings, and clears GOFLAGS. Dependency downloads may still occur;
 this is not hermetic reproducibility.
 

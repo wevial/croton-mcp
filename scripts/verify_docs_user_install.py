@@ -13,7 +13,7 @@ GUIDE = ROOT / "docs/USER-INSTALL.md"
 LINK = "docs/USER-INSTALL.md"
 FIXTURE = re.compile(r"<!-- user-install-config -->\s*```json\n(.*?)\n```", re.S)
 REQUIRED = {
-    "Source build": ("REVIEWED_REVISION", "checkout --detach", "go1.26.6",
+    "Source build": ("REVIEWED_REVISION", "checkout --detach", "go1.26.9",
                      "./cmd/croton-mcp", "go build", "go vet", "go test -race",
                      "published `RELEASE_TAG`", "matching published non-draft GitHub release",
                      "Do not build a moving branch or a directly chosen untagged SHA",

@@ -42,7 +42,7 @@ CLAUSES = {
          "Create a new immutable tag at that SHA"),
         ("release", "Maintainer release checklist", "manifest revision",
          "`revision` equals the tag-resolved SHA"),
-        ("release", "Maintainer release checklist", "manifest toolchain", "`toolchain` is `go1.26.6`"),
+        ("release", "Maintainer release checklist", "manifest toolchain", "`toolchain` is `go1.26.9`"),
         ("release", "Maintainer release checklist", "manifest platform",
          "`GOOS` and `GOARCH` name the native build platform"),
         ("release", "Maintainer release checklist", "manifest binary filename",
@@ -80,7 +80,7 @@ CLAUSES = {
         ("release", "Accepting published bytes", "absent downloaded asset STOP",
          "if either native asset is absent, STOP the binary path."),
         ("release", "Accepting published bytes", "manifest matches host platform",
-         "`go1.26.6` and the host `GOHOSTOS` and `GOHOSTARCH`."),
+         "`go1.26.9` and the host `GOHOSTOS` and `GOHOSTARCH`."),
     ),
     "test_tagged_selection": (
         ("guide", "Source build", "published RELEASE_TAG start",
