@@ -32,13 +32,13 @@ pilot each remain separate authorized operator actions.
 3. For each native platform you choose to publish, build on a Linux or macOS
    host of that platform. In a fresh clone, check out the tag-resolved SHA as a
    detached HEAD, confirm HEAD equals it, run `go build`, `go vet` and
-   `go test -race` with Go 1.26.6, and pass that full SHA to the unchanged
+   `go test -race` with Go 1.26.9, and pass that full SHA to the unchanged
    `scripts/stage_mail_candidate.py`, as in Source build in the
    [user-owned installation guide](USER-INSTALL.md). That recipe's publication
    check applies only once step 7 is complete. Cross-compiled artifacts are not
    published. Publishing every platform at once is not required.
 4. Review the staged `manifest.json`: `revision` equals the tag-resolved SHA,
-   `toolchain` is `go1.26.6`, `GOOS` and `GOARCH` name the native build
+   `toolchain` is `go1.26.9`, `GOOS` and `GOARCH` name the native build
    platform, `binary` is `croton-mcp`, and `sha256` is the staged binary's
    SHA-256. Independently hash the staged binary with the platform's local hash
    utility and compare it with the manifest `sha256`. On any mismatch, STOP;
@@ -72,7 +72,7 @@ A synthetic release-notes shape, one block per published platform:
 ```text
 Croton Mail v0.1.0
 revision: 0000000000000000000000000000000000000000
-toolchain: go1.26.6
+toolchain: go1.26.9
 GOOS: linux
 GOARCH: amd64
 binary asset: croton-mcp-v0.1.0-linux-amd64 (staged manifest binary: croton-mcp)
@@ -108,7 +108,7 @@ Confirm that both files were downloaded; if either native asset is absent, STOP
 the binary path. Independently hash the binary asset with `sha256sum` on Linux
 or `shasum -a 256` on macOS. Accept it only if that hash equals the release-note
 SHA-256 and the published manifest `sha256`, and the manifest `revision`,
-`toolchain`, `GOOS` and `GOARCH` equal the tag-resolved SHA, `go1.26.6` and the
+`toolchain`, `GOOS` and `GOARCH` equal the tag-resolved SHA, `go1.26.9` and the
 host `GOHOSTOS` and `GOHOSTARCH`. On any mismatch, STOP; do not edit expected
 checksums.
 

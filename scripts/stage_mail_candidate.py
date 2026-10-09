@@ -34,7 +34,7 @@ def stage(revision, output):
         raise StageError("revision must be an explicit full lowercase commit SHA")
 
     env = os.environ.copy()
-    env.update(GIT_NO_REPLACE_OBJECTS="1", GOTOOLCHAIN="go1.26.6",
+    env.update(GIT_NO_REPLACE_OBJECTS="1", GOTOOLCHAIN="go1.26.9",
                GOENV="off", GOWORK="off", GOFLAGS="")
     root = Path(command(["git", "rev-parse", "--show-toplevel"], Path.cwd(), env)).resolve()
     head = command(["git", "rev-parse", "HEAD"], root, env)
@@ -71,8 +71,8 @@ def stage(revision, output):
         if (info["GOOS"] != native_os or info["GOHOSTOS"] != native_os
                 or info["GOARCH"] != info["GOHOSTARCH"]):
             raise StageError("target must match the native Linux or macOS platform")
-        if info["GOVERSION"] != "go1.26.6":
-            raise StageError("Go 1.26.6 is required")
+        if info["GOVERSION"] != "go1.26.9":
+            raise StageError("Go 1.26.9 is required")
 
         candidate = work / "candidate"
         candidate.mkdir(mode=0o700)

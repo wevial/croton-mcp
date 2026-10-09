@@ -29,7 +29,7 @@ class CandidateTests(unittest.TestCase):
         self.output = self.parent / "candidate"
         self.head = REVISION
         self.dirty = ""
-        self.info = dict(GOVERSION="go1.26.6", GOOS="linux", GOARCH="amd64",
+        self.info = dict(GOVERSION="go1.26.9", GOOS="linux", GOARCH="amd64",
                          GOHOSTOS="linux", GOHOSTARCH="amd64")
         self.calls = []
         self.fail_build = False
@@ -45,7 +45,7 @@ class CandidateTests(unittest.TestCase):
         self.assertFalse(kwargs["check"])
         self.assertEqual(kwargs["env"]["GOWORK"], "off")
         self.assertEqual(kwargs["env"]["GOFLAGS"], "")
-        self.assertEqual(kwargs["env"]["GOTOOLCHAIN"], "go1.26.6")
+        self.assertEqual(kwargs["env"]["GOTOOLCHAIN"], "go1.26.9")
         result = ""
         code = 0
         if argv == ["git", "rev-parse", "--show-toplevel"]:
@@ -98,7 +98,7 @@ class CandidateTests(unittest.TestCase):
         binary = (self.output / "croton-mcp").read_bytes()
         self.assertEqual(binary, BINARY)
         manifest = json.loads((self.output / "manifest.json").read_text())
-        self.assertEqual(manifest, dict(revision=REVISION, toolchain="go1.26.6", GOOS="linux",
+        self.assertEqual(manifest, dict(revision=REVISION, toolchain="go1.26.9", GOOS="linux",
                                        GOARCH="amd64", binary="croton-mcp",
                                        sha256=hashlib.sha256(binary).hexdigest()))
         self.assert_cleaned()
