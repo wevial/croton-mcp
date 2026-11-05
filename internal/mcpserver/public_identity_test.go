@@ -40,16 +40,9 @@ var (
 )
 
 // observeFixtureTuples reads the legacy fixture's INBOX generation and UIDs
-// over its own verified loopback TLS connection, keyed by subject, without
+// over its own verified loopback TLS connection, keyed by header, without
 // any adapter or opaque identifier.
-func observeFixtureTuples(t *testing.T, server *testkit.Server) map[string]readTuple {
-	t.Helper()
-
-	return observeFixtureTuplesBy(t, server, "Subject")
-}
-
-// observeFixtureTuplesBy is observeFixtureTuples keyed by any header.
-func observeFixtureTuplesBy(t *testing.T, server *testkit.Server, header string) map[string]readTuple {
+func observeFixtureTuples(t *testing.T, server *testkit.Server, header string) map[string]readTuple {
 	t.Helper()
 
 	connection, err := tls.Dial("tcp", server.Addr(), server.ClientTLSConfig())
@@ -235,7 +228,7 @@ func TestPublicReadIdentityFlatMCP(t *testing.T) {
 		t.Parallel()
 
 		server, adapter := startIntegrationAdapterWithOptions(t, testkit.SyntheticDigestMixedMailbox(time.Now()))
-		observed := observeFixtureTuples(t, server)
+		observed := observeFixtureTuples(t, server, "Subject")
 		session := connectTestClient(t, Options{Mail: adapter})
 		before := len(server.Commands())
 
@@ -640,22 +633,6 @@ func withReadIdentity(metadata bridge.MessageMetadata, uidValidity, uid uint32) 
 	return metadata
 }
 
-// withNodeIdentity sets a thread node's tuple by reflection so the thread
-// suite compiles, and its assertions fail, while the node fields are absent.
-func withNodeIdentity(node threadNodeResult, tuple readTuple) threadNodeResult {
-	value := reflect.ValueOf(&node).Elem()
-	if field := value.FieldByName("Mailbox"); field.IsValid() {
-		field.SetString(tuple.Mailbox)
-	}
-	if field := value.FieldByName("UIDValidity"); field.IsValid() {
-		field.SetUint(uint64(tuple.UIDValidity))
-	}
-	if field := value.FieldByName("UID"); field.IsValid() {
-		field.SetUint(uint64(tuple.UID))
-	}
-	return node
-}
-
 // mapOrEmptyList lets an omitted optional list decode as empty.
 func mapOrEmptyList(object map[string]any, key string) map[string]any {
 	if _, ok := object[key]; ok {
@@ -795,7 +772,7 @@ func TestPublicReadIdentityThreadMCP(t *testing.T) {
 		t.Parallel()
 
 		server, adapter := startIntegrationAdapterWithMessages(t, testkit.SyntheticLinkedThread())
-		observed := observeFixtureTuplesBy(t, server, "Message-ID")
+		observed := observeFixtureTuples(t, server, "Message-ID")
 		session := connectTestClient(t, Options{Mail: adapter})
 
 		results := rawItems(t, rawObject(t, callTool(t, session, "search_mail", map[string]any{"mailbox": "INBOX", "subject": "Synthetic planning"})), "results")
@@ -983,7 +960,7 @@ func TestPublicReadIdentityThreadMCP(t *testing.T) {
 			for index := range maxThreadMessages {
 				key := fmt.Sprintf("opaque-node-%02d-%s", index, strings.Repeat("n", 1000))
 				tuple := readTuple{Mailbox: longMailbox, UIDValidity: 3001, UID: uint32(1000 + index*7)}
-				thread.Nodes = append(thread.Nodes, withNodeIdentity(threadNodeResult{Key: key, Subject: strings.Repeat("s", 8000)}, tuple))
+				thread.Nodes = append(thread.Nodes, threadNodeResult{Key: key, Mailbox: tuple.Mailbox, UIDValidity: tuple.UIDValidity, UID: tuple.UID, Subject: strings.Repeat("s", 8000)})
 				source[key] = tuple
 			}
 			encoded, truncated, err := encodeBounded(thread)
@@ -995,7 +972,7 @@ func TestPublicReadIdentityThreadMCP(t *testing.T) {
 			requireRetainedIdentities(t, "thread nodes", "key", rawItems(t, object, "nodes"), source, maxThreadMessages)
 
 			single := &getThreadResult{ID: longID, Mailbox: longMailbox, Nodes: []threadNodeResult{
-				withNodeIdentity(threadNodeResult{Key: "opaque-only", Subject: strings.Repeat("s", maxToolResultBytes)}, readTuple{Mailbox: longMailbox, UIDValidity: 3001, UID: 11}),
+				{Key: "opaque-only", Mailbox: longMailbox, UIDValidity: 3001, UID: 11, Subject: strings.Repeat("s", maxToolResultBytes)},
 			}}
 			encoded, truncated, err = encodeBounded(single)
 			if err != nil || !truncated {
@@ -1178,7 +1155,7 @@ func TestPublicReadIdentityThreadMCP(t *testing.T) {
 		t.Parallel()
 
 		server, adapter := startIntegrationAdapterWithMessages(t, testkit.SyntheticLinkedThread())
-		observed := observeFixtureTuplesBy(t, server, "Message-ID")
+		observed := observeFixtureTuples(t, server, "Message-ID")
 		var audit bytes.Buffer
 		session := connectTestClient(t, Options{Mail: adapter, Audit: NewAuditor(&audit)})
 
@@ -1229,7 +1206,7 @@ func TestPublicReadIdentityThreadMCP(t *testing.T) {
 				sensitive = append(sensitive, messageID)
 			}
 		}
-		if after := observeFixtureTuplesBy(t, server, "Message-ID"); !reflect.DeepEqual(after, observed) {
+		if after := observeFixtureTuples(t, server, "Message-ID"); !reflect.DeepEqual(after, observed) {
 			t.Fatalf("fixture state changed under read-only threads: %+v", after)
 		}
 

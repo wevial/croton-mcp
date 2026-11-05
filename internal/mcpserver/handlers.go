@@ -332,7 +332,7 @@ func runGetThread(ctx context.Context, deps Options, arguments json.RawMessage) 
 	}
 	for _, node := range thread.Nodes {
 		identity, ok := identities[node.Key]
-		if !ok || !validReadIdentity(identity) {
+		if !ok {
 			return nil, errInternal
 		}
 
