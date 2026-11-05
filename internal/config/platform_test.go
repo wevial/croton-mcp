@@ -304,7 +304,7 @@ func TestContinuousIntegrationRunsOncePerPullRequestCommit(t *testing.T) {
 
 	for key, want := range map[string]string{
 		"on":          "  push:\n    branches: [main]\n  pull_request:",
-		"concurrency": "  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}\n  cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+		"concurrency": "  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}\n  cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
 	} {
 		if got := workflowTopLevelBlock(t, key); got != want {
 			t.Errorf("CI workflow top-level %s: block = %q, want exactly %q", key, got, want)
@@ -469,8 +469,9 @@ func workflowJobs(t *testing.T) map[string]string {
 }
 
 // workflowTopLevelBlock returns the body under one top-level key of the CI
-// workflow, through the next unindented key, so blank lines inside the block
-// cannot hide nested entries. Trailing blank lines are dropped.
+// workflow, through the next unindented key, so blank lines and unindented
+// comments inside the block cannot hide nested entries. Trailing blank lines
+// are dropped.
 func workflowTopLevelBlock(t *testing.T, key string) string {
 	t.Helper()
 
@@ -479,7 +480,7 @@ func workflowTopLevelBlock(t *testing.T, key string) string {
 	var lines []string
 	inside, found := false, false
 	for _, line := range strings.Split(workflow, "\n") {
-		if line != "" && !strings.HasPrefix(line, " ") {
+		if line != "" && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "#") {
 			inside = line == key+":"
 			found = found || inside
 			continue
