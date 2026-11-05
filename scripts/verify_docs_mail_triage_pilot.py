@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """Offline witness for the Mail triage pilot runbook; uses repository text only.
 
-It checks documented boundaries and synthetic negative fixtures. It never
-launches Croton, runs a helper, opens an account connection or records a
-pilot outcome, and it cannot prove live behavior or human consent.
+It checks documented boundaries and synthetic negative fixtures. Prose is
+matched in visible text: HTML comments and top-level fenced code blocks are
+removed, and whitespace is collapsed so wrapped lines still match. The marked
+JSON contract is extracted separately. It never launches Croton, runs a helper,
+calls git, gh or the network, opens an account connection or records a pilot
+outcome. It inspects repository text and synthetic fixtures only and does not
+demonstrate a real release, human consent, installed bytes or live mail
+behavior.
 """
 
 import argparse
@@ -15,18 +20,40 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 GUIDE = ROOT / "docs/MAIL-TRIAGE-PILOT.md"
 LINK = "docs/MAIL-TRIAGE-PILOT.md"
-GUIDE_LINKS = ("USER-INSTALL.md", "MCP.md", "design/0005-mail-triage.md")
+GUIDE_LINKS = ("USER-INSTALL.md", "RELEASE.md", "MCP.md", "design/0005-mail-triage.md")
 CONTRACT = re.compile(r"<!-- mail-triage-pilot-contract -->\s*```json\n(.*?)\n```", re.S)
 EVIDENCE = re.compile(r"<!-- mail-triage-pilot-evidence -->\n((?:\|[^\n]*\n)+)")
 READ_TOOLS = ["list_folders", "search_mail", "get_message", "get_thread",
               "list_attachments", "select_digest_candidates"]
 ACTIONS = ["mark_read", "mark_unread", "move_mail", "archive_mail", "trash_mail"]
 EVIDENCE_STEPS = ACTIONS + ["refusal probe", "rollback rehearsal"]
-# Checksum steps must appear in this order: staged comparison before install
-# approval, installed verification after installation and reinstallation, then
-# enablement. A first install has no executable to hash beforehand.
+POLICY = ("Pilot acceptance installs only the selected published native binary asset verified against "
+          "both the published manifest and release-note SHA-256; a local source build is not a pilot artifact.")
+# Each selection failure must STOP without a rebuild fallback.
+STOPS = (
+    ("missing tag", "Without a selected published tag, STOP."),
+    ("missing publication",
+     "For a tag without a matching published release, a draft release, or a release without the tag, STOP."),
+    ("unresolved full revision", "For an unresolved tag name, a moving branch or an untagged SHA, STOP."),
+    ("missing native pair", "If either asset of the native binary/manifest pair is missing, STOP."),
+    ("platform mismatch", "On a platform mismatch or any other identity mismatch, STOP."),
+    ("checksum mismatch", "On a checksum mismatch with either value, STOP."),
+)
+# Visible pilot instructions that would make a local source build the artifact.
+SOURCE_BUILD = (
+    r"\bdo not download (?:a|the) (?:[\w-]+ )?(?:release )?binary",
+    r"\bbuild (?:it |the (?:candidate|binary) )?(?:locally )?from (?:the )?(?:resolved revision|tag|source)",
+    r"\bstaging helper\b",
+    r"\bstage_mail_candidate\b",
+    r"`reviewed_revision` in the source build",
+    r"\bfall(?:s|ing)? back to (?:a )?(?:local )?(?:source )?(?:build|rebuild)",
+)
+# Checksum steps must appear in this order: published-byte comparison before
+# install approval, installed verification after installation and
+# reinstallation, then enablement. A first install has no executable to hash
+# beforehand.
 ORDER = ("Before install approval, the operator records privately",
-         "A staged-binary checksum", "1. Install approval:",
+         "A published-binary checksum", "1. Install approval:",
          "verify the independent installed-binary checksum:",
          "verify the independent installed-binary checksum again",
          "Only after both installed-binary checks match, enable")
@@ -40,8 +67,9 @@ EXPECTED = {
         "published_git_tag": "operator_selected",
         "matching_github_release": True,
         "full_revision": "resolved_and_reviewed",
-        "manifest_sha256": "recorded_from_staged_manifest",
-        "staged_binary_sha256": "compared_before_install_approval",
+        "pilot_artifact": "published_native_binary",
+        "manifest_sha256": "recorded_from_published_manifest",
+        "published_binary_sha256": "compared_with_release_notes_and_manifest_before_install_approval",
         "installed_binary_sha256": "verified_after_install_and_reinstall_before_enablement",
         "pilot_blocked_until_published": True,
     },
@@ -91,22 +119,30 @@ EXPECTED = {
 }
 REQUIRED = {
     "Release selection prerequisite": (
-        "blocked until a suitable tagged release is published",
-        "operator-selected published git tag", "matching GitHub release",
+        "blocked until a suitable tagged release is published", POLICY,
+        "[Mail release guide](RELEASE.md)",
+        "operator-selected published git tag", "matching published non-draft GitHub release",
+        "`tagName` exactly equals the tag and `isDraft` is false",
         "Before install approval", "resolved full revision", "full 40-hex commit SHA",
-        "staged-manifest SHA-256", "A staged-binary checksum",
-        "compare it with the manifest SHA-256", "A mismatch stops the pilot",
-        "Staging a candidate installs nothing", "cannot exist yet",
-        "Do not download a release binary",
-        "Pilot acceptance installs only the selected published native binary asset verified against "
-        "both the published manifest and release-note SHA-256; a local source build is not a pilot artifact."),
+        "`targetCommitish` alone is not proof",
+        "the host `GOHOSTOS` and `GOHOSTARCH`, not the configured `GOOS` and `GOARCH`",
+        "its `revision` equals the resolved full revision", "its `toolchain` is `go1.26.10`",
+        "its `GOOS` and `GOARCH` equal the native platform",
+        "The published manifest SHA-256", "binary `sha256` field, not a hash of the manifest file",
+        "A published-binary checksum",
+        "compare it with both the release-note SHA-256 and the published manifest SHA-256 "
+        "before install approval",
+        *(phrase for _, phrase in STOPS),
+        "there is no rebuild fallback", "never substitute a local source build",
+        "grants no install authority", "needs the separate install approval",
+        "cannot exist yet"),
     "Authorization gates": (
         "four gates", "Approval of one gate grants nothing for the next",
         "Install approval:", "Rollback-rehearsal approval:", "Enablement approval:",
         "Bounded live read/write approval:", "per-payload confirmation"),
     "Installation": (
         "[user-owned installation guide](USER-INSTALL.md)",
-        "does not rewrite or relax that guide", "Leave `mutations` absent",
+        "does not rewrite or relax that guide", "Published-byte entry", "Leave `mutations` absent",
         "After the authorized installation", "independent installed-binary checksum",
         "final installed executable"),
     "Catalog and rollback rehearsal": (
@@ -145,6 +181,22 @@ REQUIRED = {
         "Synthetic-only proof limitation",
         "do not prove live success or client consent enforcement", "Usability prompts"),
 }
+
+
+def visible(text):
+    text = re.sub(r"<!--.*?(?:-->|\Z)", "", text, flags=re.S)
+    lines, fence = [], None
+    for line in text.splitlines():
+        marker = re.match(r" {0,3}(`{3,}|~{3,})", line)
+        closing = re.fullmatch(r" {0,3}(`{3,}|~{3,})[ \t]*", line)
+        if fence is None and marker:
+            fence = marker.group(1)
+        elif fence is not None and closing and closing.group(1).startswith(fence):
+            fence = None
+        elif fence is None:
+            lines.append(line)
+
+    return "\n".join(lines)
 
 
 def sections_of(text):
@@ -194,6 +246,12 @@ def contract_errors(raw):
         failures.append(f"contract: unexpected {path}")
 
     return failures
+
+
+def source_build_errors(guide):
+    prose = normalize(visible(guide)).lower()
+    return [f"source build: pilot instruction {pattern!r}" for pattern in SOURCE_BUILD
+            if re.search(pattern, prose)]
 
 
 def order_errors(guide):
@@ -270,12 +328,13 @@ def evidence_errors(guide, section):
 
 def verify(guide, readme, exists):
     failures = []
-    preamble = normalize(guide.split("\n## ", 1)[0])
+    shown = visible(guide)
+    preamble = normalize(shown.split("\n## ", 1)[0])
     for phrase in PREAMBLE:
         if phrase not in preamble:
             failures.append(f"preamble: missing contract phrase {phrase!r}")
 
-    sections = sections_of(guide)
+    sections = sections_of(shown)
     for heading, phrases in REQUIRED.items():
         if heading not in sections:
             failures.append(f"section missing: {heading}")
@@ -285,7 +344,8 @@ def verify(guide, readme, exists):
             if phrase not in normalized:
                 failures.append(f"{heading}: missing contract phrase {phrase!r}")
 
-    failures.extend(order_errors(guide))
+    failures.extend(source_build_errors(guide))
+    failures.extend(order_errors(shown))
 
     contracts = CONTRACT.findall(guide)
     if len(contracts) != 1:
@@ -357,11 +417,53 @@ def self_test(guide, readme):
     evidence = "Public evidence template"
     cases = [
         ("baseline", guide, readme, repository_file, None),
-        phrase_case("missing release publication", release, "matching GitHub release"),
+        phrase_case("missing release publication", release, "matching published non-draft GitHub release"),
+        phrase_case("missing draft check", release,
+                    "`tagName` exactly equals the tag and `isDraft` is false"),
         phrase_case("missing tag selection", release, "operator-selected published git tag"),
         phrase_case("missing full revision", release, "full 40-hex commit SHA"),
-        phrase_case("missing manifest checksum", release, "staged-manifest SHA-256"),
-        phrase_case("missing staged-binary checksum", release, "A staged-binary checksum"),
+        phrase_case("targetCommitish trusted", release, "`targetCommitish` alone is not proof"),
+        phrase_case("configured target platform", release,
+                    "the host `GOHOSTOS` and `GOHOSTARCH`, not the configured `GOOS` and `GOARCH`"),
+        phrase_case("missing manifest revision identity", release,
+                    "its `revision` equals the resolved full revision"),
+        phrase_case("missing manifest toolchain identity", release, "its `toolchain` is `go1.26.10`"),
+        phrase_case("missing manifest platform identity", release,
+                    "its `GOOS` and `GOARCH` equal the native platform"),
+        phrase_case("missing manifest checksum", release, "The published manifest SHA-256"),
+        phrase_case("manifest file hash used", release,
+                    "binary `sha256` field, not a hash of the manifest file"),
+        phrase_case("missing published-binary checksum", release, "A published-binary checksum"),
+        ("release-note comparison dropped", edit(
+            release, "both the release-note SHA-256 and the published manifest SHA-256",
+            "the published manifest SHA-256"), readme, repository_file,
+         "missing contract phrase 'compare it with both the release-note SHA-256"),
+        ("manifest comparison dropped", edit(
+            release, "both the release-note SHA-256 and the published manifest SHA-256",
+            "the release-note SHA-256"), readme, repository_file,
+         "missing contract phrase 'compare it with both the release-note SHA-256"),
+        phrase_case("missing no rebuild fallback", release, "there is no rebuild fallback"),
+        phrase_case("missing separate install authority", release, "grants no install authority"),
+        phrase_case("missing separate install approval", release, "needs the separate install approval"),
+        phrase_case("missing published policy", release, POLICY),
+        ("policy only in HTML comment", edit(release, POLICY, f"<!-- {POLICY} -->"), readme,
+         repository_file, "missing contract phrase 'Pilot acceptance installs only"),
+        ("policy only in code fence", edit(release, POLICY, f"```text\n{POLICY}\n```"), readme,
+         repository_file, "missing contract phrase 'Pilot acceptance installs only"),
+        ("rewrapped visible policy", edit(release, POLICY, POLICY.replace(" verified ", "\nverified ").replace(
+            " a local ", "\na local ")), readme, repository_file, None),
+        ("source-built pilot instruction", edit(
+            release, "there is no rebuild fallback",
+            "there is no rebuild fallback. Do not download a release binary; build from the resolved revision"),
+         readme, repository_file, "source build: pilot instruction"),
+        ("missing native asset rebuilt locally", edit(
+            release, STOPS[3][1], "If either asset of the native binary/manifest pair is missing, "
+            "build it locally from the resolved revision instead."), readme, repository_file,
+         "source build: pilot instruction"),
+        ("source build via staging helper", edit(
+            "Installation", "with the accepted published asset as the candidate.",
+            "with the staging helper output as the candidate."), readme, repository_file,
+         "source build: pilot instruction"),
         phrase_case("missing installed-binary checksum", "Installation",
                     "independent installed-binary checksum"),
         phrase_case("missing reinstall checksum", catalog,
@@ -369,13 +471,35 @@ def self_test(guide, readme):
         phrase_case("enablement not after checksums", catalog,
                     "Only after both installed-binary checks match"),
         ("installed hash before install approval", edit(
-            release, "Do not download a release binary",
-            "Then verify the independent installed-binary checksum: hash the installed "
-            "executable. Do not download a release binary"), readme, repository_file,
+            release, "there is no rebuild fallback",
+            "there is no rebuild fallback. Then verify the independent installed-binary checksum: "
+            "hash the installed executable"), readme, repository_file,
          "order: '1. Install approval:' must precede 'verify the independent installed-binary"),
+        ("binary-only rollback", edit(
+            catalog, "restores the complete matched artifact set", "restores only the prior binary"),
+         readme, repository_file, "missing contract phrase 'complete matched artifact set'"),
+        phrase_case("missing published-byte install entry", "Installation", "Published-byte entry"),
         ("contract without publication gate", edit_contract(
             lambda c: c["release"].pop("matching_github_release")), readme, repository_file,
          "contract: release.matching_github_release missing"),
+        ("contract source-built artifact", edit_contract(
+            lambda c: c["release"].update(pilot_artifact="source_build")), readme, repository_file,
+         "contract: release.pilot_artifact changed"),
+        ("contract staged manifest", edit_contract(
+            lambda c: c["release"].update(manifest_sha256="recorded_from_staged_manifest")), readme,
+         repository_file, "contract: release.manifest_sha256 changed"),
+        ("contract without published hash", edit_contract(
+            lambda c: c["release"].pop("published_binary_sha256")), readme, repository_file,
+         "contract: release.published_binary_sha256 missing"),
+        ("contract published hash vs manifest only", edit_contract(
+            lambda c: c["release"].update(published_binary_sha256="compared_with_manifest_before_install_approval")),
+         readme, repository_file, "contract: release.published_binary_sha256 changed"),
+        ("contract rebuild fallback", edit_contract(
+            lambda c: c["release"].update(rebuild_fallback="local_source_build")), readme, repository_file,
+         "contract: unexpected release.rebuild_fallback"),
+        ("contract obsolete staged hash", edit_contract(
+            lambda c: c["release"].update(staged_binary_sha256="compared_before_install_approval")), readme,
+         repository_file, "contract: unexpected release.staged_binary_sha256"),
         ("contract without binary comparison", edit_contract(
             lambda c: c["release"].update(installed_binary_sha256="trusted")), readme,
          repository_file, "contract: release.installed_binary_sha256 changed"),
@@ -445,6 +569,8 @@ def self_test(guide, readme):
             lambda c: c["identities"].pop("result_check")), readme, repository_file,
          "contract: identities.result_check missing"),
     ]
+    for name, phrase in STOPS:
+        cases.append(phrase_case(f"{name} without STOP", release, phrase))
     for tool in ACTIONS:
         cases.append((f"missing {tool} row", edit("Action procedure", row(tool)), readme,
                       repository_file, "actions: expected rows"))

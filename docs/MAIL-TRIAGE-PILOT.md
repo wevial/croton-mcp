@@ -20,30 +20,53 @@ agent conversations or the public evidence template.
 
 ## Release selection prerequisite
 
-The pilot is blocked until a suitable tagged release is published. Before
-install approval, the operator records privately:
+The pilot is blocked until a suitable tagged release is published.
 
-1. An operator-selected published git tag in the public repository.
-2. A matching GitHub release for that same tag. A tag without a matching
-   published release, or a release without the tag, stops the pilot.
-3. The resolved full revision: the full 40-hex commit SHA the tag points to,
-   reviewed by the maintainer. Use it as `REVIEWED_REVISION` in the source
-   build; never build a moving branch or an unresolved tag name.
-4. The staged-manifest SHA-256: build the candidate with the installation
-   guide's staging helper into a new candidate directory, outside the install
-   layout, and record the `sha256` from its `manifest.json`, whose `revision`
-   must equal the resolved full revision.
-5. A staged-binary checksum: compute the SHA-256 of the candidate directory's
-   `croton-mcp` with the platform's local hash utility and compare it with the
-   manifest SHA-256. A mismatch stops the pilot.
+Pilot acceptance installs only the selected published native binary asset
+verified against both the published manifest and release-note SHA-256; a local
+source build is not a pilot artifact.
 
-Staging a candidate installs nothing and changes no installed executable. The
+Before install approval, the operator records privately, following Accepting
+published bytes in the [Mail release guide](RELEASE.md):
+
+1. An operator-selected published git tag in the public repository. Without a
+   selected published tag, STOP.
+2. A matching published non-draft GitHub release for that same tag: its
+   `tagName` exactly equals the tag and `isDraft` is false. For a tag without a
+   matching published release, a draft release, or a release without the tag,
+   STOP.
+3. The resolved full revision: the full 40-hex commit SHA the tag itself
+   resolves to in a fresh clone, reviewed by the maintainer. `targetCommitish`
+   alone is not proof of the tag's resolved SHA. For an unresolved tag name, a
+   moving branch or an untagged SHA, STOP.
+4. The native platform: the host `GOHOSTOS` and `GOHOSTARCH`, not the
+   configured `GOOS` and `GOARCH`. Download the binary asset and the manifest
+   asset named for exactly that platform into a new absent directory outside
+   the install layout. If either asset of the native binary/manifest pair is
+   missing, STOP.
+5. The published-manifest identity: its `revision` equals the resolved full
+   revision, its `toolchain` is `go1.26.10`, and its `GOOS` and `GOARCH` equal
+   the native platform. On a platform mismatch or any other identity mismatch,
+   STOP.
+6. The published manifest SHA-256: the published manifest's binary `sha256`
+   field, not a hash of the manifest file.
+7. A published-binary checksum: independently compute the SHA-256 of the
+   downloaded binary asset with the platform's local hash utility and compare
+   it with both the release-note SHA-256 and the published manifest SHA-256
+   before install approval. On a checksum mismatch with either value, STOP.
+
+Each STOP ends the pilot for that selection, and there is no rebuild fallback:
+never substitute a local source build or another platform's asset, never edit
+an expected checksum, and never retarget a release or replace its assets. A
+shared source revision does not make rebuilt bytes equal to published bytes.
+
+Accepting the published bytes installs nothing and grants no install
+authority; installing them needs the separate install approval below. The
 independent installed-binary checksum cannot exist yet: a first install has no
 executable, and an upgrade's existing executable is the previous release. It is
 verified after installation instead, as described under Installation.
 
-Do not download a release binary; build from the resolved revision. Checksums
-provide integrity, not signatures or provenance attestation.
+Checksums provide integrity, not signatures or provenance attestation.
 
 ## Authorization gates
 
@@ -51,7 +74,8 @@ The pilot has four gates, performed in order. Approval of one gate grants
 nothing for the next, and each gate stops on any failure:
 
 1. **Install approval:** the operator explicitly approves installing the
-   selected release with `mutations` absent.
+   accepted published native binary asset of the selected release with
+   `mutations` absent.
 2. **Rollback-rehearsal approval:** the operator explicitly approves rehearsing
    rollback and reinstalling the selected release.
 3. **Enablement approval:** the operator explicitly approves setting
@@ -63,17 +87,20 @@ nothing for the next, and each gate stops on any failure:
 ## Installation
 
 Install by following the conservative
-[user-owned installation guide](USER-INSTALL.md) exactly, using the resolved
-full revision as the reviewed revision. This runbook does not rewrite or relax
-that guide: its source build, staging, layout, configuration, credential-helper
-and update procedures apply unchanged, and its Distribution limitations still
-hold. Leave `mutations` absent for the install gate.
+[user-owned installation guide](USER-INSTALL.md) exactly, with the accepted
+published asset as the candidate. This runbook does not rewrite or relax that
+guide: for a first install use its Published-byte entry under User-owned
+layout, and for an upgrade stage the accepted asset in step 4 of its Update and
+rollback procedure. Its layout, configuration, credential-helper and update
+procedures apply unchanged, and its Distribution limitations still hold. Leave
+`mutations` absent for the install gate.
 
 After the authorized installation, and before any later gate, verify the
 independent installed-binary checksum: compute the SHA-256 of the final
 installed executable with the platform's local hash utility and compare it
-with the manifest SHA-256. A mismatch stops the pilot; keep launches blocked
-and restore the prior set with the installation guide's rollback step.
+with the published manifest SHA-256 and the release-note SHA-256. A mismatch
+stops the pilot; keep launches blocked and restore the prior set with the
+installation guide's rollback step.
 
 ## Catalog and rollback rehearsal
 
@@ -94,8 +121,9 @@ absence by removing only the exact targets recorded as previously absent.
 After restoring, check the catalog against the prior release's own documented
 catalog. Do not assume an older binary has eleven tools or any triage tool;
 after a first-install rollback there is no Croton catalog to check. Then
-reinstall the selected release, verify the independent installed-binary
-checksum again against the manifest SHA-256, and repeat the six-tool check.
+reinstall the same accepted published asset, verify the independent
+installed-binary checksum again against the published manifest SHA-256 and the
+release-note SHA-256, and repeat the six-tool check.
 
 Only after both installed-binary checks match, enable by staging a reviewed
 configuration with `mutations.enabled` set to true through the same update
@@ -244,8 +272,9 @@ does not enforce anything at runtime.
     "published_git_tag": "operator_selected",
     "matching_github_release": true,
     "full_revision": "resolved_and_reviewed",
-    "manifest_sha256": "recorded_from_staged_manifest",
-    "staged_binary_sha256": "compared_before_install_approval",
+    "pilot_artifact": "published_native_binary",
+    "manifest_sha256": "recorded_from_published_manifest",
+    "published_binary_sha256": "compared_with_release_notes_and_manifest_before_install_approval",
     "installed_binary_sha256": "verified_after_install_and_reinstall_before_enablement",
     "pilot_blocked_until_published": true
   },
