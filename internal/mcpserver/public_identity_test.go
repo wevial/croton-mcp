@@ -1059,8 +1059,8 @@ func TestPublicReadIdentityThreadMCP(t *testing.T) {
 			requireRefusedWithoutTuple(t, callTool(t, session, "get_thread", map[string]any{"messageId": id}), errStaleID)
 			requireReadOnlyTranscript(t, server)
 
-			// A sibling whose UID vanished is omitted as before; the target keeps
-			// only its own tuple.
+			// A sibling whose UID vanished is omitted without truncation; the
+			// target keeps only its own tuple.
 			fake := &fakeMail{
 				metadataByID: map[string]bridge.MessageMetadata{
 					"opaque-target": withReadIdentity(bridge.MessageMetadata{ID: "opaque-target", Mailbox: "INBOX", Subject: "Re: Budget"}, 77, 500),
