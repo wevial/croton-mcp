@@ -76,14 +76,17 @@ PROSE = {
     ),
     "Current surface": (
         "None of the current surface is an authoritative-principal source or a public epoch API.",
-        "its read retry loop in `Adapter.execute` is not write retry authority",
+        "`Adapter.openSession` in `bridge/bridge.go` dials, authenticates and caches one session; its read "
+        "retry loop in `Adapter.execute` is not write retry authority and performs no identity comparison.",
     ),
     "Candidate evidence": (
         "These commits do not describe the installed Bridge version.",
         "No executed evidence exists for any row.",
     ),
     "Proposed handshake": (
-        "gated on a real authoritative principal source.",
+        "This proposal is frozen for a later, separately approved implementation and is gated on a real "
+        "authoritative principal source.",
+        "While the decision is blocked it cannot be implemented.",
         "The catalog remains unchanged until a separate approved implementation registers anything.",
         "`get_mail_context` takes an empty closed input object, publishes `readOnlyHint: true` and has no "
         "mutation or preparation side effect.",
@@ -104,9 +107,11 @@ PROSE = {
         "most 4096 bytes.",
         "No mail content or credential is retained.",
         "Any eventual persisted binding uses an owner-only, no-follow, regular-file policy.",
-        "a tool call never enrolls a principal.",
+        "Enrollment, rotation and revocation are trusted operator actions specified separately from model "
+        "input; a tool call never enrolls a principal.",
         "This ticket creates no such file.",
-        "the design stays blocked rather than adopting a larger unbounded fallback.",
+        "If a principal source cannot support these constraints, the design stays blocked rather than "
+        "adopting a larger unbounded fallback.",
     ),
     "Epoch lifecycle": (
         "A new process invalidates old snapshots and prepared handles.",
@@ -124,16 +129,20 @@ PROSE = {
         "principal change.",
         "Client gate: the trusted client compares the context epoch, invalidates old ordinal snapshots and "
         "approvals, and serializes context changes versus dispatch.",
-        "Raw tuples alone do not prove selection age;",
+        "Raw tuples alone do not prove selection age; the server cannot enforce that an approval was made "
+        "under the current epoch while writes keep raw tuples.",
+        "A future read-only metadata call still requires separately authorized setup and account access; "
         "this design grants none.",
     ),
     "Future acceptance matrix": (
-        "verified-TLS, public-MCP and configured-client tests with independent state and identity oracles.",
+        "Every case requires verified-TLS, public-MCP and configured-client tests with independent state and "
+        "identity oracles.",
         "Zero wrong-account disclosure and zero wrong-account writes must be observed, not inferred from a "
         "transcript refusal.",
         "All statuses remain NOT RUN.",
     ),
-    "Status": ("design only. No get_mail_context implementation, registration or proof exists",),
+    "Status": ("Blocked; design only. No get_mail_context implementation, registration or proof exists, and "
+               "Mail authority is unchanged.",),
 }
 BLOCKED_PROSE = (
     "Unsupported is a valid completed investigation outcome, not an invented successful API.",
@@ -583,10 +592,13 @@ class PrincipalSelectionDesign(unittest.TestCase):
             ):
                 with self.subTest(heading=heading, hidden=name):
                     self.assertRejected(hidden, f"need one visible {heading!r} section")
-        for clause in PROSE["Epoch lifecycle"]:
+        guarantees = [(heading, clause) for heading, clauses in PROSE.items() for clause in clauses]
+        guarantees += [("Decision", clause) for clause in BLOCKED_PROSE]
+        for heading, clause in guarantees:
             for name, wrap in (("comment", "<!-- {} -->"), ("fence", "\n```text\n{}\n```\n")):
-                with self.subTest(clause=clause, hidden=name):
-                    self.assertRejected(substitute(self.text, clause, wrap.format(clause)), "missing clause")
+                with self.subTest(heading=heading, clause=clause, hidden=name):
+                    self.assertRejected(substitute(self.text, clause, wrap.format(clause)),
+                                        f"{heading}: missing clause")
         hidden_row = self.text.replace("| catalog | unchanged |", "<!-- | catalog | unchanged | -->")
         self.assertRejected(hidden_row, "Proposed handshake: rows must be exactly")
 
