@@ -27,22 +27,14 @@ type metadataFetch struct {
 	literal string
 }
 
-func (fetch metadataFetch) uids() []string {
-	var uids []string
-	for _, match := range metadataUIDItem.FindAllStringSubmatch(fetch.items, -1) {
-		uids = append(uids, match[1])
+// values returns the argument of every occurrence of one item.
+func (fetch metadataFetch) values(item *regexp.Regexp) []string {
+	var values []string
+	for _, match := range item.FindAllStringSubmatch(fetch.items, -1) {
+		values = append(values, match[1])
 	}
 
-	return uids
-}
-
-func (fetch metadataFetch) flags() []string {
-	var flags []string
-	for _, match := range metadataFlagsItem.FindAllStringSubmatch(fetch.items, -1) {
-		flags = append(flags, match[1])
-	}
-
-	return flags
+	return values
 }
 
 func TestSearchMetadataFixture(t *testing.T) {
@@ -58,7 +50,6 @@ func TestSearchMetadataFixture(t *testing.T) {
 
 		server := startMetadataFixture(t, ImplicitTLS, messages, seen, MetadataFlagsOrdinary)
 		client := metadataSession(t, server, ImplicitTLS)
-		defer client.Close()
 
 		for _, uid := range []string{"101", "102"} {
 			fetches := client.fetchMetadata(t, "m2", "UID FETCH "+uid+" (UID FLAGS BODY.PEEK[HEADER])")
@@ -67,11 +58,11 @@ func TestSearchMetadataFixture(t *testing.T) {
 			}
 
 			fetch := fetches[0]
-			if got := fetch.uids(); len(got) != 1 || got[0] != uid {
+			if got := fetch.values(metadataUIDItem); len(got) != 1 || got[0] != uid {
 				t.Fatalf("UID %s FETCH UID items = %v, want exactly [%s]", uid, got, uid)
 			}
 
-			if got := fetch.flags(); len(got) != 1 || got[0] != wantFlags[uid] {
+			if got := fetch.values(metadataFlagsItem); len(got) != 1 || got[0] != wantFlags[uid] {
 				t.Fatalf("UID %s FETCH FLAGS items = %q, want exactly [%q]", uid, got, wantFlags[uid])
 			}
 
@@ -86,11 +77,11 @@ func TestSearchMetadataFixture(t *testing.T) {
 		}
 		for index, fetch := range batch {
 			uid := strconv.Itoa(101 + index)
-			if got := fetch.uids(); len(got) != 1 || got[0] != uid {
+			if got := fetch.values(metadataUIDItem); len(got) != 1 || got[0] != uid {
 				t.Fatalf("batched FETCH UID items = %v, want exactly [%s]", got, uid)
 			}
 
-			if got := fetch.flags(); len(got) != 1 || got[0] != wantFlags[uid] {
+			if got := fetch.values(metadataFlagsItem); len(got) != 1 || got[0] != wantFlags[uid] {
 				t.Fatalf("batched UID %s FLAGS items = %q, want exactly [%q]", uid, got, wantFlags[uid])
 			}
 
@@ -118,18 +109,17 @@ func TestSearchMetadataFixture(t *testing.T) {
 			client := metadataSession(t, server, ImplicitTLS)
 
 			fetches := client.fetchMetadata(t, "m2", test.command)
-			_ = client.Close()
 
 			if len(fetches) != 2 {
 				t.Fatalf("%s: FETCH responses = %d, want 2", test.name, len(fetches))
 			}
 			for index, fetch := range fetches {
 				uid := strconv.Itoa(101 + index)
-				if got := fetch.flags(); len(got) != 0 || strings.Contains(fetch.items, "FLAGS") {
+				if got := fetch.values(metadataFlagsItem); len(got) != 0 || strings.Contains(fetch.items, "FLAGS") {
 					t.Fatalf("%s: UID %s FLAGS items = %q, want none", test.name, uid, got)
 				}
 
-				if got := fetch.uids(); len(got) != 1 || got[0] != uid {
+				if got := fetch.values(metadataUIDItem); len(got) != 1 || got[0] != uid {
 					t.Fatalf("%s: UID items = %v, want exactly [%s]", test.name, got, uid)
 				}
 
@@ -145,7 +135,6 @@ func TestSearchMetadataFixture(t *testing.T) {
 
 		server := startMetadataFixture(t, ImplicitTLS, messages, seen, MetadataFlagsDuplicated)
 		client := metadataSession(t, server, ImplicitTLS)
-		defer client.Close()
 
 		fetches := client.fetchMetadata(t, "m2", "UID FETCH 101:102 (UID FLAGS BODY.PEEK[HEADER])")
 		if len(fetches) != 2 {
@@ -153,11 +142,11 @@ func TestSearchMetadataFixture(t *testing.T) {
 		}
 		for index, fetch := range fetches {
 			uid := strconv.Itoa(101 + index)
-			if got := fetch.flags(); len(got) != 2 || got[0] != wantFlags[uid] || got[1] != wantFlags[uid] {
+			if got := fetch.values(metadataFlagsItem); len(got) != 2 || got[0] != wantFlags[uid] || got[1] != wantFlags[uid] {
 				t.Fatalf("UID %s FLAGS items = %q, want exactly two %q items", uid, got, wantFlags[uid])
 			}
 
-			if got := fetch.uids(); len(got) != 1 || got[0] != uid {
+			if got := fetch.values(metadataUIDItem); len(got) != 1 || got[0] != uid {
 				t.Fatalf("UID items = %v, want exactly [%s]", got, uid)
 			}
 
@@ -168,7 +157,7 @@ func TestSearchMetadataFixture(t *testing.T) {
 
 		// The fault is scoped to metadata reads: a whole-body read stays unchanged.
 		body := client.fetchMetadata(t, "m3", "UID FETCH 101 (UID FLAGS BODY.PEEK[])")
-		if len(body) != 1 || len(body[0].flags()) != 0 || body[0].section != "" || body[0].literal != metadataSeenBody {
+		if len(body) != 1 || len(body[0].values(metadataFlagsItem)) != 0 || body[0].section != "" || body[0].literal != metadataSeenBody {
 			t.Fatal("whole-body FETCH changed under the duplicate metadata FLAGS mode")
 		}
 	})
@@ -186,8 +175,7 @@ func TestSearchMetadataFixture(t *testing.T) {
 				client.fetchMetadata(t, "m3", "UID FETCH 101:102 (UID FLAGS BODY.PEEK[HEADER])")
 				client.fetchMetadata(t, "m4", "UID FETCH 101 (UID BODY.PEEK[HEADER])")
 				after := client.searchUnseen(t, "m5")
-				_ = client.Close()
-
+	
 				if before != "* SEARCH 102" || after != before {
 					t.Fatalf("%s mode %d: UNSEEN before %q, after %q, want unchanged \"* SEARCH 102\"", tlsMode, mode, before, after)
 				}
@@ -281,16 +269,12 @@ func startMetadataFixture(t *testing.T, mode TLSMode, messages []string, seen []
 	return server
 }
 
-// metadataSession connects over verified TLS, authenticates with synthetic
-// credentials and examines INBOX.
+// metadataSession opens a verified-TLS session and examines INBOX.
 func metadataSession(t *testing.T, server *Server, mode TLSMode) *imapClient {
 	t.Helper()
 
-	client := connectClient(t, server, mode)
-	client.command(t, "m0 LOGIN fixture-user@client.test not-a-secret", "m0 OK LOGIN completed")
-	if got := client.exchange(t, "m1", "EXAMINE INBOX"); got != "m1 OK [READ-ONLY] EXAMINE completed" {
-		t.Fatalf("EXAMINE completion = %q", got)
-	}
+	client := labelSession(t, server, mode, "m", "")
+	requireExchange(t, client, "m0", "EXAMINE INBOX", "m0 OK [READ-ONLY] EXAMINE completed")
 
 	return client
 }
