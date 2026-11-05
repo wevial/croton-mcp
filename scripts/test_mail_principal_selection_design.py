@@ -18,8 +18,8 @@ import unittest
 
 
 REPO = Path(__file__).resolve().parent.parent
-RECORD = REPO / "docs/design/0007-mail-principal-selection.md"
 RECORD_NAME = "docs/design/0007-mail-principal-selection.md"
+RECORD = REPO / RECORD_NAME
 
 BASELINE = "103557c17d75a7db52214fbcefe5b383c0327fca"
 PINS = {
@@ -254,15 +254,14 @@ class Record:
         return {row[key]: row for row in rows}
 
 
-def check_prose(record):
-    for heading, clauses in PROSE.items():
-        body = record.body(heading)
-        if body is None:
-            continue
-        flat = " ".join(body.split())
-        for clause in clauses:
-            if " ".join(clause.split()) not in flat:
-                record.errors.append(f"{heading}: missing clause {clause!r}")
+def check_clauses(record, heading, clauses):
+    body = record.body(heading)
+    if body is None:
+        return
+    flat = " ".join(body.split())
+    for clause in clauses:
+        if " ".join(clause.split()) not in flat:
+            record.errors.append(f"{heading}: missing clause {clause!r}")
 
 
 def check_current_surface(record):
@@ -332,11 +331,7 @@ def check_decision(record, candidates):
             record.errors.append("Decision: blocked needs concrete missing evidence")
         if supported:
             record.errors.append("Decision: blocked contradicts a source-supported candidate")
-        body = record.body("Decision")
-        flat = " ".join(body.split())
-        for clause in BLOCKED_PROSE:
-            if clause not in flat:
-                record.errors.append(f"Decision: missing clause {clause!r}")
+        check_clauses(record, "Decision", BLOCKED_PROSE)
         blockers = record.rows("Blockers", ("Requirement", "Missing source or binding evidence"))
         if not blockers or any(not row["Missing source or binding evidence"] for row in blockers):
             record.errors.append("Blockers: blocked needs concrete missing source or binding evidence")
@@ -388,7 +383,8 @@ def check_provenance(record):
 
 def record_errors(text):
     record = Record(text)
-    check_prose(record)
+    for heading, clauses in PROSE.items():
+        check_clauses(record, heading, clauses)
     check_current_surface(record)
     candidates = check_candidates(record)
     check_decision(record, candidates)
