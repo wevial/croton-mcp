@@ -502,8 +502,6 @@ func TestPublicReadIdentityFlatMCP(t *testing.T) {
 		flatTuple(t, rawObject(t, callTool(t, session, "get_message", map[string]any{"messageId": id})))
 		flatTuple(t, rawObject(t, callTool(t, session, "list_attachments", map[string]any{"messageId": id})))
 
-		// get_thread keeps its existing meaning: no node, root or parent gains
-		// a UID in this interim change.
 		thread := rawObject(t, callTool(t, session, "get_thread", map[string]any{"messageId": id}))
 		requireNoIdentityKeys(t, "get_thread result", thread)
 		for _, node := range rawItems(t, thread, "nodes") {
