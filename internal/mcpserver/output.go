@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"encoding/json"
+	"errors"
 	"unicode/utf8"
 
 	"github.com/wevial/croton-mcp/bridge"
@@ -20,6 +21,16 @@ type shrinkable interface {
 type toolShapedFallback interface {
 	fallbackForOutput() any
 }
+
+// selectableResult marks results whose fallback carries one standalone
+// selectable message identity, which must fit exactly or not be returned.
+type selectableResult interface {
+	selectableIdentity()
+}
+
+// errUnretainableIdentity reports that a selectable identity cannot fit the
+// result budget unchanged; it maps to a static tool error.
+var errUnretainableIdentity = errors.New("mcpserver: read identity exceeds the result budget")
 
 // encodeBounded serializes a tool result within maxToolResultBytes. Oversize
 // results are shrunk structurally and re-marshaled; serialized JSON is never
@@ -46,6 +57,10 @@ func encodeBounded(result any) ([]byte, bool, error) {
 					return encoded, true, nil
 				}
 			}
+			if _, ok := result.(selectableResult); ok {
+				return nil, false, errUnretainableIdentity
+			}
+
 			return []byte(`{"truncated":true}`), true, nil
 		}
 
@@ -153,10 +168,18 @@ func (result *searchMailResult) fallbackForOutput() any {
 	return &searchMailResult{Results: []messageResult{}, Truncated: true}
 }
 
+func (*getMessageResult) selectableIdentity() {}
+
+func (*listAttachmentsResult) selectableIdentity() {}
+
+// The message fallbacks keep the exact identity; encodeBounded refuses them
+// when even that does not fit.
 func (result *getMessageResult) fallbackForOutput() any {
 	return &getMessageResult{
-		ID:          fallbackString(result.ID),
-		Mailbox:     fallbackString(result.Mailbox),
+		ID:          result.ID,
+		Mailbox:     result.Mailbox,
+		UIDValidity: result.UIDValidity,
+		UID:         result.UID,
 		Headers:     bridge.CanonicalHeaders{},
 		TextSource:  fallbackString(result.TextSource),
 		Attachments: []attachmentResult{},
@@ -175,8 +198,10 @@ func (result *getThreadResult) fallbackForOutput() any {
 
 func (result *listAttachmentsResult) fallbackForOutput() any {
 	return &listAttachmentsResult{
-		ID:          fallbackString(result.ID),
-		Mailbox:     fallbackString(result.Mailbox),
+		ID:          result.ID,
+		Mailbox:     result.Mailbox,
+		UIDValidity: result.UIDValidity,
+		UID:         result.UID,
 		Attachments: []attachmentResult{},
 		Truncated:   true,
 	}

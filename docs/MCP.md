@@ -183,8 +183,8 @@ and `list_attachments`. Both values are positive 32-bit integers, 1 to
 generation that the bridge bound into that `id`, so clients never decode the
 opaque id. A read that cannot supply a positive tuple fails rather than
 returning a partial, zero or guessed identity, and a stale id fails with
-`stale_id` and no tuple. Attachment entries, digest counters and `get_thread`
-results carry no UID.
+`stale_id` and no tuple. Attachment entries, digest counters and the
+`get_thread` aggregate carry no UID.
 
 These fields are read metadata only. They are not account authentication or
 approval, grant no write authority, and different accounts may share the same
@@ -192,7 +192,23 @@ tuple. Account continuity is unavailable. The write pilot remains blocked. The
 [Mail principal selection record](design/0007-mail-principal-selection.md)
 describes the blocked continuity work.
 
-Thread identities and exact bounded-output identities are deferred.
+Each `get_thread` node carries its own `mailbox`, `uidvalidity` and `uid`,
+taken from the metadata already fetched for that member and associated by its
+opaque `key`. A node never borrows the target's tuple, an ordinal or its RFC
+`messageId`, and no extra read reconstructs a missing tuple. The thread's
+top-level `id` and `mailbox` are context and carry no UID. A target without a
+positive tuple fails with `unavailable` and a stale target fails with
+`stale_id`. A stale sibling is omitted as before, and a sibling without a
+positive tuple is omitted and the result is marked truncated.
+
+Bounded output keeps every retained identity exact. Oversized search results,
+digest candidates and thread nodes are removed whole, so each retained item
+keeps its exact tuple, mailbox and opaque id. The `get_message` and
+`list_attachments` fallbacks drop content but keep the parent's exact
+identity; when even that cannot fit, the call fails with `bounds_exceeded`
+instead of returning a shortened identity. An empty fallback list contains no
+selectable item, and a thread fallback's top-level `id` and `mailbox` are
+bounded context, not a selectable identity.
 Truncated and fallback results are not complete selection snapshots.
 
 ### Triage tools

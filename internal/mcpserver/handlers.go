@@ -272,16 +272,19 @@ func runGetMessage(ctx context.Context, deps Options, arguments json.RawMessage)
 	}, ""
 }
 
-// threadNodeResult exposes header-level metadata for one thread member; it
-// never carries message body text.
+// threadNodeResult exposes header-level metadata and the member's own read
+// identity for one thread member; it never carries message body text.
 type threadNodeResult struct {
-	Key       string `json:"key"`
-	MessageID string `json:"messageId,omitempty"`
-	ParentKey string `json:"parentKey,omitempty"`
-	Depth     int    `json:"depth"`
-	Subject   string `json:"subject,omitempty"`
-	From      string `json:"from,omitempty"`
-	Date      string `json:"date,omitempty"`
+	Key         string `json:"key"`
+	Mailbox     string `json:"mailbox"`
+	UIDValidity uint32 `json:"uidvalidity,omitempty"`
+	UID         uint32 `json:"uid,omitempty"`
+	MessageID   string `json:"messageId,omitempty"`
+	ParentKey   string `json:"parentKey,omitempty"`
+	Depth       int    `json:"depth"`
+	Subject     string `json:"subject,omitempty"`
+	From        string `json:"from,omitempty"`
+	Date        string `json:"date,omitempty"`
 }
 
 type getThreadResult struct {
@@ -308,9 +311,13 @@ func runGetThread(ctx context.Context, deps Options, arguments json.RawMessage) 
 	if errCode != "" {
 		return nil, errCode
 	}
+	if !validReadIdentity(targetMetadata) {
+		return nil, errUnavailable
+	}
 
+	identities := map[string]bridge.MessageMetadata{input.MessageID: targetMetadata}
 	members := []bridge.ThreadMessage{{Key: input.MessageID, Headers: targetNormalized.Headers}}
-	members, siblingsTruncated, errCode := appendThreadSiblings(ctx, deps, members, targetMetadata, limit)
+	members, siblingsTruncated, errCode := appendThreadSiblings(ctx, deps, members, identities, targetMetadata, limit)
 	if errCode != "" {
 		return nil, errCode
 	}
@@ -324,14 +331,22 @@ func runGetThread(ctx context.Context, deps Options, arguments json.RawMessage) 
 		Truncated: siblingsTruncated || thread.Truncation.Any(),
 	}
 	for _, node := range thread.Nodes {
+		identity, ok := identities[node.Key]
+		if !ok || !validReadIdentity(identity) {
+			return nil, errInternal
+		}
+
 		result.Nodes = append(result.Nodes, threadNodeResult{
-			Key:       node.Key,
-			MessageID: node.MessageID,
-			ParentKey: node.ParentKey,
-			Depth:     node.Depth,
-			Subject:   node.Message.Headers.Subject,
-			From:      node.Message.Headers.From,
-			Date:      node.Message.Headers.Date,
+			Key:         node.Key,
+			Mailbox:     identity.Mailbox,
+			UIDValidity: identity.UIDValidity,
+			UID:         identity.UID,
+			MessageID:   node.MessageID,
+			ParentKey:   node.ParentKey,
+			Depth:       node.Depth,
+			Subject:     node.Message.Headers.Subject,
+			From:        node.Message.Headers.From,
+			Date:        node.Message.Headers.Date,
 		})
 	}
 
@@ -339,8 +354,10 @@ func runGetThread(ctx context.Context, deps Options, arguments json.RawMessage) 
 }
 
 // appendThreadSiblings finds same-subject mailbox siblings with one bounded
-// search and at most limit-1 additional bounded read-only fetches.
-func appendThreadSiblings(ctx context.Context, deps Options, members []bridge.ThreadMessage, target bridge.MessageMetadata, limit int) ([]bridge.ThreadMessage, bool, string) {
+// search and at most limit-1 additional bounded read-only fetches. It records
+// each appended sibling's already-fetched metadata in identities by opaque
+// key, and omits a sibling whose read identity is incomplete.
+func appendThreadSiblings(ctx context.Context, deps Options, members []bridge.ThreadMessage, identities map[string]bridge.MessageMetadata, target bridge.MessageMetadata, limit int) ([]bridge.ThreadMessage, bool, string) {
 	subject := baseSubject(target.Subject)
 	if subject == "" || target.Mailbox == "" {
 		return members, false, ""
@@ -377,7 +394,7 @@ func appendThreadSiblings(ctx context.Context, deps Options, members []bridge.Th
 		}
 		attempts++
 
-		_, normalized, errCode := fetchNormalizedMessage(ctx, deps, candidate.ID)
+		metadata, normalized, errCode := fetchNormalizedMessage(ctx, deps, candidate.ID)
 		if errCode == errStaleID {
 			continue
 		}
@@ -387,7 +404,12 @@ func appendThreadSiblings(ctx context.Context, deps Options, members []bridge.Th
 		if !strings.EqualFold(baseSubject(normalized.Headers.Subject), subject) {
 			continue
 		}
+		if !validReadIdentity(metadata) {
+			truncated = true
+			continue
+		}
 
+		identities[candidate.ID] = metadata
 		members = append(members, bridge.ThreadMessage{Key: candidate.ID, Headers: normalized.Headers})
 	}
 
