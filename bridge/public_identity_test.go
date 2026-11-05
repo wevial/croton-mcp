@@ -148,15 +148,16 @@ func TestPublicReadIdentityAdapter(t *testing.T) {
 				if len(page.Messages) != len(fixture.members) || page.Truncated {
 					t.Fatalf("page = %#v, want %d complete results", page, len(fixture.members))
 				}
+				// Pages are UID-descending, so the fixture members appear reversed.
 				for index, message := range page.Messages {
-					requireBoundIdentity(t, adapter, message, messageIDPayload{Mailbox: "INBOX", UIDValidity: fixture.uidValidity, UID: fixture.members[index]})
+					requireBoundIdentity(t, adapter, message, messageIDPayload{Mailbox: "INBOX", UIDValidity: fixture.uidValidity, UID: fixture.members[len(fixture.members)-1-index]})
 				}
 
 				selected, err := adapter.GetMessageMetadata(context.Background(), page.Messages[0].ID)
 				if err != nil {
 					t.Fatalf("GetMessageMetadata: %v", err)
 				}
-				requireBoundIdentity(t, adapter, selected, messageIDPayload{Mailbox: "INBOX", UIDValidity: fixture.uidValidity, UID: fixture.members[0]})
+				requireBoundIdentity(t, adapter, selected, messageIDPayload{Mailbox: "INBOX", UIDValidity: fixture.uidValidity, UID: fixture.members[len(fixture.members)-1]})
 			})
 		}
 

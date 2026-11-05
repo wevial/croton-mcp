@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"sort"
 	"time"
 )
 
@@ -48,8 +49,8 @@ type MessageMetadata struct {
 	uid uint32
 }
 
-// SearchPage returns bounded message metadata and reports whether adapter-side
-// traversal stopped before every UID range was examined.
+// SearchPage returns bounded message metadata in descending UID order and
+// reports whether matches were omitted or a UID range was left unexamined.
 type SearchPage struct {
 	Messages  []MessageMetadata
 	Truncated bool
@@ -65,8 +66,10 @@ func (adapter *Adapter) SearchMail(ctx context.Context, query SearchQuery) ([]Me
 }
 
 // SearchMailPage searches a finite sequence of descending UID windows and
-// reports when configured bounds leave an older mailbox range unexamined. It
-// never issues an unbounded whole-mailbox SEARCH.
+// returns the highest matching UIDs that fit the result budget, newest UID
+// first. UID order is not header-Date or delivery-date order. Truncated reports
+// matches omitted from an examined window or an older range left unexamined.
+// It never issues an unbounded whole-mailbox SEARCH.
 func (adapter *Adapter) SearchMailPage(ctx context.Context, query SearchQuery) (SearchPage, error) {
 	if query.Mailbox == "" {
 		return SearchPage{}, errorCode(CodeMailboxNotFound)
@@ -79,6 +82,7 @@ func (adapter *Adapter) SearchMailPage(ctx context.Context, query SearchQuery) (
 	err := adapter.execute(ctx, func(operationContext context.Context, session readSession) error {
 		attemptResults := make([]MessageMetadata, 0)
 		attemptOutputBytes := 2 // JSON array brackets.
+		omitted := false
 
 		snapshot, err := session.Examine(operationContext, query.Mailbox)
 		if err != nil {
@@ -92,17 +96,27 @@ func (adapter *Adapter) SearchMailPage(ctx context.Context, query SearchQuery) (
 				start = remaining - searchWindowWidth
 			}
 			end := remaining - 1
-			uids, err := session.UIDSearchWindow(operationContext, query, uidWindow{Start: start, End: end}, adapter.config.Bounds.MaxSearchResults-len(attemptResults))
+			window := uidWindow{Start: start, End: end}
+			uids, err := session.UIDSearchWindow(operationContext, query, window, window.width())
 			if err != nil {
 				return err
 			}
-			if len(uids) > adapter.config.Bounds.MaxSearchResults-len(attemptResults) {
-				return errorCode(CodeBoundsExceeded)
-			}
-			metadata, err := session.UIDFetchMetadata(operationContext, query.Mailbox, uids, adapter.config.Bounds.MaxHeaderBytes)
+
+			selected, err := selectHighestUIDs(uids, window, adapter.config.Bounds.MaxSearchResults-len(attemptResults))
 			if err != nil {
 				return err
 			}
+			omitted = omitted || len(selected) < len(uids)
+
+			metadata, err := session.UIDFetchMetadata(operationContext, query.Mailbox, selected, adapter.config.Bounds.MaxHeaderBytes)
+			if err != nil {
+				return err
+			}
+			if err := validateFetchedMetadataUIDs(selected, metadata); err != nil {
+				return err
+			}
+			sort.Slice(metadata, func(i, j int) bool { return metadata[i].uid > metadata[j].uid })
+
 			for _, item := range metadata {
 				payload := messageIDPayload{Mailbox: query.Mailbox, UIDValidity: snapshot.UIDValidity, UID: item.uid}
 				item.ID, err = adapter.encodeMessageID(payload)
@@ -129,7 +143,7 @@ func (adapter *Adapter) SearchMailPage(ctx context.Context, query SearchQuery) (
 			remaining = start
 		}
 
-		page = SearchPage{Messages: attemptResults, Truncated: remaining > 1}
+		page = SearchPage{Messages: attemptResults, Truncated: omitted || remaining > 1}
 		return nil
 	})
 	if err != nil {
@@ -137,6 +151,34 @@ func (adapter *Adapter) SearchMailPage(ctx context.Context, query SearchQuery) (
 	}
 
 	return page, nil
+}
+
+// selectHighestUIDs validates one decoded window and returns at most budget of
+// its highest UIDs in descending order. Duplicate, zero or out-of-window UIDs
+// refuse the whole window rather than yielding a partial page.
+func selectHighestUIDs(uids []uint32, window uidWindow, budget int) ([]uint32, error) {
+	if budget < 1 || len(uids) > window.width() {
+		return nil, errorCode(CodeBoundsExceeded)
+	}
+
+	sorted := append([]uint32(nil), uids...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] > sorted[j] })
+	for index, uid := range sorted {
+		if uid == 0 {
+			return nil, errorCode(CodeIMAPProtocol)
+		}
+		if uid < window.Start || uid > window.End {
+			return nil, errorCode(CodeBoundsExceeded)
+		}
+		if index > 0 && sorted[index-1] == uid {
+			return nil, errorCode(CodeIMAPProtocol)
+		}
+	}
+
+	if len(sorted) > budget {
+		sorted = sorted[:budget]
+	}
+	return sorted, nil
 }
 
 func (adapter *Adapter) encodeMessageID(payload messageIDPayload) (string, error) {

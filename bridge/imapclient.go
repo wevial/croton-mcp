@@ -74,6 +74,15 @@ type uidWindow struct {
 	End   uint32
 }
 
+// width is the number of UIDs a well-formed window spans, which also bounds
+// how many unique UIDs one SEARCH response for it may decode to.
+func (window uidWindow) width() int {
+	if window.Start == 0 || window.End < window.Start {
+		return 0
+	}
+	return int(uint64(window.End) - uint64(window.Start) + 1)
+}
+
 type imapSession struct {
 	client *imapclient.Client
 	conn   *deadlineConn
@@ -334,8 +343,11 @@ func (session *imapSession) dispatchMove(ctx context.Context, uid uint32, destin
 	return err
 }
 
+// UIDSearchWindow decodes at most limit unique UIDs, which must not exceed the
+// window width. Callers pass the width so a dense window is decoded whole and
+// result selection happens after the response has been fully consumed.
 func (session *imapSession) UIDSearchWindow(ctx context.Context, query SearchQuery, window uidWindow, limit int) ([]uint32, error) {
-	if window.Start == 0 || window.End < window.Start || limit < 1 {
+	if window.Start == 0 || window.End < window.Start || limit < 1 || limit > window.width() {
 		return nil, errorCode(CodeBoundsExceeded)
 	}
 
@@ -659,6 +671,7 @@ func boundedSearchUIDs(data *imap.SearchData, window uidWindow, limit int) ([]ui
 	}
 
 	results := make([]uint32, 0, limit)
+	seen := make(map[uint32]struct{}, limit)
 	for _, item := range uidSet {
 		if item.Start == 0 || item.Stop == 0 {
 			return nil, errorCode(CodeIMAPProtocol)
@@ -672,6 +685,10 @@ func boundedSearchUIDs(data *imap.SearchData, window uidWindow, limit int) ([]ui
 			return nil, errorCode(CodeBoundsExceeded)
 		}
 		for uid := item.Start; ; uid++ {
+			if _, duplicate := seen[uint32(uid)]; duplicate {
+				return nil, errorCode(CodeIMAPProtocol)
+			}
+			seen[uint32(uid)] = struct{}{}
 			results = append(results, uint32(uid))
 			if uid == item.Stop {
 				break
