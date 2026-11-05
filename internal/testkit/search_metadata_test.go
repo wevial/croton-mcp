@@ -127,7 +127,7 @@ func TestSearchMetadataFixture(t *testing.T) {
 
 		// The fault is scoped to metadata reads: a whole-body read stays unchanged.
 		body := client.fetchMetadata(t, "m3", "UID FETCH 101 (UID FLAGS BODY.PEEK[])")
-		if len(body) != 1 || strings.Contains(body[0].items, "FLAGS") {
+		if len(body) != 1 || strings.Contains(body[0].items, "FLAGS") || body[0].section != "" || body[0].literal != metadataSeenBody {
 			t.Fatal("whole-body FETCH changed under the duplicate metadata FLAGS mode")
 		}
 	})
