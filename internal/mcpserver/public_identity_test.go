@@ -917,7 +917,7 @@ func TestPublicReadIdentityThreadMCP(t *testing.T) {
 			}
 		})
 
-		t.Run("thread nodes shrink whole", func(t *testing.T) {
+		t.Run("thread nodes shrink whole and fallback is empty", func(t *testing.T) {
 			thread := &getThreadResult{ID: longID, Mailbox: longMailbox}
 			source := make(map[string]readTuple)
 			for index := range maxThreadMessages {
@@ -932,6 +932,24 @@ func TestPublicReadIdentityThreadMCP(t *testing.T) {
 			}
 			object := decodeBounded(t, encoded)
 			requireRetainedIdentities(t, "thread nodes", "key", rawItems(t, object, "nodes"), source, maxThreadMessages)
+
+			single := &getThreadResult{ID: longID, Mailbox: longMailbox, Nodes: []threadNodeResult{
+				{Key: "opaque-only", Mailbox: longMailbox, UIDValidity: 3001, UID: 11, Subject: strings.Repeat("s", maxToolResultBytes)},
+			}}
+			encoded, truncated, err = encodeBounded(single)
+			if err != nil || !truncated {
+				t.Fatalf("thread fallback: truncated=%v err=%v", truncated, err)
+			}
+			object = decodeBounded(t, encoded)
+			requireNoIdentityKeys(t, "thread fallback", object)
+			if nodes := rawItems(t, object, "nodes"); len(nodes) != 0 {
+				t.Fatalf("thread fallback fabricated nodes: %v", nodes)
+			}
+			for _, key := range []string{"id", "mailbox", "nodes", "truncated"} {
+				if _, ok := object[key]; !ok {
+					t.Fatalf("thread fallback dropped %q", key)
+				}
+			}
 		})
 
 		t.Run("unretainable identity is a static error", func(t *testing.T) {
@@ -1007,38 +1025,71 @@ func TestPublicReadIdentityThreadMCP(t *testing.T) {
 			}
 		})
 
-		t.Run("zero tuple from test adapter", func(t *testing.T) {
-			zeroThread := func() *fakeMail {
-				return &fakeMail{
-					metadataByID: map[string]bridge.MessageMetadata{
-						"opaque-target": withReadIdentity(bridge.MessageMetadata{ID: "opaque-target", Mailbox: "INBOX", Subject: "Re: Budget"}, 77, 500),
-						"opaque-zero":   {ID: "opaque-zero", Mailbox: "INBOX", Subject: "Budget"},
-					},
-					bodyByID: map[string][]byte{
-						"opaque-target": fakeThreadBody("Re: Budget", "<budget-reply@croton.test>", "References: <budget@croton.test>\r\n"),
-						"opaque-zero":   fakeThreadBody("Budget", "<budget@croton.test>", ""),
-					},
-					searched: []bridge.MessageMetadata{{ID: "opaque-zero", Mailbox: "INBOX", Subject: "Budget"}, {ID: "opaque-target", Mailbox: "INBOX", Subject: "Re: Budget"}},
+		t.Run("new adapter key after restart", func(t *testing.T) {
+			_, first := startIntegrationAdapterWithMessages(t, testkit.SyntheticLinkedThread())
+			results := rawItems(t, rawObject(t, callTool(t, connectTestClient(t, Options{Mail: first}), "search_mail", map[string]any{"mailbox": "INBOX"})), "results")
+			if len(results) != 3 {
+				t.Fatalf("search results = %v", results)
+			}
+			oldIDs := make(map[string]bool)
+			for _, item := range results {
+				id, _ := item["id"].(string)
+				oldIDs[id] = true
+			}
+			if err := first.Close(); err != nil {
+				t.Fatalf("close first adapter: %v", err)
+			}
+
+			server, restarted := startIntegrationAdapterWithMessages(t, testkit.SyntheticLinkedThread())
+			session := connectTestClient(t, Options{Mail: restarted})
+			for id := range oldIDs {
+				requireRefusedWithoutTuple(t, callTool(t, session, "get_thread", map[string]any{"messageId": id}), errStaleID)
+			}
+			fresh := rawItems(t, rawObject(t, callTool(t, session, "search_mail", map[string]any{"mailbox": "INBOX"})), "results")
+			freshID, _ := fresh[0]["id"].(string)
+			for _, node := range rawItems(t, rawObject(t, callTool(t, session, "get_thread", map[string]any{"messageId": freshID})), "nodes") {
+				flatTuple(t, node)
+				if key, _ := node["key"].(string); oldIDs[key] {
+					t.Fatalf("restarted thread reused a previous adapter key: %v", node)
 				}
 			}
+			requireReadOnlyTranscript(t, server)
+		})
 
-			target := zeroThread()
-			requireRefusedWithoutTuple(t, callTool(t, connectTestClient(t, Options{Mail: target}), "get_thread", map[string]any{"messageId": "opaque-zero"}), errUnavailable)
-			if len(target.searchCalls) != 0 {
-				t.Fatalf("zero target still searched for siblings: %v", target.searchCalls)
-			}
+		t.Run("zero tuple from test adapter", func(t *testing.T) {
+			for _, tuple := range [][2]uint32{{0, 0}, {77, 0}, {0, 9}} {
+				zeroThread := func() *fakeMail {
+					return &fakeMail{
+						metadataByID: map[string]bridge.MessageMetadata{
+							"opaque-target": withReadIdentity(bridge.MessageMetadata{ID: "opaque-target", Mailbox: "INBOX", Subject: "Re: Budget"}, 77, 500),
+							"opaque-zero":   withReadIdentity(bridge.MessageMetadata{ID: "opaque-zero", Mailbox: "INBOX", Subject: "Budget"}, tuple[0], tuple[1]),
+						},
+						bodyByID: map[string][]byte{
+							"opaque-target": fakeThreadBody("Re: Budget", "<budget-reply@croton.test>", "References: <budget@croton.test>\r\n"),
+							"opaque-zero":   fakeThreadBody("Budget", "<budget@croton.test>", ""),
+						},
+						searched: []bridge.MessageMetadata{{ID: "opaque-zero", Mailbox: "INBOX", Subject: "Budget"}, {ID: "opaque-target", Mailbox: "INBOX", Subject: "Re: Budget"}},
+					}
+				}
 
-			sibling := zeroThread()
-			thread := rawObject(t, callTool(t, connectTestClient(t, Options{Mail: sibling}), "get_thread", map[string]any{"messageId": "opaque-target"}))
-			nodes := rawItems(t, thread, "nodes")
-			if len(nodes) != 1 || nodes[0]["key"] != "opaque-target" || flatTuple(t, nodes[0]) != (readTuple{Mailbox: "INBOX", UIDValidity: 77, UID: 500}) {
-				t.Fatalf("zero-tuple sibling retained or borrowed a tuple: %v", thread)
-			}
-			if truncated, _ := thread["truncated"].(bool); !truncated {
-				t.Fatalf("omitted zero-tuple sibling not reported truncated: %v", thread)
-			}
-			if len(sibling.metaCalls) != 2 || len(sibling.bodyCalls) != 2 || len(sibling.searchCalls) != 1 {
-				t.Fatalf("zero-tuple sibling triggered extra reads: metadata=%v body=%v", sibling.metaCalls, sibling.bodyCalls)
+				target := zeroThread()
+				requireRefusedWithoutTuple(t, callTool(t, connectTestClient(t, Options{Mail: target}), "get_thread", map[string]any{"messageId": "opaque-zero"}), errUnavailable)
+				if len(target.searchCalls) != 0 {
+					t.Fatalf("tuple %v target still searched for siblings: %v", tuple, target.searchCalls)
+				}
+
+				sibling := zeroThread()
+				thread := rawObject(t, callTool(t, connectTestClient(t, Options{Mail: sibling}), "get_thread", map[string]any{"messageId": "opaque-target"}))
+				nodes := rawItems(t, thread, "nodes")
+				if len(nodes) != 1 || nodes[0]["key"] != "opaque-target" || flatTuple(t, nodes[0]) != (readTuple{Mailbox: "INBOX", UIDValidity: 77, UID: 500}) {
+					t.Fatalf("tuple %v sibling retained or borrowed a tuple: %v", tuple, thread)
+				}
+				if truncated, _ := thread["truncated"].(bool); !truncated {
+					t.Fatalf("omitted tuple %v sibling not reported truncated: %v", tuple, thread)
+				}
+				if len(sibling.metaCalls) != 2 || len(sibling.bodyCalls) != 2 || len(sibling.searchCalls) != 1 {
+					t.Fatalf("tuple %v sibling triggered extra reads: metadata=%v body=%v", tuple, sibling.metaCalls, sibling.bodyCalls)
+				}
 			}
 		})
 	})
@@ -1047,6 +1098,7 @@ func TestPublicReadIdentityThreadMCP(t *testing.T) {
 		t.Parallel()
 
 		server, adapter := startIntegrationAdapterWithMessages(t, testkit.SyntheticLinkedThread())
+		observed := observeFixtureTuples(t, server, "Message-ID")
 		var audit bytes.Buffer
 		session := connectTestClient(t, Options{Mail: adapter, Audit: NewAuditor(&audit)})
 
@@ -1061,8 +1113,14 @@ func TestPublicReadIdentityThreadMCP(t *testing.T) {
 			for _, node := range rawItems(t, rawObject(t, callTool(t, session, "get_thread", map[string]any{"messageId": id})), "nodes") {
 				tuple := flatTuple(t, node)
 				messageID, _ := node["messageId"].(string)
+				if tuple != observed[messageID] {
+					t.Fatalf("thread node tuple differs from independently observed fixture state: %v", node)
+				}
 				sensitive = append(sensitive, messageID, strconv.FormatUint(uint64(tuple.UIDValidity), 10), strconv.FormatUint(uint64(tuple.UID), 10))
 			}
+		}
+		if after := observeFixtureTuples(t, server, "Message-ID"); !reflect.DeepEqual(after, observed) {
+			t.Fatalf("fixture state changed under read-only threads: %+v, want %+v", after, observed)
 		}
 		requireReadOnlyTranscript(t, server)
 
