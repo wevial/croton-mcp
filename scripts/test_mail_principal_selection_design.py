@@ -342,9 +342,10 @@ def check_candidates(record):
         if row["Executed evidence"] != "NOT RUN":
             record.errors.append(f"{where}: executed evidence must be NOT RUN")
         if row["Verdict"] == "source-supported":
-            evidence = " ".join(row[field] for field in ("Trust and connection binding", "Limit")).casefold()
+            evidence = " ".join(" ".join(row[field] for field in ("Trust and connection binding", "Limit"))
+                                .casefold().split())
             for denial in CANDIDATE_DENIALS.get(name, ()):
-                if denial in evidence:
+                if " ".join(denial.split()) in evidence:
                     record.errors.append(f"{where}: source-supported contradicts evidence {denial!r}")
 
     exclusions = record.keyed("Insufficient claims", "Claim", ("Claim", "Verdict", "Reason"), EXCLUSIONS)
@@ -573,6 +574,11 @@ class PrincipalSelectionDesign(unittest.TestCase):
                 with self.subTest(denial=name, column=column):
                     self.assertRejected(set_cell(supported, name, column, cells(real)[column]),
                                         "source-supported contradicts evidence")
+                for separator in ("  ", "\t", " \u00a0 "):
+                    with self.subTest(denial=name, column=column, separator=separator):
+                        spaced = separator.join(cells(real)[column].split())
+                        self.assertRejected(set_cell(supported, name, column, spaced),
+                                            "source-supported contradicts evidence")
             for denial in CANDIDATE_DENIALS[name]:
                 with self.subTest(denial=name, evidence=denial):
                     self.assertIn(denial, cells(real)[2].casefold() + " " + cells(real)[6].casefold())
