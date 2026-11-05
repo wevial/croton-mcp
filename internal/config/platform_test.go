@@ -302,14 +302,12 @@ func TestContinuousIntegrationSeparatesCoreAndConsumerCompatibility(t *testing.T
 func TestContinuousIntegrationRunsOncePerPullRequestCommit(t *testing.T) {
 	t.Parallel()
 
-	workflow := readRepositoryFiles(t, []string{".github/workflows/ci.yml"})[0]
-
-	for _, block := range []string{
-		"\non:\n  push:\n    branches: [main]\n  pull_request:\n\n",
-		"\nconcurrency:\n  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}\n  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n\n",
+	for key, want := range map[string]string{
+		"on":          "  push:\n    branches: [main]\n  pull_request:",
+		"concurrency": "  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}\n  cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
 	} {
-		if !strings.Contains(workflow, block) {
-			t.Errorf("CI workflow omits the exact block %q", block)
+		if got := workflowTopLevelBlock(t, key); got != want {
+			t.Errorf("CI workflow top-level %s: block = %q, want exactly %q", key, got, want)
 		}
 	}
 }
@@ -468,6 +466,33 @@ func workflowJobs(t *testing.T) map[string]string {
 	}
 
 	return jobs
+}
+
+// workflowTopLevelBlock returns the body under one top-level key of the CI
+// workflow, through the next unindented key, so blank lines inside the block
+// cannot hide nested entries. Trailing blank lines are dropped.
+func workflowTopLevelBlock(t *testing.T, key string) string {
+	t.Helper()
+
+	workflow := readRepositoryFiles(t, []string{".github/workflows/ci.yml"})[0]
+
+	var lines []string
+	inside, found := false, false
+	for _, line := range strings.Split(workflow, "\n") {
+		if line != "" && !strings.HasPrefix(line, " ") {
+			inside = line == key+":"
+			found = found || inside
+			continue
+		}
+		if inside {
+			lines = append(lines, line)
+		}
+	}
+	if !found {
+		t.Fatalf("CI workflow declares no top-level %s: block", key)
+	}
+
+	return strings.TrimRight(strings.Join(lines, "\n"), "\n")
 }
 
 // workflowJobHeader reports whether one line opens a job block.
