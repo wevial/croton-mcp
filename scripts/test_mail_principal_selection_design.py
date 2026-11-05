@@ -249,7 +249,7 @@ class Record:
     def keyed(self, heading, key, columns, expected):
         rows = self.rows(heading, columns)
         names = [row[key] for row in rows]
-        if names and sorted(names) != sorted(expected):
+        if sorted(names) != sorted(expected):
             self.errors.append(f"{heading}: rows must be exactly {sorted(expected)}, found {names}")
         return {row[key]: row for row in rows}
 
@@ -545,6 +545,30 @@ class PrincipalSelectionDesign(unittest.TestCase):
             with self.subTest(assertion=case):
                 self.assertRejected(set_cell(self.text, case, 2, ""), "before data/write assertion required")
         self.assertRejected(self.text.replace("accountB", "second account"), "accountA and accountB")
+
+    def test_empty_and_hidden_tables(self):
+        tables = {
+            "Current surface": tuple(CURRENT_SURFACE), "Candidate evidence": CANDIDATES,
+            "Insufficient claims": EXCLUSIONS, "Decision": DECISION_FIELDS,
+            "Proposed handshake": tuple(HANDSHAKE), "Future acceptance matrix": CASES,
+        }
+        for heading, keys in tables.items():
+            emptied = self.text
+            for key in keys:
+                emptied = drop_row(emptied, key)
+            with self.subTest(heading=heading, rows="empty"):
+                self.assertRejected(emptied, f"{heading}: rows must be exactly")
+            for name, wrap in (("comment", "<!--\n{}-->\n"), ("fence", "```text\n{}```\n")):
+                block = "".join(re.search(r"^\| " + re.escape(key) + r" \|.*\n", self.text, flags=re.M).group(0)
+                                for key in keys)
+                with self.subTest(heading=heading, rows=name):
+                    self.assertIn(block, self.text)
+                    self.assertRejected(self.text.replace(block, wrap.format(block)), f"{heading}: rows must be exactly")
+        blockers = self.text[self.text.index("\n## Blockers\n"):]
+        blocker_rows = "".join(re.findall(r"^\| (?:session-bound|Bridge-local|helper attestation) .*\n", blockers, re.M))
+        self.assertRejected(self.text.replace(blocker_rows, ""), "Blockers: blocked needs concrete missing")
+        self.assertRejected(self.text.replace(blocker_rows, "<!--\n" + blocker_rows + "-->\n"),
+                            "Blockers: blocked needs concrete missing")
 
     def test_visibility_and_provenance(self):
         headings = ("Current surface", "Candidate evidence", "Insufficient claims", "Decision", "Blockers",
