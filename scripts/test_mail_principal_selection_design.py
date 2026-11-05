@@ -5,7 +5,8 @@ The record must state its contract in visible sections and GFM tables. HTML
 comments, including an unterminated one, and top-level fenced code blocks are
 removed before matching, and whitespace is collapsed so that wrapped prose
 still matches. Candidate evidence also ignores Markdown emphasis and code-span
-markers, so formatting cannot hide a recorded denial. The checks cover record consistency and citation form only:
+markers and inline HTML tags, so formatting cannot hide a recorded denial. The
+checks cover record consistency and citation form only:
 they do not prove upstream semantics, Bridge behavior, human approval or the
 absence of secrets in arbitrary text.
 
@@ -324,7 +325,9 @@ def check_current_surface(record):
 
 
 def evidence_text(value):
-    """Casefold value with Markdown emphasis and code-span markers removed and whitespace collapsed."""
+    """Casefold value with inline HTML tags, Markdown emphasis and code-span markers removed and whitespace
+    collapsed."""
+    value = re.sub(r"</?[A-Za-z][^<>]*>", "", value)
     value = re.sub(r"[*`]|(?<!\w)_+|_+(?!\w)", "", value)
     return " ".join(value.casefold().split())
 
@@ -585,11 +588,13 @@ class PrincipalSelectionDesign(unittest.TestCase):
                         spaced = separator.join(cells(real)[column].split())
                         self.assertRejected(set_cell(supported, name, column, spaced),
                                             "source-supported contradicts evidence")
-                for marker in ("*", "**", "***", "_", "__", "`"):
-                    with self.subTest(denial=name, column=column, marker=marker):
+                for opening, closing in (("*", "*"), ("**", "**"), ("***", "***"), ("_", "_"), ("__", "__"),
+                                         ("`", "`"), ("<em>", "</em>"), ("<strong>", "</strong>"),
+                                         ("<i>", "</i>"), ("<b>", "</b>"), ('<EM class="x">', "</EM>")):
+                    with self.subTest(denial=name, column=column, marker=opening):
                         words = cells(real)[column].split()
                         middle = len(words) // 2
-                        emphasized = " ".join(words[:middle] + [marker + " ".join(words[middle:middle + 2]) + marker]
+                        emphasized = " ".join(words[:middle] + [opening + " ".join(words[middle:middle + 2]) + closing]
                                               + words[middle + 2:])
                         self.assertRejected(set_cell(supported, name, column, emphasized),
                                             "source-supported contradicts evidence")
