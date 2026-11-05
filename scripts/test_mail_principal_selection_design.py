@@ -86,7 +86,6 @@ PROSE = {
     "Proposed handshake": (
         "This proposal is frozen for a later, separately approved implementation and is gated on a real "
         "authoritative principal source.",
-        "While the decision is blocked it cannot be implemented.",
         "The catalog remains unchanged until a separate approved implementation registers anything.",
         "`get_mail_context` takes an empty closed input object, publishes `readOnlyHint: true` and has no "
         "mutation or preparation side effect.",
@@ -141,13 +140,25 @@ PROSE = {
         "transcript refusal.",
         "All statuses remain NOT RUN.",
     ),
-    "Status": ("Blocked; design only. No get_mail_context implementation, registration or proof exists, and "
-               "Mail authority is unchanged.",),
 }
 BLOCKED_PROSE = (
     "Unsupported is a valid completed investigation outcome, not an invented successful API.",
     "No fallback is enabled and no new account data is returned.",
 )
+# Prose whose wording depends on the decision value; the other state's wording must be absent.
+STATE_PROSE = {
+    "blocked": {
+        "Proposed handshake": ("While the decision is blocked it cannot be implemented.",),
+        "Status": ("Blocked; design only. No get_mail_context implementation, registration or proof exists, and "
+                   "Mail authority is unchanged.",),
+    },
+    "design-only": {
+        "Proposed handshake": ("While the decision is design-only it stays unimplemented until a separately "
+                               "approved implementation.",),
+        "Status": ("Design-only; runtime implementation and proof are unavailable. No get_mail_context "
+                   "implementation, registration or proof exists, and Mail authority is unchanged.",),
+    },
+}
 
 FORBIDDEN_FIELD = re.compile(r"principal|address|credential|password|username|subject|body|mailbox|account(?!Continuity)",
                              re.I)
@@ -351,6 +362,18 @@ def check_decision(record, candidates):
             record.errors.append("Decision: design-only records no missing evidence")
     else:
         record.errors.append(f"Decision: {value['decision']!r} is not design-only or blocked")
+        return
+
+    for heading, clauses in STATE_PROSE[value["decision"]].items():
+        check_clauses(record, heading, clauses)
+    for state, prose in STATE_PROSE.items():
+        if state == value["decision"]:
+            continue
+        for heading, clauses in prose.items():
+            flat = " ".join((record.body(heading) or "").split())
+            for clause in clauses:
+                if " ".join(clause.split()) in flat:
+                    record.errors.append(f"{heading}: {state} clause {clause!r} contradicts the decision")
 
 
 def check_handshake(record):
@@ -450,6 +473,9 @@ def design_only(text):
     text = set_cell(text, "decision", 1, "design-only")
     text = set_cell(text, "design candidate", 1, "native authenticated-session identity")
     text = set_cell(text, "missing evidence", 1, "none")
+    for heading, clauses in STATE_PROSE["blocked"].items():
+        for clause, replacement in zip(clauses, STATE_PROSE["design-only"][heading]):
+            text = substitute(text, clause, replacement)
     return text
 
 
@@ -525,6 +551,16 @@ class PrincipalSelectionDesign(unittest.TestCase):
         for clause in BLOCKED_PROSE:
             with self.subTest(clause=clause):
                 self.assertRejected(substitute(self.text, clause, ""), "Decision: missing clause")
+        for state, prose in STATE_PROSE.items():
+            other = "design-only" if state == "blocked" else "blocked"
+            text = self.text if state == "blocked" else design_only(self.text)
+            for heading, clauses in prose.items():
+                for clause, contradiction in zip(clauses, STATE_PROSE[other][heading]):
+                    with self.subTest(state=state, heading=heading, missing=clause):
+                        self.assertRejected(substitute(text, clause, ""), f"{heading}: missing clause")
+                    with self.subTest(state=state, heading=heading, contradiction=contradiction):
+                        self.assertRejected(substitute(text, clause, clause + " " + contradiction),
+                                            f"{other} clause")
 
     def test_handshake(self):
         for field in HANDSHAKE:
@@ -594,6 +630,7 @@ class PrincipalSelectionDesign(unittest.TestCase):
                     self.assertRejected(hidden, f"need one visible {heading!r} section")
         guarantees = [(heading, clause) for heading, clauses in PROSE.items() for clause in clauses]
         guarantees += [("Decision", clause) for clause in BLOCKED_PROSE]
+        guarantees += [(heading, clause) for heading, clauses in STATE_PROSE["blocked"].items() for clause in clauses]
         for heading, clause in guarantees:
             for name, wrap in (("comment", "<!-- {} -->"), ("fence", "\n```text\n{}\n```\n")):
                 with self.subTest(heading=heading, clause=clause, hidden=name):
