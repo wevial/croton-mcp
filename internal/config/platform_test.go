@@ -295,6 +295,44 @@ func TestContinuousIntegrationSeparatesCoreAndConsumerCompatibility(t *testing.T
 	}
 }
 
+// TestContinuousIntegrationRunsOncePerPullRequestCommit keeps a pull request
+// commit to a single run, through pull_request, and lets a newer commit on the
+// same pull request cancel the superseded run without ever cancelling a main
+// push run.
+func TestContinuousIntegrationRunsOncePerPullRequestCommit(t *testing.T) {
+	t.Parallel()
+
+	triggers := workflowMappingKeys(workflowTopLevelBlock(t, "on"))
+
+	push, found := triggers["push"]
+	if !found {
+		t.Fatal("CI no longer triggers on push")
+	}
+	if push != "branches: [main]" {
+		t.Errorf("CI push trigger = %q, want %q", push, "branches: [main]")
+	}
+	pullRequest, found := triggers["pull_request"]
+	if !found {
+		t.Fatal("CI no longer triggers on pull_request")
+	}
+	if pullRequest != "" {
+		t.Errorf("CI pull_request trigger carries a filter %q, want none", pullRequest)
+	}
+
+	concurrency := workflowMappingKeys(workflowTopLevelBlock(t, "concurrency"))
+	for key, want := range map[string]string{
+		"group":              "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}",
+		"cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
+	} {
+		if got := concurrency[key]; got != want {
+			t.Errorf("CI concurrency %s = %q, want %q", key, got, want)
+		}
+	}
+	if len(concurrency) != 2 {
+		t.Errorf("CI concurrency declares keys %v, want only group and cancel-in-progress", concurrency)
+	}
+}
+
 func TestContainsFoldNormalizesBothOperands(t *testing.T) {
 	t.Parallel()
 
@@ -449,6 +487,56 @@ func workflowJobs(t *testing.T) map[string]string {
 	}
 
 	return jobs
+}
+
+// workflowTopLevelBlock returns the indented body under one top-level key of
+// the CI workflow, which runs until the next unindented line.
+func workflowTopLevelBlock(t *testing.T, key string) string {
+	t.Helper()
+
+	workflow := readRepositoryFiles(t, []string{".github/workflows/ci.yml"})[0]
+
+	var block strings.Builder
+	inside, found := false, false
+	for _, line := range strings.Split(workflow, "\n") {
+		if line != "" && !strings.HasPrefix(line, " ") {
+			inside = line == key+":"
+			found = found || inside
+			continue
+		}
+		if inside {
+			block.WriteString(line)
+			block.WriteString("\n")
+		}
+	}
+	if !found {
+		t.Fatalf("CI workflow declares no top-level %s: block", key)
+	}
+
+	return block.String()
+}
+
+// workflowMappingKeys maps each two-space-indented key in a top-level block to
+// its value: the inline value, or else its nested lines trimmed and joined.
+func workflowMappingKeys(block string) map[string]string {
+	keys := make(map[string]string)
+	current := ""
+	for _, line := range strings.Split(block, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "  ") && !strings.HasPrefix(line, "   ") {
+			name, value, _ := strings.Cut(strings.TrimSpace(line), ":")
+			current = name
+			keys[current] = strings.TrimSpace(value)
+			continue
+		}
+		if current != "" {
+			keys[current] = strings.TrimSpace(keys[current] + "\n" + strings.TrimSpace(line))
+		}
+	}
+
+	return keys
 }
 
 // workflowJobHeader reports whether one line opens a job block.
