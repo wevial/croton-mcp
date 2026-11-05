@@ -157,7 +157,7 @@ func (adapter *Adapter) SearchMailPage(ctx context.Context, query SearchQuery) (
 // its highest UIDs in descending order. Duplicate, zero or out-of-window UIDs
 // refuse the whole window rather than yielding a partial page.
 func selectHighestUIDs(uids []uint32, window uidWindow, budget int) ([]uint32, error) {
-	if budget < 1 || len(uids) > window.width() {
+	if len(uids) > window.width() {
 		return nil, errorCode(CodeBoundsExceeded)
 	}
 

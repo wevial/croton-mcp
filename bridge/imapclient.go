@@ -347,7 +347,7 @@ func (session *imapSession) dispatchMove(ctx context.Context, uid uint32, destin
 // window width. Callers pass the width so a dense window is decoded whole and
 // result selection happens after the response has been fully consumed.
 func (session *imapSession) UIDSearchWindow(ctx context.Context, query SearchQuery, window uidWindow, limit int) ([]uint32, error) {
-	if window.Start == 0 || window.End < window.Start || limit < 1 || limit > window.width() {
+	if limit < 1 || limit > window.width() {
 		return nil, errorCode(CodeBoundsExceeded)
 	}
 
