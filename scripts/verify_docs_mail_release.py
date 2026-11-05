@@ -5,9 +5,12 @@ Clauses are matched in visible prose: HTML comments, including an unterminated
 one, and top-level fenced code blocks are removed, and whitespace is collapsed
 so wrapped lines still match. The marked tagged shell recipe in Source build is
 inspected separately as text, as are the marked download recipe in the release
-guide and the first-install copy fences in User-owned layout. Nothing here calls
-git, gh, the network, a build or an installer, and passing is not evidence that
-any release exists.
+guide and the first-install copy fences in User-owned layout. The pilot runbook's
+marked JSON contract is extracted separately and checked with the pilot
+witness's closed contract. Nothing here calls git, gh, the network, a build or
+an installer. These checks inspect repository text and synthetic fixtures only
+and do not demonstrate a real release, human consent, installed bytes or live
+mail behavior.
 """
 
 import argparse
@@ -15,10 +18,13 @@ from pathlib import Path
 import re
 import sys
 
+import verify_docs_mail_triage_pilot as pilot
 import verify_docs_user_install as installer
 
 ROOT = Path(__file__).resolve().parents[1]
-PATHS = {"release": "docs/RELEASE.md", "guide": "docs/USER-INSTALL.md", "readme": "README.md"}
+PATHS = {"release": "docs/RELEASE.md", "guide": "docs/USER-INSTALL.md", "readme": "README.md",
+         "pilot": "docs/MAIL-TRIAGE-PILOT.md"}
+PILOT_CONTRACT = '"pilot_artifact": "published_native_binary"'
 RECIPE = re.compile(r"<!-- mail-release-tagged-recipe -->\s*```sh\n(.*?)\n```", re.S)
 DOWNLOAD = re.compile(r"<!-- mail-release-download-recipe -->\s*```sh\n(.*?)\n```", re.S)
 FENCE = re.compile(r"^```sh\n(.*?)\n```", re.S | re.M)
@@ -95,6 +101,9 @@ CLAUSES = {
          "Record the printed full SHA and confirm HEAD equals it."),
     ),
     "test_integrity_limitations": (
+        ("pilot", "Release selection prerequisite", "pilot published-artifact policy", pilot.POLICY),
+        ("release", "Integrity limitations", "release published-artifact policy", pilot.POLICY),
+        ("guide", "Source build", "install published-artifact policy", pilot.POLICY),
         ("release", "Integrity limitations", "checksum is not a signature",
          "Checksums provide integrity, not signatures or provenance."),
         ("release", "Integrity limitations", "rebuild not assumed equal",
@@ -129,6 +138,25 @@ CLAUSES = {
          "Pilot acceptance requires the selected published staged bytes whose SHA-256 matches the release notes"),
         ("guide", "Source build", "guide absent platform asset STOP",
          "If the platform is unsupported or no native asset is published for it, STOP the binary path."),
+    ),
+    "test_pilot_artifact": (
+        ("pilot", "Release selection prerequisite", "pilot published non-draft release",
+         "`tagName` exactly equals the tag and `isDraft` is false."),
+        ("pilot", "Release selection prerequisite", "pilot tag resolution not targetCommitish",
+         "`targetCommitish` alone is not proof of the tag's resolved SHA."),
+        ("pilot", "Release selection prerequisite", "pilot native host platform",
+         "the host `GOHOSTOS` and `GOHOSTARCH`, not the configured `GOOS` and `GOARCH`."),
+        ("pilot", "Release selection prerequisite", "pilot missing native pair STOP",
+         "If either asset of the native binary/manifest pair is missing, STOP."),
+        ("pilot", "Release selection prerequisite", "pilot both-hash comparison",
+         "compare it with both the release-note SHA-256 and the published manifest SHA-256 before install approval."),
+        ("pilot", "Release selection prerequisite", "pilot no rebuild fallback",
+         "there is no rebuild fallback: never substitute a local source build"),
+        ("pilot", "Release selection prerequisite", "pilot separate install authority",
+         "Accepting the published bytes installs nothing and grants no install authority; "
+         "installing them needs the separate install approval below."),
+        ("pilot", "Catalog and rollback rehearsal", "pilot complete matched-set rollback",
+         "The rehearsal restores the complete matched artifact set recorded before the install"),
     ),
     "test_update_boundaries": (
         ("release", "Updates and authority", "tagged update",
@@ -200,20 +228,7 @@ MOVING = re.compile(r"\b(?:main|master|trunk|develop)\b|origin/|refs/heads/|HEAD
                     r"|--branch\b|\b[0-9a-f]{40}\b|\b[0-9a-f]{64}\b|<full-reviewed-commit-sha>")
 
 
-def visible(text):
-    text = re.sub(r"<!--.*?(?:-->|\Z)", "", text, flags=re.S)
-    lines, fence = [], None
-    for line in text.splitlines():
-        marker = re.match(r" {0,3}(`{3,}|~{3,})", line)
-        closing = re.fullmatch(r" {0,3}(`{3,}|~{3,})[ \t]*", line)
-        if fence is None and marker:
-            fence = marker.group(1)
-        elif fence is not None and closing and closing.group(1).startswith(fence):
-            fence = None
-        elif fence is None:
-            lines.append(line)
-
-    return "\n".join(lines)
+visible = pilot.visible
 
 
 def normalize(text):
@@ -352,6 +367,21 @@ def test_integrity_limitations(docs):
     return check_clauses(docs, "test_integrity_limitations") + first_install_errors(docs["guide"])
 
 
+def test_pilot_artifact(docs):
+    failures = check_clauses(docs, "test_pilot_artifact")
+
+    # The marked JSON is extracted from raw text; prose checks use visible text only.
+    contracts = pilot.CONTRACT.findall(docs["pilot"])
+    if len(contracts) != 1:
+        failures.append("pilot contract: expected one marked JSON fence")
+    else:
+        failures.extend(f"pilot contract: {error}" for error in pilot.contract_errors(contracts[0]))
+
+    failures.extend(f"pilot {error}" for error in pilot.source_build_errors(docs["pilot"]))
+    failures.extend(f"pilot {error}" for error in pilot.order_errors(visible(docs["pilot"])))
+    return failures
+
+
 def test_update_boundaries(docs):
     failures = check_clauses(docs, "test_update_boundaries")
 
@@ -375,7 +405,7 @@ def test_links_and_status(docs):
 
 
 TESTS = (test_publication_boundary, test_manifest_and_published_bytes, test_tagged_selection,
-         test_integrity_limitations, test_update_boundaries, test_links_and_status)
+         test_integrity_limitations, test_pilot_artifact, test_update_boundaries, test_links_and_status)
 
 
 def verify(docs):
@@ -404,7 +434,58 @@ def self_test(docs):
         for doc, _, name, phrase in clauses:
             cases.append((f"remove {name}", reword(docs, doc, phrase, "Synthetic removed clause."),
                           test, f"missing {name}"))
+    policy_names = {"pilot": "pilot", "release": "release", "guide": "install"}
+    for doc, name in policy_names.items():
+        missing = f"missing {name} published-artifact policy"
+        cases += [
+            (f"{doc} policy only in HTML comment", reword(docs, doc, pilot.POLICY, f"<!-- {pilot.POLICY} -->"),
+             test_integrity_limitations, missing),
+            (f"{doc} policy only in code fence", reword(docs, doc, pilot.POLICY, f"\n```text\n{pilot.POLICY}\n```\n"),
+             test_integrity_limitations, missing),
+            (f"{doc} rewrapped visible policy", reword(docs, doc, pilot.POLICY, pilot.POLICY.replace(
+                " verified ", "\nverified ").replace(" a local ", "\na local ")), None, None),
+        ]
     cases += [
+        ("visible source-built pilot instruction", reword(
+            docs, "pilot", "there is no rebuild fallback",
+            "there is no rebuild fallback. Do not download a release binary; build from the resolved revision"),
+         test_pilot_artifact, "pilot source build: pilot instruction"),
+        ("pilot contract source build", reword(
+            docs, "pilot", PILOT_CONTRACT, '"pilot_artifact": "source_build"'),
+         test_pilot_artifact, "pilot contract: contract: release.pilot_artifact changed"),
+        ("pilot contract without published hash", reword(
+            docs, "pilot", '"published_binary_sha256": "compared_with_release_notes_and_manifest_before_install_approval",',
+            ""), test_pilot_artifact, "pilot contract: contract: release.published_binary_sha256 missing"),
+        ("pilot contract rebuild fallback", reword(
+            docs, "pilot", PILOT_CONTRACT + ",", PILOT_CONTRACT + ', "rebuild_fallback": "local_source_build",'),
+         test_pilot_artifact, "pilot contract: contract: unexpected release.rebuild_fallback"),
+        ("103557c base pilot lacks policy", {**docs, "pilot": pilot.contradictory_base(docs["pilot"])},
+         None, "missing pilot published-artifact policy"),
+        ("103557c base pilot source build", {**docs, "pilot": pilot.contradictory_base(docs["pilot"])},
+         test_pilot_artifact, "pilot source build: pilot instruction"),
+        ("103557c base pilot contract", {**docs, "pilot": pilot.contradictory_base(docs["pilot"])},
+         test_pilot_artifact, "pilot contract: contract: unexpected release.staged_binary_sha256"),
+        ("pilot contract dotted-key collision", reword(
+            reword(docs, "pilot", PILOT_CONTRACT, '"pilot_artifact": "source_build"'), "pilot",
+            '"status": "not_run",', '"status": "not_run", "release.pilot_artifact": "published_native_binary",'),
+         test_pilot_artifact, "pilot contract: contract: release.pilot_artifact changed"),
+        ("missing native asset rebuilt locally", reword(
+            docs, "pilot", "If either asset of the native binary/manifest pair is missing, STOP.",
+            "If either asset of the native binary/manifest pair is missing, build it locally from the resolved "
+            "revision instead."),
+         test_pilot_artifact, "pilot source build: pilot instruction"),
+        ("release absent asset rebuilt locally", reword(
+            docs, "release", "STOP the binary path; a local source build is not pilot acceptance of published bytes.",
+            "build it locally from the tag instead."),
+         test_integrity_limitations, "missing absent platform asset STOP"),
+        ("pilot installed hash before installation", reword(
+            docs, "pilot", "there is no rebuild fallback",
+            "there is no rebuild fallback. Then verify the independent installed-binary checksum: "
+            "hash the installed executable"),
+         test_pilot_artifact, "pilot order: '1. Install approval:' must precede"),
+        ("pilot binary-only rollback", reword(
+            docs, "pilot", "restores the complete matched artifact set", "restores only the prior binary"),
+         test_pilot_artifact, "missing pilot complete matched-set rollback"),
         ("release-notes GOARCH removed", reword(
             docs, "release", "`toolchain`, `GOOS` and `GOARCH`, the exact", "`toolchain`, `GOOS`, the exact"),
          test_manifest_and_published_bytes, "missing release-note fields and checksum"),

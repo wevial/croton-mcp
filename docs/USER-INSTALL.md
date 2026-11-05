@@ -74,8 +74,10 @@ guaranteed reproducible, so a binary built here from a release tag can hash
 differently from the binary published for that tag. Pilot acceptance requires
 the selected published staged bytes whose SHA-256 matches the release notes, as
 described in the release guide; stage those bytes, not a local rebuild, for the
-pilot. If the platform is unsupported or no native asset is published for it,
-STOP the binary path.
+pilot. Pilot acceptance installs only the selected published native binary
+asset verified against both the published manifest and release-note SHA-256; a
+local source build is not a pilot artifact. If the platform is unsupported or no
+native asset is published for it, STOP the binary path.
 
 Candidate publication is not atomic. If linking the candidate files fails, the
 helper attempts to remove its linked files and the output directory. Cleanup
