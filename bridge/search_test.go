@@ -23,21 +23,6 @@ func TestDecodeMessageIDEnforcesEncodedCeilingBeforeDecoding(t *testing.T) {
 		"%%%",
 		strings.Repeat("A", 1<<20),
 	} {
-		if allocated := minDecodeAllocation(t, adapter, value); allocated > uint64(maxMessageIDBytes*4) {
-			t.Fatalf("decode %d-byte identifier allocated %d bytes after the encoded ceiling", len(value), allocated)
-		}
-	}
-}
-
-// minDecodeAllocation reports the smallest TotalAlloc delta across several
-// decodes because MemStats is process-wide and background goroutines left by
-// other tests in the package can allocate during any single sample.
-func minDecodeAllocation(t *testing.T, adapter *Adapter, value string) uint64 {
-	t.Helper()
-
-	const samples = 16
-	smallest := ^uint64(0)
-	for range samples {
 		runtime.GC()
 		var before, after runtime.MemStats
 		runtime.ReadMemStats(&before)
@@ -47,10 +32,10 @@ func minDecodeAllocation(t *testing.T, adapter *Adapter, value string) uint64 {
 		}
 
 		runtime.ReadMemStats(&after)
-		smallest = min(smallest, after.TotalAlloc-before.TotalAlloc)
+		if allocated := after.TotalAlloc - before.TotalAlloc; allocated > uint64(maxMessageIDBytes*4) {
+			t.Fatalf("decode %d-byte identifier allocated %d bytes after the encoded ceiling", len(value), allocated)
+		}
 	}
-
-	return smallest
 }
 
 func signedMessageID(t *testing.T, key [sha256.Size]byte, decodedBytes int) string {
