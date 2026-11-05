@@ -11,7 +11,7 @@ func TestListAttachmentsReturnsMetadataOnly(t *testing.T) {
 	t.Parallel()
 
 	mail := &fakeMail{
-		metadata: bridge.MessageMetadata{ID: "opaque-2", Mailbox: "INBOX", Subject: "Attachment fixture"},
+		metadata: bridge.MessageMetadata{ID: "opaque-2", Mailbox: "INBOX", UIDValidity: 9001, UID: 102, Subject: "Attachment fixture"},
 		body:     []byte(syntheticAttachmentMIME),
 	}
 	session := connectTestClient(t, Options{Mail: mail})

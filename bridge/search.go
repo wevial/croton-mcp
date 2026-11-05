@@ -33,12 +33,17 @@ type SearchQuery struct {
 }
 
 // MessageMetadata is bounded metadata for one message. ID is an adapter-scoped
-// opaque identifier that binds the mailbox, UIDVALIDITY and UID.
+// opaque identifier that binds the mailbox, UIDVALIDITY and UID. UIDValidity
+// and UID are the same positive tuple the adapter validated and bound into ID
+// during the successful read attempt; they confer no account or write
+// authority.
 type MessageMetadata struct {
-	ID      string
-	Mailbox string
-	Subject string
-	Size    int64
+	ID          string
+	Mailbox     string
+	UIDValidity uint32
+	UID         uint32
+	Subject     string
+	Size        int64
 
 	uid uint32
 }
@@ -99,11 +104,14 @@ func (adapter *Adapter) SearchMailPage(ctx context.Context, query SearchQuery) (
 				return err
 			}
 			for _, item := range metadata {
-				item.ID, err = adapter.encodeMessageID(messageIDPayload{Mailbox: query.Mailbox, UIDValidity: snapshot.UIDValidity, UID: item.uid})
+				payload := messageIDPayload{Mailbox: query.Mailbox, UIDValidity: snapshot.UIDValidity, UID: item.uid}
+				item.ID, err = adapter.encodeMessageID(payload)
 				if err != nil {
 					return err
 				}
-				item.Mailbox = query.Mailbox
+				item.Mailbox = payload.Mailbox
+				item.UIDValidity = payload.UIDValidity
+				item.UID = payload.UID
 				encodedItem, err := json.Marshal(item)
 				if err != nil {
 					return errorCode(CodeIMAPProtocol)

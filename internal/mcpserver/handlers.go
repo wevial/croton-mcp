@@ -53,10 +53,36 @@ func runListFolders(ctx context.Context, deps Options, arguments json.RawMessage
 
 // messageResult is bounded message metadata shared by search and digest results.
 type messageResult struct {
-	ID      string `json:"id"`
-	Mailbox string `json:"mailbox"`
-	Subject string `json:"subject,omitempty"`
-	Size    int64  `json:"size,omitempty"`
+	ID          string `json:"id"`
+	Mailbox     string `json:"mailbox"`
+	UIDValidity uint32 `json:"uidvalidity,omitempty"`
+	UID         uint32 `json:"uid,omitempty"`
+	Subject     string `json:"subject,omitempty"`
+	Size        int64  `json:"size,omitempty"`
+}
+
+// validReadIdentity reports whether the adapter supplied the positive
+// same-generation tuple that flat read results expose beside the opaque id.
+func validReadIdentity(metadata bridge.MessageMetadata) bool {
+	return metadata.ID != "" && metadata.Mailbox != "" && metadata.UIDValidity != 0 && metadata.UID != 0
+}
+
+// flatMessageResults maps one search page into flat results, refusing the
+// whole page when any message lacks its read identity.
+func flatMessageResults(messages []bridge.MessageMetadata, limit int) ([]messageResult, bool, string) {
+	results := make([]messageResult, 0, len(messages))
+	for _, item := range messages {
+		if len(results) == limit {
+			return results, true, ""
+		}
+		if !validReadIdentity(item) {
+			return nil, false, errUnavailable
+		}
+
+		results = append(results, messageResult{ID: item.ID, Mailbox: item.Mailbox, UIDValidity: item.UIDValidity, UID: item.UID, Subject: item.Subject, Size: item.Size})
+	}
+
+	return results, false, ""
 }
 
 type searchMailResult struct {
@@ -108,17 +134,12 @@ func runSearchMail(ctx context.Context, deps Options, arguments json.RawMessage)
 		return nil, mapAdapterError(err)
 	}
 
-	result := searchMailResult{Results: make([]messageResult, 0, len(page.Messages)), Truncated: page.Truncated}
-	for _, item := range page.Messages {
-		if len(result.Results) == limit {
-			result.Truncated = true
-			break
-		}
-
-		result.Results = append(result.Results, messageResult{ID: item.ID, Mailbox: item.Mailbox, Subject: item.Subject, Size: item.Size})
+	results, limited, errCode := flatMessageResults(page.Messages, limit)
+	if errCode != "" {
+		return nil, errCode
 	}
 
-	return &result, ""
+	return &searchMailResult{Results: results, Truncated: page.Truncated || limited}, ""
 }
 
 func validMailboxArgument(mailbox string) bool {
@@ -170,6 +191,8 @@ type attachmentResult struct {
 type getMessageResult struct {
 	ID          string                  `json:"id"`
 	Mailbox     string                  `json:"mailbox"`
+	UIDValidity uint32                  `json:"uidvalidity,omitempty"`
+	UID         uint32                  `json:"uid,omitempty"`
 	Size        int64                   `json:"size,omitempty"`
 	Headers     bridge.CanonicalHeaders `json:"headers"`
 	Text        string                  `json:"text,omitempty"`
@@ -231,10 +254,15 @@ func runGetMessage(ctx context.Context, deps Options, arguments json.RawMessage)
 	if errCode != "" {
 		return nil, errCode
 	}
+	if !validReadIdentity(metadata) {
+		return nil, errUnavailable
+	}
 
 	return &getMessageResult{
 		ID:          metadata.ID,
 		Mailbox:     metadata.Mailbox,
+		UIDValidity: metadata.UIDValidity,
+		UID:         metadata.UID,
 		Size:        metadata.Size,
 		Headers:     normalized.Headers,
 		Text:        normalized.Text,
@@ -400,6 +428,8 @@ func baseSubject(subject string) string {
 type listAttachmentsResult struct {
 	ID          string             `json:"id"`
 	Mailbox     string             `json:"mailbox"`
+	UIDValidity uint32             `json:"uidvalidity,omitempty"`
+	UID         uint32             `json:"uid,omitempty"`
 	Attachments []attachmentResult `json:"attachments"`
 	Truncated   bool               `json:"truncated,omitempty"`
 }
@@ -414,10 +444,15 @@ func runListAttachments(ctx context.Context, deps Options, arguments json.RawMes
 	if errCode != "" {
 		return nil, errCode
 	}
+	if !validReadIdentity(metadata) {
+		return nil, errUnavailable
+	}
 
 	return &listAttachmentsResult{
 		ID:          metadata.ID,
 		Mailbox:     metadata.Mailbox,
+		UIDValidity: metadata.UIDValidity,
+		UID:         metadata.UID,
 		Attachments: attachmentResults(normalized.Attachments),
 		Truncated:   normalized.Truncation.Attachments,
 	}, ""
@@ -475,21 +510,16 @@ func runSelectDigestCandidates(ctx context.Context, deps Options, arguments json
 		return nil, mapAdapterError(err)
 	}
 
-	result := selectDigestResult{
+	candidates, limited, errCode := flatMessageResults(page.Messages, limit)
+	if errCode != "" {
+		return nil, errCode
+	}
+
+	return &selectDigestResult{
 		Mailbox:       input.Mailbox,
-		Candidates:    make([]messageResult, 0, len(page.Messages)),
+		Candidates:    candidates,
 		TotalMessages: status.Messages,
 		UnseenCount:   status.Unseen,
-		Truncated:     page.Truncated,
-	}
-	for _, item := range page.Messages {
-		if len(result.Candidates) == limit {
-			result.Truncated = true
-			break
-		}
-
-		result.Candidates = append(result.Candidates, messageResult{ID: item.ID, Mailbox: item.Mailbox, Subject: item.Subject, Size: item.Size})
-	}
-
-	return &result, ""
+		Truncated:     page.Truncated || limited,
+	}, ""
 }

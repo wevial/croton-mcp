@@ -20,7 +20,7 @@ func TestOversizeMessageTextTruncatesToValidJSONOnRuneBoundary(t *testing.T) {
 		"Message-ID: <oversize@croton.test>\r\n" +
 		"\r\n" + snowmen + "\r\n"
 	mail := &fakeMail{
-		metadata: bridge.MessageMetadata{ID: "opaque-big", Mailbox: "INBOX", Subject: "Oversize fixture"},
+		metadata: bridge.MessageMetadata{ID: "opaque-big", Mailbox: "INBOX", UIDValidity: 9001, UID: 101, Subject: "Oversize fixture"},
 		body:     []byte(body),
 	}
 	session := connectTestClient(t, Options{Mail: mail})
