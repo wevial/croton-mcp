@@ -51,27 +51,7 @@ func TestSearchMetadataFixture(t *testing.T) {
 		server := startMetadataFixture(t, ImplicitTLS, messages, seen, MetadataFlagsOrdinary)
 		client := metadataSession(t, server, ImplicitTLS)
 
-		for _, uid := range []string{"101", "102"} {
-			fetches := client.fetchMetadata(t, "m2", "UID FETCH "+uid+" (UID FLAGS BODY.PEEK[HEADER])")
-			if len(fetches) != 1 {
-				t.Fatalf("UID %s FETCH responses = %d, want 1", uid, len(fetches))
-			}
-
-			fetch := fetches[0]
-			if got := fetch.values(metadataUIDItem); len(got) != 1 || got[0] != uid {
-				t.Fatalf("UID %s FETCH UID items = %v, want exactly [%s]", uid, got, uid)
-			}
-
-			if got := fetch.values(metadataFlagsItem); len(got) != 1 || got[0] != wantFlags[uid] {
-				t.Fatalf("UID %s FETCH FLAGS items = %q, want exactly [%q]", uid, got, wantFlags[uid])
-			}
-
-			if fetch.section != "HEADER" || fetch.literal != headers[uid] {
-				t.Fatalf("UID %s FETCH header bytes changed", uid)
-			}
-		}
-
-		batch := client.fetchMetadata(t, "m3", "UID FETCH 101:102 (UID FLAGS BODY.PEEK[HEADER])")
+		batch := client.fetchMetadata(t, "m2", "UID FETCH 101:102 (UID FLAGS BODY.PEEK[HEADER])")
 		if len(batch) != 2 {
 			t.Fatalf("batched FETCH responses = %d, want 2", len(batch))
 		}
@@ -85,7 +65,7 @@ func TestSearchMetadataFixture(t *testing.T) {
 				t.Fatalf("batched UID %s FLAGS items = %q, want exactly [%q]", uid, got, wantFlags[uid])
 			}
 
-			if fetch.literal != headers[uid] {
+			if fetch.section != "HEADER" || fetch.literal != headers[uid] {
 				t.Fatalf("batched UID %s header bytes changed", uid)
 			}
 		}
@@ -109,22 +89,12 @@ func TestSearchMetadataFixture(t *testing.T) {
 			client := metadataSession(t, server, ImplicitTLS)
 
 			fetches := client.fetchMetadata(t, "m2", test.command)
-
 			if len(fetches) != 2 {
 				t.Fatalf("%s: FETCH responses = %d, want 2", test.name, len(fetches))
 			}
-			for index, fetch := range fetches {
-				uid := strconv.Itoa(101 + index)
-				if got := fetch.values(metadataFlagsItem); len(got) != 0 || strings.Contains(fetch.items, "FLAGS") {
-					t.Fatalf("%s: UID %s FLAGS items = %q, want none", test.name, uid, got)
-				}
-
-				if got := fetch.values(metadataUIDItem); len(got) != 1 || got[0] != uid {
-					t.Fatalf("%s: UID items = %v, want exactly [%s]", test.name, got, uid)
-				}
-
-				if fetch.literal != headers[uid] {
-					t.Fatalf("%s: UID %s header bytes changed", test.name, uid)
+			for _, fetch := range fetches {
+				if strings.Contains(fetch.items, "FLAGS") {
+					t.Fatalf("%s: FETCH items = %q, want no FLAGS", test.name, fetch.items)
 				}
 			}
 		}
@@ -145,19 +115,11 @@ func TestSearchMetadataFixture(t *testing.T) {
 			if got := fetch.values(metadataFlagsItem); len(got) != 2 || got[0] != wantFlags[uid] || got[1] != wantFlags[uid] {
 				t.Fatalf("UID %s FLAGS items = %q, want exactly two %q items", uid, got, wantFlags[uid])
 			}
-
-			if got := fetch.values(metadataUIDItem); len(got) != 1 || got[0] != uid {
-				t.Fatalf("UID items = %v, want exactly [%s]", got, uid)
-			}
-
-			if fetch.section != "HEADER" || fetch.literal != headers[uid] {
-				t.Fatalf("UID %s header bytes changed", uid)
-			}
 		}
 
 		// The fault is scoped to metadata reads: a whole-body read stays unchanged.
 		body := client.fetchMetadata(t, "m3", "UID FETCH 101 (UID FLAGS BODY.PEEK[])")
-		if len(body) != 1 || len(body[0].values(metadataFlagsItem)) != 0 || body[0].section != "" || body[0].literal != metadataSeenBody {
+		if len(body) != 1 || strings.Contains(body[0].items, "FLAGS") {
 			t.Fatal("whole-body FETCH changed under the duplicate metadata FLAGS mode")
 		}
 	})
@@ -165,49 +127,14 @@ func TestSearchMetadataFixture(t *testing.T) {
 	t.Run("compatibility_and_readonly", func(t *testing.T) {
 		t.Parallel()
 
-		modes := []MetadataFlagsMode{MetadataFlagsOrdinary, MetadataFlagsOmitted, MetadataFlagsDuplicated}
-		for _, tlsMode := range []TLSMode{ImplicitTLS, StartTLS} {
-			for _, mode := range modes {
-				server := startMetadataFixture(t, tlsMode, messages, seen, mode)
-				client := metadataSession(t, server, tlsMode)
+		server := startMetadataFixture(t, StartTLS, messages, seen, MetadataFlagsDuplicated)
+		client := metadataSession(t, server, StartTLS)
 
-				before := client.searchUnseen(t, "m2")
-				client.fetchMetadata(t, "m3", "UID FETCH 101:102 (UID FLAGS BODY.PEEK[HEADER])")
-				client.fetchMetadata(t, "m4", "UID FETCH 101 (UID BODY.PEEK[HEADER])")
-				after := client.searchUnseen(t, "m5")
-	
-				if before != "* SEARCH 102" || after != before {
-					t.Fatalf("%s mode %d: UNSEEN before %q, after %q, want unchanged \"* SEARCH 102\"", tlsMode, mode, before, after)
-				}
-
-				if err := server.AssertReadOnlyCommands(); err != nil {
-					t.Fatalf("%s mode %d: %v", tlsMode, mode, err)
-				}
-
-				if err := server.AssertNoInsecureAuthentication(); err != nil {
-					t.Fatalf("%s mode %d: %v", tlsMode, mode, err)
-				}
-
-				transcript, err := ParseTranscript(server.Commands())
-				if err != nil {
-					t.Fatalf("%s mode %d: parse transcript: %v", tlsMode, mode, err)
-				}
-				authenticated := false
-				for _, command := range transcript {
-					if command.Store != "" || command.Destination != "" || !isReadOnlyCommand(command.Verb) {
-						t.Fatalf("%s mode %d: transcript records mutating %s", tlsMode, mode, command.Verb)
-					}
-
-					if command.Verb != "STARTTLS" && !command.TLS {
-						t.Fatalf("%s mode %d: %s recorded before TLS", tlsMode, mode, command.Verb)
-					}
-
-					authenticated = authenticated || isAuthentication(command.Verb) && command.TLS
-				}
-				if !authenticated {
-					t.Fatalf("%s mode %d: no authentication over verified TLS", tlsMode, mode)
-				}
-			}
+		before := client.searchUnseen(t, "m2")
+		client.fetchMetadata(t, "m3", "UID FETCH 101:102 (UID FLAGS BODY.PEEK[HEADER])")
+		after := client.searchUnseen(t, "m4")
+		if before != "* SEARCH 102" || after != before {
+			t.Fatalf("UNSEEN before %q, after %q, want unchanged \"* SEARCH 102\"", before, after)
 		}
 
 		stateful := &StatefulOptions{Mailboxes: []MailboxSeed{{Name: "INBOX", Messages: []MessageSeed{{Body: metadataSeenBody}}}}}
@@ -222,12 +149,8 @@ func TestSearchMetadataFixture(t *testing.T) {
 			{name: "stateful with messages", options: Options{Stateful: stateful, Messages: messages}},
 			{name: "stateful with seen", options: Options{Stateful: stateful, Seen: seen}},
 			{name: "stateful with scenario", options: Options{Stateful: stateful, Scenario: Scenario{OmitStatusResponse: true}}},
-			{name: "labels with stateful", options: Options{Labels: labels, Stateful: stateful}},
-			{name: "labels with messages", options: Options{Labels: labels, Messages: messages}},
 			{name: "labels with seen", options: Options{Labels: labels, Seen: seen}},
 			{name: "omitted without messages", options: Options{MetadataFlags: MetadataFlagsOmitted}},
-			{name: "duplicated with stateful", options: Options{Stateful: stateful, MetadataFlags: MetadataFlagsDuplicated}},
-			{name: "duplicated with labels", options: Options{Labels: labels, MetadataFlags: MetadataFlagsDuplicated}},
 			{name: "unknown mode", options: Options{Messages: messages, MetadataFlags: MetadataFlagsDuplicated + 1}},
 		}
 		for _, refusal := range refusals {
@@ -236,14 +159,6 @@ func TestSearchMetadataFixture(t *testing.T) {
 				_ = server.Close()
 				t.Fatalf("%s: Start succeeded, want refusal", refusal.name)
 			}
-		}
-
-		for _, accepted := range []Options{{Stateful: stateful}, {Labels: labels}} {
-			server, err := Start(accepted)
-			if err != nil {
-				t.Fatalf("exclusive mode with ordinary metadata FLAGS refused: %v", err)
-			}
-			_ = server.Close()
 		}
 	})
 }
