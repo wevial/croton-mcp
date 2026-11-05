@@ -568,12 +568,25 @@ func TestPublicReadIdentityFlatMCP(t *testing.T) {
 		sensitive = append(sensitive, strings.TrimSpace(text), from, messageID, "croton.test")
 		flatTuple(t, rawObject(t, callTool(t, session, "list_attachments", map[string]any{"messageId": id})))
 
-		// The get_thread aggregate stays context without a UID; its nodes carry
-		// their own tuples, witnessed in TestPublicReadIdentityThreadMCP.
+		// The get_thread aggregate stays context without a UID; each node
+		// carries the exact tuple search listed for its own opaque key.
+		searched := make(map[string]readTuple, len(results))
+		for _, item := range results {
+			key, _ := item["id"].(string)
+			searched[key] = flatTuple(t, item)
+		}
 		thread := rawObject(t, callTool(t, session, "get_thread", map[string]any{"messageId": id}))
 		requireNoIdentityKeys(t, "get_thread result", thread)
-		for _, node := range rawItems(t, thread, "nodes") {
-			flatTuple(t, node)
+		nodes := rawItems(t, thread, "nodes")
+		if len(nodes) == 0 {
+			t.Fatal("get_thread returned no nodes")
+		}
+		for _, node := range nodes {
+			key, _ := node["key"].(string)
+			want, ok := searched[key]
+			if !ok || flatTuple(t, node) != want {
+				t.Fatalf("get_thread node %v lacks its own searched tuple %+v", node, want)
+			}
 		}
 
 		requireReadOnlyTranscript(t, server)
@@ -611,7 +624,9 @@ func TestPublicReadIdentityFlatMCP(t *testing.T) {
 			"Attachment entries, digest counters and the `get_thread` aggregate carry no UID.",
 			"Account continuity is unavailable. The write pilot remains blocked.",
 			"[Mail principal selection record](design/0007-mail-principal-selection.md)",
-			"Truncated and fallback results are not complete selection snapshots.",
+			"Each `get_thread` node carries its own `mailbox`, `uidvalidity` and `uid`, taken from the metadata already fetched for that member and associated by its opaque `key`.",
+			"Bounded output keeps every retained identity exact.",
+			"A truncated or fallback result lists fewer items, but every item it retains is a complete selectable identity.",
 		} {
 			if !strings.Contains(documentation, statement) {
 				t.Errorf("Mail documentation missing flat identity statement: %q", statement)
@@ -1086,8 +1101,10 @@ func TestPublicReadIdentityThreadMCP(t *testing.T) {
 				t.Errorf("Mail documentation missing thread identity statement: %q", statement)
 			}
 		}
-		if strings.Contains(documentation, "are deferred") {
-			t.Error("Mail documentation still defers thread or bounded-output identities")
+		for _, superseded := range []string{"are deferred", "not complete selection snapshots"} {
+			if strings.Contains(documentation, superseded) {
+				t.Errorf("Mail documentation keeps the superseded interim clause %q", superseded)
+			}
 		}
 	})
 }

@@ -208,8 +208,9 @@ keeps its exact tuple, mailbox and opaque id. The `get_message` and
 identity; when even that cannot fit, the call fails with `bounds_exceeded`
 instead of returning a shortened identity. An empty fallback list contains no
 selectable item, and a thread fallback's top-level `id` and `mailbox` are
-bounded context, not a selectable identity.
-Truncated and fallback results are not complete selection snapshots.
+bounded context, not a selectable identity. A truncated or fallback result
+lists fewer items, but every item it retains is a complete selectable
+identity.
 
 ### Triage tools
 
