@@ -227,8 +227,9 @@ UIDs that fit the budget, fetches metadata for only those, and reports
 unexamined. It stays false only when every window down to UID 1 was examined
 and no match was left out. The result budget defaults to 50 and is capped at
 250. The SEARCH response is still capped at 4096 bytes. An oversized response,
-or a UID that is zero, duplicated or outside its window, fails the whole call
-with a code and returns no partial page.
+or a UID that is zero, outside its window or repeated in the raw SEARCH reply
+or ESEARCH `ALL` set, fails the whole call with a code and returns no partial
+page.
 
 This release has no continuation cursor: a truncated search cannot be resumed
 from where it stopped. Ordering and truncation describe read results only and

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/mail"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -367,23 +368,23 @@ func (session *imapSession) UIDSearchWindow(ctx context.Context, query SearchQue
 		}
 		var data *imap.SearchData
 		var searchErr error
-		exceeded := false
-		searchSeen := false
-		eSearchSeen := false
-		exceeded, searchSeen, eSearchSeen, searchErr = session.withSearchInputBudget(func() error {
+		observed, searchErr := session.withSearchInputBudget(func() error {
 			data, searchErr = session.client.UIDSearch(criteria, nil).Wait()
 			return searchErr
 		})
-		if exceeded {
+		if observed.exceeded {
 			return errorCode(CodeBoundsExceeded)
 		}
 		if searchErr != nil {
 			return searchErr
 		}
-		if !searchSeen && (!eSearchSeen || !eSearchAppliedToUIDSearch(data)) {
+		if observed.duplicate {
 			return errorCode(CodeIMAPProtocol)
 		}
-		if !searchSeen && data.All == nil {
+		if !observed.searchSeen && (!observed.eSearchSeen || !eSearchAppliedToUIDSearch(data)) {
+			return errorCode(CodeIMAPProtocol)
+		}
+		if !observed.searchSeen && data.All == nil {
 			if data.Min != 0 || data.Max != 0 || data.Count != 0 {
 				return errorCode(CodeIMAPProtocol)
 			}
@@ -639,15 +640,14 @@ func (session *imapSession) withBoundedInput(ctx context.Context, limit int, ope
 	})
 }
 
-func (session *imapSession) withSearchInputBudget(operation func() error) (bool, bool, bool, error) {
+func (session *imapSession) withSearchInputBudget(operation func() error) (searchObservation, error) {
 	if session.budget == nil {
-		return false, false, false, operation()
+		return searchObservation{}, operation()
 	}
 
 	session.budget.beginSearch(maxSearchResponseBytes)
 	err := operation()
-	exceeded, searchSeen, eSearchSeen := session.budget.endSearch()
-	return exceeded, searchSeen, eSearchSeen, err
+	return session.budget.endSearch(), err
 }
 
 func (session *imapSession) withInputBudget(limit int, operation func() error) (bool, error) {
@@ -793,6 +793,16 @@ func (connection *syntheticGreetingConn) Read(buffer []byte) (int, error) {
 	return connection.Conn.Read(buffer)
 }
 
+// searchObservation is what the wire observer saw while one SEARCH ran.
+// duplicate is decided on the raw response because go-imap merges a repeated
+// UID into its set before any caller can see it.
+type searchObservation struct {
+	exceeded    bool
+	searchSeen  bool
+	eSearchSeen bool
+	duplicate   bool
+}
+
 type readBudgetConn struct {
 	net.Conn
 	mu                  sync.Mutex
@@ -805,6 +815,8 @@ type readBudgetConn struct {
 	eSearchResponseSeen bool
 	searchBuffer        string
 	searchLiteralBytes  uint64
+	searchUIDs          map[uint32]struct{}
+	searchDuplicate     bool
 }
 
 func newReadBudgetConn(connection net.Conn, idleLimit int) *readBudgetConn {
@@ -834,15 +846,20 @@ func (connection *readBudgetConn) beginSearch(limit int) {
 	connection.eSearchResponseSeen = false
 	connection.searchBuffer = ""
 	connection.searchLiteralBytes = 0
+	connection.searchUIDs = nil
+	connection.searchDuplicate = false
 }
 
-func (connection *readBudgetConn) endSearch() (bool, bool, bool) {
+func (connection *readBudgetConn) endSearch() searchObservation {
 	connection.mu.Lock()
 	defer connection.mu.Unlock()
 
-	exceeded := connection.exceeded
-	searchSeen := connection.searchResponseSeen
-	eSearchSeen := connection.eSearchResponseSeen
+	observed := searchObservation{
+		exceeded:    connection.exceeded,
+		searchSeen:  connection.searchResponseSeen,
+		eSearchSeen: connection.eSearchResponseSeen,
+		duplicate:   connection.searchDuplicate,
+	}
 	connection.active = true
 	connection.remaining = connection.idleLimit
 	connection.exceeded = false
@@ -851,7 +868,9 @@ func (connection *readBudgetConn) endSearch() (bool, bool, bool) {
 	connection.eSearchResponseSeen = false
 	connection.searchBuffer = ""
 	connection.searchLiteralBytes = 0
-	return exceeded, searchSeen, eSearchSeen
+	connection.searchUIDs = nil
+	connection.searchDuplicate = false
+	return observed
 }
 
 func (connection *readBudgetConn) end() bool {
@@ -917,13 +936,97 @@ func (connection *readBudgetConn) observeSearchResponseLocked(input string) {
 		switch {
 		case upper == "* SEARCH" || strings.HasPrefix(upper, "* SEARCH "):
 			connection.searchResponseSeen = true
+			connection.observeSearchUIDsLocked(line[len("* SEARCH"):])
 		case upper == "* ESEARCH" || strings.HasPrefix(upper, "* ESEARCH "):
 			connection.eSearchResponseSeen = true
+			if eSearchAllOverlaps(line[len("* ESEARCH"):]) {
+				connection.searchDuplicate = true
+			}
 		}
 		if literalBytes, ok := trailingIMAPLiteralSize(line); ok {
 			connection.searchLiteralBytes = literalBytes
 		}
 	}
+}
+
+// observeSearchUIDsLocked records the numbers of one SEARCH line. go-imap
+// accumulates every SEARCH line of a command into one set, so a UID repeated
+// within or across lines is a duplicate. Parsing stops at a MODSEQ group;
+// malformed numbers are left for go-imap to reject.
+func (connection *readBudgetConn) observeSearchUIDsLocked(numbers string) {
+	if connection.searchUIDs == nil {
+		connection.searchUIDs = make(map[uint32]struct{})
+	}
+
+	for _, field := range strings.Fields(numbers) {
+		if strings.HasPrefix(field, "(") {
+			return
+		}
+		uid, err := strconv.ParseUint(field, 10, 32)
+		if err != nil {
+			return
+		}
+		if _, duplicate := connection.searchUIDs[uint32(uid)]; duplicate {
+			connection.searchDuplicate = true
+		}
+		connection.searchUIDs[uint32(uid)] = struct{}{}
+	}
+}
+
+// eSearchAllOverlaps reports whether the ALL sequence set of one ESEARCH line
+// names any UID twice. go-imap replaces the result with each matching ESEARCH,
+// so overlap is judged per line. Ranges are compared as intervals and never
+// expanded; an unparseable set is left for go-imap to reject.
+func eSearchAllOverlaps(rest string) bool {
+	rest = strings.TrimSpace(rest)
+	if strings.HasPrefix(rest, "(") {
+		closing := strings.IndexByte(rest, ')')
+		if closing < 0 {
+			return false
+		}
+		rest = rest[closing+1:]
+	}
+
+	fields := strings.Fields(rest)
+	var set string
+	for index := 0; index+1 < len(fields); index++ {
+		if strings.EqualFold(fields[index], "ALL") {
+			set = fields[index+1]
+			break
+		}
+	}
+	if set == "" {
+		return false
+	}
+
+	type interval struct{ start, stop uint64 }
+	var intervals []interval
+	for _, item := range strings.Split(set, ",") {
+		low, high, isRange := strings.Cut(item, ":")
+		start, err := strconv.ParseUint(low, 10, 32)
+		if err != nil {
+			return false
+		}
+		stop := start
+		if isRange {
+			if stop, err = strconv.ParseUint(high, 10, 32); err != nil {
+				return false
+			}
+		}
+		if stop < start {
+			start, stop = stop, start
+		}
+		intervals = append(intervals, interval{start: start, stop: stop})
+	}
+
+	sort.Slice(intervals, func(i, j int) bool { return intervals[i].start < intervals[j].start })
+	for index := 1; index < len(intervals); index++ {
+		if intervals[index].start <= intervals[index-1].stop {
+			return true
+		}
+	}
+
+	return false
 }
 
 func trailingIMAPLiteralSize(line string) (uint64, bool) {

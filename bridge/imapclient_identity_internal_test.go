@@ -87,3 +87,32 @@ func TestSearchObserverSkipsLiteralPayloadAcrossEveryChunkSplit(t *testing.T) {
 		}
 	}
 }
+
+func TestSearchObserverDetectsDuplicateUIDsBeforeSetNormalization(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{name: "distinct SEARCH", input: "* SEARCH 7 8\r\n", want: false},
+		{name: "repeated SEARCH UID", input: "* SEARCH 7 7\r\n", want: true},
+		{name: "repeated across SEARCH lines", input: "* SEARCH 7\r\n* SEARCH 7\r\n", want: true},
+		{name: "SEARCH MODSEQ group", input: "* SEARCH 7 (MODSEQ 7)\r\n", want: false},
+		{name: "distinct ESEARCH ALL", input: "* ESEARCH (TAG \"T1\") UID ALL 1:3,4:6\r\n", want: false},
+		{name: "wide ESEARCH range", input: "* ESEARCH (TAG \"T1\") UID ALL 1:100000000\r\n", want: false},
+		{name: "repeated ESEARCH ALL UID", input: "* ESEARCH (TAG \"T1\") UID ALL 7,7\r\n", want: true},
+		{name: "overlapping reversed ESEARCH range", input: "* ESEARCH (TAG \"T1\") UID ALL 5:3,4\r\n", want: true},
+		{name: "ESEARCH COUNT only", input: "* ESEARCH (TAG \"T1\") UID COUNT 7\r\n", want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			connection := &readBudgetConn{}
+			connection.beginSearch(maxSearchResponseBytes)
+
+			connection.observeSearchResponseLocked(test.input)
+
+			if observed := connection.endSearch(); observed.duplicate != test.want {
+				t.Fatalf("duplicate = %v, want %v", observed.duplicate, test.want)
+			}
+		})
+	}
+}

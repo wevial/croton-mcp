@@ -394,3 +394,37 @@ func commandStrings(commands []testkit.Command) []string {
 	}
 	return result
 }
+
+func TestAdapterRejectsDuplicateSearchUIDsOnTheWire(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		response string
+	}{
+		{name: "SEARCH repeated UID", response: "* SEARCH 101 101"},
+		{name: "SEARCH repeated across lines", response: "* SEARCH 101\r\n* SEARCH 101"},
+		{name: "ESEARCH ALL repeated UID", response: `* ESEARCH (TAG "{TAG}") UID ALL 101,101`},
+		{name: "ESEARCH ALL overlapping range", response: `* ESEARCH (TAG "{TAG}") UID ALL 100:101,101`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server, err := testkit.Start(testkit.Options{
+				Mode:     testkit.ImplicitTLS,
+				Scenario: testkit.Scenario{SearchResponse: test.response},
+			})
+			if err != nil {
+				t.Fatalf("start fake server: %v", err)
+			}
+			t.Cleanup(func() { _ = server.Close() })
+
+			adapter, err := bridge.NewAdapter(fakeServerConfig(t, server.Addr(), bridge.TLSModeImplicit, bridge.TLSConfig{SPKISHA256: server.SPKISHA256()}))
+			if err != nil {
+				t.Fatalf("NewAdapter: %v", err)
+			}
+			t.Cleanup(func() { _ = adapter.Close() })
+
+			results, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+			if bridge.CodeOf(err) != bridge.CodeIMAPProtocol || results != nil {
+				t.Fatalf("SearchMail duplicate UID = %#v, %v, want %q and no results", results, err, bridge.CodeIMAPProtocol)
+			}
+		})
+	}
+}
