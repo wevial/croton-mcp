@@ -1040,9 +1040,7 @@ func TestPublicReadIdentityThreadMCP(t *testing.T) {
 
 			before := len(server.Commands())
 			requireRefusedWithoutTuple(t, callTool(t, session, "get_thread", map[string]any{"messageId": id}), errStaleID)
-			if fetches := bodyFetchCount(server.Commands()[before:]); fetches != 0 {
-				t.Fatalf("stale target still fetched %d bodies", fetches)
-			}
+			requireNoBodyFetch(t, server.Commands()[before:])
 			requireReadOnlyTranscript(t, server)
 		})
 
