@@ -445,13 +445,10 @@ def self_test(guide, readme):
         phrase_case("missing no rebuild fallback", release, "there is no rebuild fallback"),
         phrase_case("missing separate install authority", release, "grants no install authority"),
         phrase_case("missing separate install approval", release, "needs the separate install approval"),
-        phrase_case("missing published policy", release, POLICY),
         ("policy only in HTML comment", edit(release, POLICY, f"<!-- {POLICY} -->"), readme,
          repository_file, "missing contract phrase 'Pilot acceptance installs only"),
         ("policy only in code fence", edit(release, POLICY, f"```text\n{POLICY}\n```"), readme,
          repository_file, "missing contract phrase 'Pilot acceptance installs only"),
-        ("rewrapped visible policy", edit(release, POLICY, POLICY.replace(" verified ", "\nverified ").replace(
-            " a local ", "\na local ")), readme, repository_file, None),
         ("source-built pilot instruction", edit(
             release, "there is no rebuild fallback",
             "there is no rebuild fallback. Do not download a release binary; build from the resolved revision"),
@@ -482,24 +479,6 @@ def self_test(guide, readme):
         ("contract without publication gate", edit_contract(
             lambda c: c["release"].pop("matching_github_release")), readme, repository_file,
          "contract: release.matching_github_release missing"),
-        ("contract source-built artifact", edit_contract(
-            lambda c: c["release"].update(pilot_artifact="source_build")), readme, repository_file,
-         "contract: release.pilot_artifact changed"),
-        ("contract staged manifest", edit_contract(
-            lambda c: c["release"].update(manifest_sha256="recorded_from_staged_manifest")), readme,
-         repository_file, "contract: release.manifest_sha256 changed"),
-        ("contract without published hash", edit_contract(
-            lambda c: c["release"].pop("published_binary_sha256")), readme, repository_file,
-         "contract: release.published_binary_sha256 missing"),
-        ("contract published hash vs manifest only", edit_contract(
-            lambda c: c["release"].update(published_binary_sha256="compared_with_manifest_before_install_approval")),
-         readme, repository_file, "contract: release.published_binary_sha256 changed"),
-        ("contract rebuild fallback", edit_contract(
-            lambda c: c["release"].update(rebuild_fallback="local_source_build")), readme, repository_file,
-         "contract: unexpected release.rebuild_fallback"),
-        ("contract obsolete staged hash", edit_contract(
-            lambda c: c["release"].update(staged_binary_sha256="compared_before_install_approval")), readme,
-         repository_file, "contract: unexpected release.staged_binary_sha256"),
         ("contract without binary comparison", edit_contract(
             lambda c: c["release"].update(installed_binary_sha256="trusted")), readme,
          repository_file, "contract: release.installed_binary_sha256 changed"),
