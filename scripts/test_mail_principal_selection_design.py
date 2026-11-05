@@ -40,6 +40,8 @@ CANDIDATES = (
     "privileged helper/config attestation",
 )
 CANDIDATE_VERDICTS = ("source-supported", "unsupported")
+# The Blockers row that each candidate leaves open while it is unsupported.
+BLOCKERS = dict(zip(CANDIDATES, ("session-bound principal", "Bridge-local binding", "helper attestation")))
 EXCLUSIONS = ("username-only", "TLS-only", "credential-fingerprint-only", "UID-tuple-only", "opaque-ID-only")
 
 DECISION_FIELDS = (
@@ -148,11 +150,13 @@ BLOCKED_PROSE = (
 # Prose whose wording depends on the decision value; the other state's wording must be absent.
 STATE_PROSE = {
     "blocked": {
+        "Decision": ("Integration is blocked.",),
         "Proposed handshake": ("While the decision is blocked it cannot be implemented.",),
         "Status": ("Blocked; design only. No get_mail_context implementation, registration or proof exists, and "
                    "Mail authority is unchanged.",),
     },
     "design-only": {
+        "Decision": ("Integration awaits a separately approved implementation.",),
         "Proposed handshake": ("While the decision is design-only it stays unimplemented until a separately "
                                "approved implementation.",),
         "Status": ("Design-only; runtime implementation and proof are unavailable. No get_mail_context "
@@ -352,9 +356,6 @@ def check_decision(record, candidates):
         if supported:
             record.errors.append("Decision: blocked contradicts a source-supported candidate")
         check_clauses(record, "Decision", BLOCKED_PROSE)
-        blockers = record.rows("Blockers", ("Requirement", "Missing source or binding evidence"))
-        if not blockers or any(not row["Missing source or binding evidence"] for row in blockers):
-            record.errors.append("Blockers: blocked needs concrete missing source or binding evidence")
     elif value["decision"] == "design-only":
         if value["design candidate"] not in supported:
             record.errors.append("Decision: design-only must name a source-supported candidate")
@@ -363,6 +364,16 @@ def check_decision(record, candidates):
     else:
         record.errors.append(f"Decision: {value['decision']!r} is not design-only or blocked")
         return
+
+    # Only unsupported candidates keep a blocker; the selected candidate's row must be gone.
+    open_blockers = [BLOCKERS[name] for name in CANDIDATES if name not in supported]
+    blockers = record.keyed("Blockers", "Requirement", ("Requirement", "Missing source or binding evidence"),
+                            open_blockers)
+    if value["decision"] == "blocked" and not blockers:
+        record.errors.append("Blockers: blocked needs concrete missing source or binding evidence")
+    for requirement, row in blockers.items():
+        if not row["Missing source or binding evidence"]:
+            record.errors.append(f"Blockers {requirement}: needs concrete missing source or binding evidence")
 
     for heading, clauses in STATE_PROSE[value["decision"]].items():
         check_clauses(record, heading, clauses)
@@ -473,6 +484,7 @@ def design_only(text):
     text = set_cell(text, "decision", 1, "design-only")
     text = set_cell(text, "design candidate", 1, "native authenticated-session identity")
     text = set_cell(text, "missing evidence", 1, "none")
+    text = drop_row(text, BLOCKERS["native authenticated-session identity"])
     for heading, clauses in STATE_PROSE["blocked"].items():
         for clause, replacement in zip(clauses, STATE_PROSE["design-only"][heading]):
             text = substitute(text, clause, replacement)
@@ -539,6 +551,13 @@ class PrincipalSelectionDesign(unittest.TestCase):
         no_blockers = self.text[:start] + self.text[self.text.index("\n## ", start + 1):]
         self.assertRejected(no_blockers, "need one visible 'Blockers' section")
         self.assertRejected(set_cell(self.text, "session-bound principal", 1, ""), "concrete missing source")
+        retained = design_only(self.text).replace("| Bridge-local binding |", "| session-bound principal | "
+                                                  "No session-bound principal. |\n| Bridge-local binding |")
+        self.assertRejected(retained, "Blockers: rows must be exactly")
+        for requirement in ("Bridge-local binding", "helper attestation"):
+            with self.subTest(design_only_blocker=requirement):
+                self.assertRejected(drop_row(design_only(self.text), requirement), "Blockers: rows must be exactly")
+                self.assertRejected(set_cell(design_only(self.text), requirement, 1, ""), "concrete missing source")
         self.assertRejected(set_cell(self.text, "fallback", 1, "username"), "fallback must be none")
         self.assertRejected(set_cell(self.text, "account data returned", 1, "address"),
                             "account data returned must be none")
@@ -614,6 +633,9 @@ class PrincipalSelectionDesign(unittest.TestCase):
         self.assertRejected(self.text.replace(blocker_rows, ""), "Blockers: blocked needs concrete missing")
         self.assertRejected(self.text.replace(blocker_rows, "<!--\n" + blocker_rows + "-->\n"),
                             "Blockers: blocked needs concrete missing")
+        for requirement in BLOCKERS.values():
+            with self.subTest(blocker=requirement):
+                self.assertRejected(drop_row(self.text, requirement), "Blockers: rows must be exactly")
 
     def test_visibility_and_provenance(self):
         headings = ("Current surface", "Candidate evidence", "Insufficient claims", "Decision", "Blockers",
