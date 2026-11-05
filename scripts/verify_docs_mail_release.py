@@ -24,6 +24,7 @@ import verify_docs_user_install as installer
 ROOT = Path(__file__).resolve().parents[1]
 PATHS = {"release": "docs/RELEASE.md", "guide": "docs/USER-INSTALL.md", "readme": "README.md",
          "pilot": "docs/MAIL-TRIAGE-PILOT.md"}
+PILOT_CONTRACT = '"pilot_artifact": "published_native_binary"'
 RECIPE = re.compile(r"<!-- mail-release-tagged-recipe -->\s*```sh\n(.*?)\n```", re.S)
 DOWNLOAD = re.compile(r"<!-- mail-release-download-recipe -->\s*```sh\n(.*?)\n```", re.S)
 FENCE = re.compile(r"^```sh\n(.*?)\n```", re.S | re.M)
@@ -433,21 +434,48 @@ def self_test(docs):
         for doc, _, name, phrase in clauses:
             cases.append((f"remove {name}", reword(docs, doc, phrase, "Synthetic removed clause."),
                           test, f"missing {name}"))
+    policy_names = {"pilot": "pilot", "release": "release", "guide": "install"}
+    for doc, name in policy_names.items():
+        missing = f"missing {name} published-artifact policy"
+        cases += [
+            (f"{doc} policy only in HTML comment", reword(docs, doc, pilot.POLICY, f"<!-- {pilot.POLICY} -->"),
+             test_integrity_limitations, missing),
+            (f"{doc} policy only in code fence", reword(docs, doc, pilot.POLICY, f"\n```text\n{pilot.POLICY}\n```\n"),
+             test_integrity_limitations, missing),
+            (f"{doc} rewrapped visible policy", reword(docs, doc, pilot.POLICY, pilot.POLICY.replace(
+                " verified ", "\nverified ").replace(" a local ", "\na local ")), None, None),
+        ]
     cases += [
-        ("policy only in code fence", reword(docs, "pilot", pilot.POLICY, f"\n```text\n{pilot.POLICY}\n```\n"),
-         test_integrity_limitations, "missing pilot published-artifact policy"),
         ("visible source-built pilot instruction", reword(
             docs, "pilot", "there is no rebuild fallback",
             "there is no rebuild fallback. Do not download a release binary; build from the resolved revision"),
          test_pilot_artifact, "pilot source build: pilot instruction"),
         ("pilot contract source build", reword(
-            docs, "pilot", '"pilot_artifact": "published_native_binary"', '"pilot_artifact": "source_build"'),
+            docs, "pilot", PILOT_CONTRACT, '"pilot_artifact": "source_build"'),
          test_pilot_artifact, "pilot contract: contract: release.pilot_artifact changed"),
+        ("pilot contract without published hash", reword(
+            docs, "pilot", '"published_binary_sha256": "compared_with_release_notes_and_manifest_before_install_approval",',
+            ""), test_pilot_artifact, "pilot contract: contract: release.published_binary_sha256 missing"),
+        ("pilot contract rebuild fallback", reword(
+            docs, "pilot", PILOT_CONTRACT + ",", PILOT_CONTRACT + ', "rebuild_fallback": "local_source_build",'),
+         test_pilot_artifact, "pilot contract: contract: unexpected release.rebuild_fallback"),
+        ("missing native asset rebuilt locally", reword(
+            docs, "pilot", "If either asset of the native binary/manifest pair is missing, STOP.",
+            "If either asset of the native binary/manifest pair is missing, build it locally from the resolved "
+            "revision instead."),
+         test_pilot_artifact, "pilot source build: pilot instruction"),
+        ("release absent asset rebuilt locally", reword(
+            docs, "release", "STOP the binary path; a local source build is not pilot acceptance of published bytes.",
+            "build it locally from the tag instead."),
+         test_integrity_limitations, "missing absent platform asset STOP"),
         ("pilot installed hash before installation", reword(
             docs, "pilot", "there is no rebuild fallback",
             "there is no rebuild fallback. Then verify the independent installed-binary checksum: "
             "hash the installed executable"),
          test_pilot_artifact, "pilot order: '1. Install approval:' must precede"),
+        ("pilot binary-only rollback", reword(
+            docs, "pilot", "restores the complete matched artifact set", "restores only the prior binary"),
+         test_pilot_artifact, "missing pilot complete matched-set rollback"),
         ("release-notes GOARCH removed", reword(
             docs, "release", "`toolchain`, `GOOS` and `GOARCH`, the exact", "`toolchain`, `GOOS`, the exact"),
          test_manifest_and_published_bytes, "missing release-note fields and checksum"),
