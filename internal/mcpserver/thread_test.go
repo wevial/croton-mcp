@@ -46,8 +46,8 @@ type getThreadDecoded struct {
 func threadFake() *fakeMail {
 	return &fakeMail{
 		metadataByID: map[string]bridge.MessageMetadata{
-			"id-root":  {ID: "id-root", Mailbox: "INBOX", Subject: "Planning", Size: int64(len(threadRootMIME))},
-			"id-reply": {ID: "id-reply", Mailbox: "INBOX", Subject: "Re: Planning", Size: int64(len(threadReplyMIME))},
+			"id-root":  {ID: "id-root", Mailbox: "INBOX", UIDValidity: 9001, UID: 101, Subject: "Planning", Size: int64(len(threadRootMIME))},
+			"id-reply": {ID: "id-reply", Mailbox: "INBOX", UIDValidity: 9001, UID: 102, Subject: "Re: Planning", Size: int64(len(threadReplyMIME))},
 		},
 		bodyByID: map[string][]byte{
 			"id-root":  []byte(threadRootMIME),
@@ -132,7 +132,7 @@ func TestGetThreadDoesNotReportTruncationWhenNothingWasDropped(t *testing.T) {
 
 	mail := &fakeMail{
 		metadataByID: map[string]bridge.MessageMetadata{
-			"target": {ID: "target", Mailbox: "INBOX", Subject: "Standalone"},
+			"target": {ID: "target", Mailbox: "INBOX", UIDValidity: 9001, UID: 101, Subject: "Standalone"},
 		},
 		bodyByID: map[string][]byte{
 			"target": []byte("Subject: Standalone\r\nMessage-ID: <standalone@croton.test>\r\n\r\nbody\r\n"),
@@ -157,7 +157,7 @@ func TestGetThreadPropagatesAdapterTruncation(t *testing.T) {
 
 	mail := &fakeMail{
 		metadataByID: map[string]bridge.MessageMetadata{
-			"target": {ID: "target", Mailbox: "INBOX", Subject: "Standalone"},
+			"target": {ID: "target", Mailbox: "INBOX", UIDValidity: 9001, UID: 101, Subject: "Standalone"},
 		},
 		bodyByID: map[string][]byte{
 			"target": []byte("Subject: Standalone\r\nMessage-ID: <standalone@croton.test>\r\n\r\nbody\r\n"),
@@ -244,6 +244,7 @@ func TestGetThreadBoundsAttemptedSiblingFetches(t *testing.T) {
 		context.Background(),
 		Options{Mail: mail},
 		[]bridge.ThreadMessage{{Key: "target"}},
+		map[string]bridge.MessageMetadata{},
 		bridge.MessageMetadata{ID: "target", Mailbox: "INBOX", Subject: "Planning"},
 		3,
 	)
@@ -265,8 +266,8 @@ func TestGetThreadDeduplicatesAndRejectsSubjectFalsePositives(t *testing.T) {
 			{ID: "false", Mailbox: "INBOX", Subject: "Planning committee"},
 		},
 		metadataByID: map[string]bridge.MessageMetadata{
-			"match": {ID: "match", Mailbox: "INBOX", Subject: "Re: Planning"},
-			"false": {ID: "false", Mailbox: "INBOX", Subject: "Planning committee"},
+			"match": {ID: "match", Mailbox: "INBOX", UIDValidity: 9001, UID: 102, Subject: "Re: Planning"},
+			"false": {ID: "false", Mailbox: "INBOX", UIDValidity: 9001, UID: 103, Subject: "Planning committee"},
 		},
 		bodyByID: map[string][]byte{
 			"match": []byte(threadReplyMIME),
@@ -278,6 +279,7 @@ func TestGetThreadDeduplicatesAndRejectsSubjectFalsePositives(t *testing.T) {
 		context.Background(),
 		Options{Mail: mail},
 		[]bridge.ThreadMessage{{Key: "target"}},
+		map[string]bridge.MessageMetadata{},
 		bridge.MessageMetadata{ID: "target", Mailbox: "INBOX", Subject: "Planning"},
 		10,
 	)

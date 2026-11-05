@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -188,6 +189,10 @@ func makeHandler(definition toolDefinition, options Options) mcp.ToolHandler {
 		}
 
 		encoded, truncated, encodeErr := encodeBounded(result)
+		if errors.Is(encodeErr, errUnretainableIdentity) {
+			options.Audit.ToolCall(definition.name, "error", errBoundsExceeded, false)
+			return errorResult(errBoundsExceeded), nil
+		}
 		if encodeErr != nil {
 			options.Audit.ToolCall(definition.name, "error", errInternal, false)
 			return errorResult(errInternal), nil
