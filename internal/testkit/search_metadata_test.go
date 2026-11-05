@@ -115,6 +115,14 @@ func TestSearchMetadataFixture(t *testing.T) {
 			if got := fetch.values(metadataFlagsItem); len(got) != 2 || got[0] != wantFlags[uid] || got[1] != wantFlags[uid] {
 				t.Fatalf("UID %s FLAGS items = %q, want exactly two %q items", uid, got, wantFlags[uid])
 			}
+
+			if got := fetch.values(metadataUIDItem); len(got) != 1 || got[0] != uid {
+				t.Fatalf("UID items = %v, want exactly [%s]", got, uid)
+			}
+
+			if fetch.section != "HEADER" || fetch.literal != headers[uid] {
+				t.Fatalf("UID %s header bytes changed", uid)
+			}
 		}
 
 		// The fault is scoped to metadata reads: a whole-body read stays unchanged.
@@ -127,14 +135,48 @@ func TestSearchMetadataFixture(t *testing.T) {
 	t.Run("compatibility_and_readonly", func(t *testing.T) {
 		t.Parallel()
 
-		server := startMetadataFixture(t, StartTLS, messages, seen, MetadataFlagsDuplicated)
-		client := metadataSession(t, server, StartTLS)
+		modes := []MetadataFlagsMode{MetadataFlagsOrdinary, MetadataFlagsOmitted, MetadataFlagsDuplicated}
+		for _, tlsMode := range []TLSMode{ImplicitTLS, StartTLS} {
+			for _, mode := range modes {
+				server := startMetadataFixture(t, tlsMode, messages, seen, mode)
+				client := metadataSession(t, server, tlsMode)
 
-		before := client.searchUnseen(t, "m2")
-		client.fetchMetadata(t, "m3", "UID FETCH 101:102 (UID FLAGS BODY.PEEK[HEADER])")
-		after := client.searchUnseen(t, "m4")
-		if before != "* SEARCH 102" || after != before {
-			t.Fatalf("UNSEEN before %q, after %q, want unchanged \"* SEARCH 102\"", before, after)
+				before := client.searchUnseen(t, "m2")
+				client.fetchMetadata(t, "m3", "UID FETCH 101:102 (UID FLAGS BODY.PEEK[HEADER])")
+				client.fetchMetadata(t, "m4", "UID FETCH 101 (UID BODY.PEEK[HEADER])")
+				after := client.searchUnseen(t, "m5")
+				if before != "* SEARCH 102" || after != before {
+					t.Fatalf("%s mode %d: UNSEEN before %q, after %q, want unchanged \"* SEARCH 102\"", tlsMode, mode, before, after)
+				}
+
+				if err := server.AssertReadOnlyCommands(); err != nil {
+					t.Fatalf("%s mode %d: %v", tlsMode, mode, err)
+				}
+
+				if err := server.AssertNoInsecureAuthentication(); err != nil {
+					t.Fatalf("%s mode %d: %v", tlsMode, mode, err)
+				}
+
+				transcript, err := ParseTranscript(server.Commands())
+				if err != nil {
+					t.Fatalf("%s mode %d: parse transcript: %v", tlsMode, mode, err)
+				}
+				authenticated := false
+				for _, command := range transcript {
+					if command.Store != "" || command.Destination != "" || !isReadOnlyCommand(command.Verb) {
+						t.Fatalf("%s mode %d: transcript records mutating %s", tlsMode, mode, command.Verb)
+					}
+
+					if command.Verb != "STARTTLS" && !command.TLS {
+						t.Fatalf("%s mode %d: %s recorded before TLS", tlsMode, mode, command.Verb)
+					}
+
+					authenticated = authenticated || isAuthentication(command.Verb) && command.TLS
+				}
+				if !authenticated {
+					t.Fatalf("%s mode %d: no authentication over verified TLS", tlsMode, mode)
+				}
+			}
 		}
 
 		stateful := &StatefulOptions{Mailboxes: []MailboxSeed{{Name: "INBOX", Messages: []MessageSeed{{Body: metadataSeenBody}}}}}
@@ -184,12 +226,18 @@ func startMetadataFixture(t *testing.T, mode TLSMode, messages []string, seen []
 	return server
 }
 
-// metadataSession opens a verified-TLS session and examines INBOX.
+// metadataSession connects over verified TLS with the original two-second
+// connection deadline, authenticates with synthetic credentials and examines
+// INBOX.
 func metadataSession(t *testing.T, server *Server, mode TLSMode) *imapClient {
 	t.Helper()
 
-	client := labelSession(t, server, mode, "m", "")
-	requireExchange(t, client, "m0", "EXAMINE INBOX", "m0 OK [READ-ONLY] EXAMINE completed")
+	client := connectClient(t, server, mode)
+	t.Cleanup(func() { _ = client.Close() })
+	client.command(t, "m0 LOGIN fixture-user@client.test not-a-secret", "m0 OK LOGIN completed")
+	if got := client.exchange(t, "m1", "EXAMINE INBOX"); got != "m1 OK [READ-ONLY] EXAMINE completed" {
+		t.Fatalf("EXAMINE completion = %q", got)
+	}
 
 	return client
 }
