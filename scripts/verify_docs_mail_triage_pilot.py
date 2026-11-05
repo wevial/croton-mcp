@@ -61,6 +61,42 @@ SOURCE_BUILD = (
     r"`reviewed_revision` in the source build",
     r"\bfall(?:s|ing)? back to (?:a )?(?:local )?(?:source )?(?:build|rebuild)",
 )
+# The contradictory source-built pilot from public main 103557c, kept verbatim
+# as a regression fixture: it must be rejected.
+BASE_SELECTION = """## Release selection prerequisite
+
+The pilot is blocked until a suitable tagged release is published. Before
+install approval, the operator records privately:
+
+1. An operator-selected published git tag in the public repository.
+2. A matching GitHub release for that same tag. A tag without a matching
+   published release, or a release without the tag, stops the pilot.
+3. The resolved full revision: the full 40-hex commit SHA the tag points to,
+   reviewed by the maintainer. Use it as `REVIEWED_REVISION` in the source
+   build; never build a moving branch or an unresolved tag name.
+4. The staged-manifest SHA-256: build the candidate with the installation
+   guide's staging helper into a new candidate directory, outside the install
+   layout, and record the `sha256` from its `manifest.json`, whose `revision`
+   must equal the resolved full revision.
+5. A staged-binary checksum: compute the SHA-256 of the candidate directory's
+   `croton-mcp` with the platform's local hash utility and compare it with the
+   manifest SHA-256. A mismatch stops the pilot.
+
+Staging a candidate installs nothing and changes no installed executable. The
+independent installed-binary checksum cannot exist yet: a first install has no
+executable, and an upgrade's existing executable is the previous release. It is
+verified after installation instead, as described under Installation.
+
+Do not download a release binary; build from the resolved revision. Checksums
+provide integrity, not signatures or provenance attestation.
+
+"""
+BASE_RELEASE = (
+    ('    "pilot_artifact": "published_native_binary",\n', ""),
+    ('"recorded_from_published_manifest"', '"recorded_from_staged_manifest"'),
+    ('"published_binary_sha256": "compared_with_release_notes_and_manifest_before_install_approval"',
+     '"staged_binary_sha256": "compared_before_install_approval"'),
+)
 # Checksum steps must appear in this order: published-byte comparison before
 # install approval, installed verification after installation and
 # reinstallation, then enablement. A first install has no executable to hash
@@ -413,6 +449,18 @@ def verify(guide, readme, exists, companions):
     return failures
 
 
+def contradictory_base(guide):
+    # Restore the 103557c source-built selection section and release contract.
+    candidate, count = re.subn(r"^## Release selection prerequisite\n.*?(?=^## )",
+                               lambda _: BASE_SELECTION, guide, count=1, flags=re.M | re.S)
+    for old, new in BASE_RELEASE:
+        if count != 1 or old not in candidate:
+            raise ValueError(f"self-test base fixture target absent: {old!r}")
+        candidate = candidate.replace(old, new, 1)
+
+    return candidate
+
+
 def repository_file(relative):
     path = ROOT / relative
     return path.is_file() and path.resolve().is_relative_to(ROOT)
@@ -658,6 +706,15 @@ def self_test(guide, readme, companions):
          readme, repository_file, "contract: invalid JSON"),
         ("contract object replaced by value", edit_contract(lambda c: c.update(release="published")),
          readme, repository_file, "contract: release changed"),
+    ]
+    base = contradictory_base(guide)
+    cases += [
+        ("103557c base pilot lacks policy", base, readme, repository_file,
+         "Release selection prerequisite: missing contract phrase 'Pilot acceptance installs only"),
+        ("103557c base pilot source build", base, readme, repository_file,
+         "source build: pilot instruction"),
+        ("103557c base pilot contract", base, readme, repository_file,
+         "contract: unexpected release.staged_binary_sha256"),
     ]
     for name, phrase in STOPS:
         cases.append(phrase_case(f"{name} without STOP", release, phrase))

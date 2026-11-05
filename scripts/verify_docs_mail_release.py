@@ -459,6 +459,12 @@ def self_test(docs):
         ("pilot contract rebuild fallback", reword(
             docs, "pilot", PILOT_CONTRACT + ",", PILOT_CONTRACT + ', "rebuild_fallback": "local_source_build",'),
          test_pilot_artifact, "pilot contract: contract: unexpected release.rebuild_fallback"),
+        ("103557c base pilot lacks policy", {**docs, "pilot": pilot.contradictory_base(docs["pilot"])},
+         None, "missing pilot published-artifact policy"),
+        ("103557c base pilot source build", {**docs, "pilot": pilot.contradictory_base(docs["pilot"])},
+         test_pilot_artifact, "pilot source build: pilot instruction"),
+        ("103557c base pilot contract", {**docs, "pilot": pilot.contradictory_base(docs["pilot"])},
+         test_pilot_artifact, "pilot contract: contract: unexpected release.staged_binary_sha256"),
         ("pilot contract dotted-key collision", reword(
             reword(docs, "pilot", PILOT_CONTRACT, '"pilot_artifact": "source_build"'), "pilot",
             '"status": "not_run",', '"status": "not_run", "release.pilot_artifact": "published_native_binary",'),
