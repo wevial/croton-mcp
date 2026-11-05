@@ -206,12 +206,11 @@ def table(body):
 
 
 def citation_errors(where, value):
-    citations = [part.strip() for part in value.split(";")]
-    if not value or not citations:
+    if not value:
         return [f"{where}: citation missing"]
 
     errors = []
-    for citation in citations:
+    for citation in (part.strip() for part in value.split(";")):
         match = CITATION.fullmatch(citation)
         if match is None:
             errors.append(f"{where}: citation {citation!r} is not repository@commit:file")
@@ -333,7 +332,7 @@ def check_decision(record, candidates):
             record.errors.append("Decision: blocked needs concrete missing evidence")
         if supported:
             record.errors.append("Decision: blocked contradicts a source-supported candidate")
-        body = record.body("Decision") or ""
+        body = record.body("Decision")
         flat = " ".join(body.split())
         for clause in BLOCKED_PROSE:
             if clause not in flat:
