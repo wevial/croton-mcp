@@ -62,7 +62,7 @@ func TestSearchOrderTLS(t *testing.T) {
 			}
 			for index, message := range page.Messages {
 				wantUID := uint32(200 - index)
-				if message.UID != wantUID || message.Subject != denseSubject(wantUID) {
+				if message.UID != wantUID || message.UIDValidity == 0 || message.Mailbox != "INBOX" || message.ID == "" || message.Subject != denseSubject(wantUID) {
 					t.Fatalf("message %d = UID %d subject %q, want highest bounded UID %d", index, message.UID, message.Subject, wantUID)
 				}
 			}
@@ -73,12 +73,29 @@ func TestSearchOrderTLS(t *testing.T) {
 				if strings.Contains(upper, " UID SEARCH ") {
 					searchCommands++
 				}
+				if strings.Contains(upper, " UID FETCH ") && !strings.Contains(upper, "BODY.PEEK[HEADER]") {
+					t.Fatalf("search issued a non-header FETCH: %q", command.Raw)
+				}
 				if strings.Contains(upper, " UID FETCH ") && !strings.Contains(upper, " UID FETCH 191:200 ") {
 					t.Fatalf("search fetched UIDs beyond the bounded selection: %q", command.Raw)
 				}
 			}
 			if searchCommands != 1 {
 				t.Fatalf("UID SEARCH commands = %d, want one dense window", searchCommands)
+			}
+
+			metadata, err := adapter.GetMessageMetadata(context.Background(), page.Messages[0].ID)
+			if err != nil {
+				t.Fatalf("GetMessageMetadata after dense search: %v", err)
+			}
+			if metadata.UID != 200 || metadata.UIDValidity != page.Messages[0].UIDValidity || metadata.Subject != denseSubject(200) {
+				t.Fatalf("subsequent bounded read = UID %d subject %q, want UID 200", metadata.UID, metadata.Subject)
+			}
+			for _, command := range server.Commands() {
+				upper := strings.ToUpper(command.Raw)
+				if strings.Contains(upper, " UID FETCH ") && !strings.Contains(upper, "BODY.PEEK[HEADER]") {
+					t.Fatalf("dense search or follow-up read issued a non-header FETCH: %q", command.Raw)
+				}
 			}
 
 			if err := server.AssertReadOnlyCommands(); err != nil {

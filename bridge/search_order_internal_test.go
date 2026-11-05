@@ -8,15 +8,17 @@ import (
 	"testing"
 )
 
-// orderedSearchSession answers each UID window from a fixed membership in a
-// shuffled wire order and replies to metadata FETCH in reverse request order,
-// recording every searched window.
+// orderedSearchSession answers each UID window from a fixed membership in
+// ascending or shuffled wire order and replies to metadata FETCH in reverse
+// request order, recording every searched window and fetched UID.
 type orderedSearchSession struct {
 	boundedSearchSession
-	snapshot mailboxSnapshot
-	members  []uint32
+	snapshot  mailboxSnapshot
+	members   []uint32
+	ascending bool
 
 	windows []uidWindow
+	fetched [][]uint32
 }
 
 func (session *orderedSearchSession) Examine(context.Context, string) (mailboxSnapshot, error) {
@@ -32,12 +34,16 @@ func (session *orderedSearchSession) UIDSearchWindow(_ context.Context, _ Search
 			uids = append(uids, uid)
 		}
 	}
-	random := rand.New(rand.NewSource(int64(window.End)))
-	random.Shuffle(len(uids), func(i, j int) { uids[i], uids[j] = uids[j], uids[i] })
+	if !session.ascending {
+		random := rand.New(rand.NewSource(int64(window.End)))
+		random.Shuffle(len(uids), func(i, j int) { uids[i], uids[j] = uids[j], uids[i] })
+	}
 	return uids, nil
 }
 
 func (session *orderedSearchSession) UIDFetchMetadata(_ context.Context, _ string, uids []uint32, _ int) ([]MessageMetadata, error) {
+	session.fetched = append(session.fetched, append([]uint32(nil), uids...))
+
 	metadata := make([]MessageMetadata, 0, len(uids))
 	for index := len(uids) - 1; index >= 0; index-- {
 		metadata = append(metadata, MessageMetadata{Subject: syntheticOrderSubject(uids[index]), Size: int64(uids[index]), uid: uids[index]})
@@ -57,9 +63,10 @@ func uidRange(start, end uint32) []uint32 {
 	return uids
 }
 
-// requireDescendingUIDs checks that the page lists want in order and that
-// every item's fetched fields belong to its own UID rather than its position.
-func requireDescendingUIDs(t *testing.T, page SearchPage, want []uint32) {
+// requireDescendingUIDs checks that the page lists want in strictly descending
+// order and that every item's opaque ID, public tuple and fetched fields belong
+// to its own UID rather than its position.
+func requireDescendingUIDs(t *testing.T, adapter *Adapter, page SearchPage, uidValidity uint32, want []uint32) {
 	t.Helper()
 
 	if len(page.Messages) != len(want) {
@@ -69,6 +76,19 @@ func requireDescendingUIDs(t *testing.T, page SearchPage, want []uint32) {
 		if message.UID != want[index] {
 			t.Fatalf("message %d UID = %d, want %d", index, message.UID, want[index])
 		}
+		if index > 0 && message.UID >= page.Messages[index-1].UID {
+			t.Fatalf("message %d UID %d does not descend from %d", index, message.UID, page.Messages[index-1].UID)
+		}
+		payload, err := adapter.decodeMessageID(message.ID)
+		if err != nil {
+			t.Fatalf("decode message %d ID: %v", index, err)
+		}
+		if payload != (messageIDPayload{Mailbox: "INBOX", UIDValidity: uidValidity, UID: message.UID}) {
+			t.Fatalf("message %d ID binds %#v, want UID %d", index, payload, message.UID)
+		}
+		if message.uid != message.UID || message.Mailbox != "INBOX" || message.UIDValidity != uidValidity {
+			t.Fatalf("message %d tuple = (%q, %d, %d/%d)", index, message.Mailbox, message.UIDValidity, message.UID, message.uid)
+		}
 		if message.Subject != syntheticOrderSubject(message.UID) || message.Size != int64(message.UID) {
 			t.Fatalf("message %d fields %q/%d belong to another UID than %d", index, message.Subject, message.Size, message.UID)
 		}
@@ -77,39 +97,60 @@ func requireDescendingUIDs(t *testing.T, page SearchPage, want []uint32) {
 
 func TestSearchOrderAdapter(t *testing.T) {
 	t.Run("dense_window", func(t *testing.T) {
-		session := &orderedSearchSession{snapshot: mailboxSnapshot{UIDNext: 101, UIDValidity: 9001}, members: uidRange(1, 100)}
-		adapter := newBoundedSearchAdapter(session, defaultMaxOutputBytes)
-		adapter.config.Bounds.MaxSearchResults = 50
+		for _, budget := range []int{1, 50} {
+			t.Run(fmt.Sprintf("budget_%d", budget), func(t *testing.T) {
+				session := &orderedSearchSession{snapshot: mailboxSnapshot{UIDNext: 101, UIDValidity: 9001}, members: uidRange(1, 100)}
+				adapter := newBoundedSearchAdapter(session, defaultMaxOutputBytes)
+				adapter.config.Bounds.MaxSearchResults = budget
 
-		page, err := adapter.SearchMailPage(context.Background(), SearchQuery{Mailbox: "INBOX"})
-		if err != nil {
-			t.Fatalf("SearchMailPage: %v", err)
-		}
+				page, err := adapter.SearchMailPage(context.Background(), SearchQuery{Mailbox: "INBOX"})
+				if err != nil {
+					t.Fatalf("SearchMailPage: %v", err)
+				}
 
-		want := uidRange(51, 100)
-		slices.Reverse(want)
-		requireDescendingUIDs(t, page, want)
-		if !page.Truncated {
-			t.Fatal("dense bottom window with omitted matches reported truncated=false")
+				want := uidRange(uint32(101-budget), 100)
+				slices.Reverse(want)
+				requireDescendingUIDs(t, adapter, page, 9001, want)
+				if !page.Truncated {
+					t.Fatal("dense bottom window with omitted matches reported truncated=false")
+				}
+				if len(session.windows) != 1 || len(session.fetched) != 1 || !slices.Equal(session.fetched[0], want) {
+					t.Fatalf("windows = %#v fetched = %v, want one window fetching only %v", session.windows, session.fetched, want)
+				}
+			})
 		}
 	})
 
 	t.Run("search_fetch_order", func(t *testing.T) {
-		session := &orderedSearchSession{
-			snapshot: mailboxSnapshot{UIDNext: 201, UIDValidity: 7007},
-			members:  []uint32{3, 7, 40, 93, 101, 110, 150, 199, 200},
-		}
-		adapter := newBoundedSearchAdapter(session, defaultMaxOutputBytes)
-		adapter.config.Bounds.MaxSearchResults = 20
+		for _, test := range []struct {
+			name      string
+			ascending bool
+		}{
+			{name: "ascending", ascending: true},
+			{name: "shuffled", ascending: false},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				session := &orderedSearchSession{
+					snapshot:  mailboxSnapshot{UIDNext: 201, UIDValidity: 7007},
+					members:   []uint32{3, 7, 40, 93, 101, 110, 150, 199, 200},
+					ascending: test.ascending,
+				}
+				adapter := newBoundedSearchAdapter(session, defaultMaxOutputBytes)
+				adapter.config.Bounds.MaxSearchResults = 20
 
-		page, err := adapter.SearchMailPage(context.Background(), SearchQuery{Mailbox: "INBOX"})
-		if err != nil {
-			t.Fatalf("SearchMailPage: %v", err)
-		}
+				page, err := adapter.SearchMailPage(context.Background(), SearchQuery{Mailbox: "INBOX"})
+				if err != nil {
+					t.Fatalf("SearchMailPage: %v", err)
+				}
 
-		requireDescendingUIDs(t, page, []uint32{200, 199, 150, 110, 101, 93, 40, 7, 3})
-		if page.Truncated {
-			t.Fatal("complete two-window traversal reported truncated=true")
+				requireDescendingUIDs(t, adapter, page, 7007, []uint32{200, 199, 150, 110, 101, 93, 40, 7, 3})
+				if page.Truncated {
+					t.Fatal("complete two-window traversal reported truncated=true")
+				}
+				if len(session.windows) != 2 || len(session.fetched) != 2 {
+					t.Fatalf("windows = %#v fetched = %v, want two windows and two FETCHes", session.windows, session.fetched)
+				}
+			})
 		}
 	})
 
@@ -146,7 +187,7 @@ func TestSearchOrderAdapter(t *testing.T) {
 				for index := len(test.members) - 1; index >= 0 && len(want) < test.wantCount; index-- {
 					want = append(want, test.members[index])
 				}
-				requireDescendingUIDs(t, page, want)
+				requireDescendingUIDs(t, adapter, page, 9001, want)
 				if page.Truncated != test.wantTruncated {
 					t.Fatalf("truncated = %v, want %v", page.Truncated, test.wantTruncated)
 				}
