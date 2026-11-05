@@ -169,7 +169,9 @@ func TestSearchOrderAdapter(t *testing.T) {
 			wantTruncated bool
 			wantSearches  int
 		}{
+			{name: "empty_membership", uidNext: 101, budget: 50, wantCount: 0, wantTruncated: false, wantSearches: 1},
 			{name: "exactly_complete_bottom_window", uidNext: 101, members: uidRange(51, 100), budget: 50, wantCount: 50, wantTruncated: false, wantSearches: 1},
+			{name: "omitted_within_bottom_window", uidNext: 101, members: uidRange(50, 100), budget: 50, wantCount: 50, wantTruncated: true, wantSearches: 1},
 			{name: "unsearched_older_range", uidNext: 1001, members: sparse, budget: 250, wantCount: 8, wantTruncated: true, wantSearches: maxSearchWindows},
 			{name: "dense_hard_budget", uidNext: 1001, members: uidRange(1, 1000), budget: hardMaxSearchResults, wantCount: hardMaxSearchResults, wantTruncated: true, wantSearches: 3},
 		} {
@@ -191,8 +193,15 @@ func TestSearchOrderAdapter(t *testing.T) {
 				if page.Truncated != test.wantTruncated {
 					t.Fatalf("truncated = %v, want %v", page.Truncated, test.wantTruncated)
 				}
-				if len(session.windows) != test.wantSearches {
-					t.Fatalf("SEARCH windows = %d, want %d", len(session.windows), test.wantSearches)
+				if len(session.windows) != test.wantSearches || len(session.windows) > maxSearchWindows {
+					t.Fatalf("SEARCH windows = %d, want %d (at most %d)", len(session.windows), test.wantSearches, maxSearchWindows)
+				}
+				fetched := 0
+				for _, uids := range session.fetched {
+					fetched += len(uids)
+				}
+				if fetched != test.wantCount || fetched > test.budget {
+					t.Fatalf("fetched %d metadata entries, want %d within budget %d", fetched, test.wantCount, test.budget)
 				}
 			})
 		}
