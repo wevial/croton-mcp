@@ -459,6 +459,10 @@ def self_test(docs):
         ("pilot contract rebuild fallback", reword(
             docs, "pilot", PILOT_CONTRACT + ",", PILOT_CONTRACT + ', "rebuild_fallback": "local_source_build",'),
          test_pilot_artifact, "pilot contract: contract: unexpected release.rebuild_fallback"),
+        ("pilot contract dotted-key collision", reword(
+            reword(docs, "pilot", PILOT_CONTRACT, '"pilot_artifact": "source_build"'), "pilot",
+            '"status": "not_run",', '"status": "not_run", "release.pilot_artifact": "published_native_binary",'),
+         test_pilot_artifact, "pilot contract: contract: release.pilot_artifact changed"),
         ("missing native asset rebuilt locally", reword(
             docs, "pilot", "If either asset of the native binary/manifest pair is missing, STOP.",
             "If either asset of the native binary/manifest pair is missing, build it locally from the resolved "

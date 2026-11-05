@@ -29,6 +29,19 @@ ACTIONS = ["mark_read", "mark_unread", "move_mail", "archive_mail", "trash_mail"
 EVIDENCE_STEPS = ACTIONS + ["refusal probe", "rollback rehearsal"]
 POLICY = ("Pilot acceptance installs only the selected published native binary asset verified against "
           "both the published manifest and release-note SHA-256; a local source build is not a pilot artifact.")
+# Companion guides must state the same visible policy and keep the development
+# source-build path, which never satisfies pilot acceptance.
+COMPANIONS = {
+    "docs/RELEASE.md": ("Integrity limitations", (
+        POLICY,
+        "If the platform is unsupported or no native asset is published for it, STOP the binary path",
+    ), None),
+    "docs/USER-INSTALL.md": ("Source build", (
+        POLICY,
+        "If the platform is unsupported or no native asset is published for it, STOP the binary path",
+        "A source build and published-byte acceptance are different paths.",
+    ), "python3 scripts/stage_mail_candidate.py"),
+}
 # Each selection failure must STOP without a rebuild fallback.
 STOPS = (
     ("missing tag", "Without a selected published tag, STOP."),
@@ -217,36 +230,45 @@ def table_rows(block):
     return rows[1:]
 
 
-def flatten(value, prefix=""):
-    # An empty object is kept as a leaf so a closed shape cannot gain one unseen.
-    if isinstance(value, dict) and value:
-        items = {}
-        for key, child in value.items():
-            items.update(flatten(child, f"{prefix}{key}."))
-        return items
+def unique_object(pairs):
+    keys = [key for key, _ in pairs]
+    if len(set(keys)) != len(keys):
+        raise ValueError("duplicate JSON key")
 
-    return {prefix[:-1]: value}
+    return dict(pairs)
+
+
+def shape_errors(actual, expected, path=""):
+    # Walk the nested objects directly, so a dotted key cannot stand in for a nested one.
+    if not isinstance(expected, dict):
+        if actual != expected or type(actual) is not type(expected):
+            return [f"contract: {path} changed"]
+        return []
+    if not isinstance(actual, dict):
+        return [f"contract: {path} changed"]
+
+    failures = []
+    for key, child in expected.items():
+        child_path = f"{path}.{key}" if path else key
+        if key not in actual:
+            failures.append(f"contract: {child_path} missing")
+        else:
+            failures.extend(shape_errors(actual[key], child, child_path))
+    for key in sorted(set(actual) - set(expected)):
+        failures.append(f"contract: unexpected {path + '.' if path else ''}{key}")
+
+    return failures
 
 
 def contract_errors(raw):
     try:
-        contract = json.loads(raw)
+        contract = json.loads(raw, object_pairs_hook=unique_object)
     except ValueError:
         return ["contract: invalid JSON"]
     if not isinstance(contract, dict):
         return ["contract: invalid JSON"]
 
-    failures = []
-    actual = flatten(contract)
-    for path, expected in flatten(EXPECTED).items():
-        if path not in actual:
-            failures.append(f"contract: {path} missing")
-        elif actual[path] != expected or type(actual[path]) is not type(expected):
-            failures.append(f"contract: {path} changed")
-    for path in sorted(set(actual) - set(flatten(EXPECTED))):
-        failures.append(f"contract: unexpected {path}")
-
-    return failures
+    return shape_errors(contract, EXPECTED)
 
 
 def source_build_errors(guide):
@@ -327,7 +349,26 @@ def evidence_errors(guide, section):
     return failures
 
 
-def verify(guide, readme, exists):
+def companion_errors(companions):
+    failures = []
+    for path, (heading, phrases, recipe) in COMPANIONS.items():
+        text = companions.get(path, "")
+        body = sections_of(visible(text)).get(heading)
+        if body is None:
+            failures.append(f"{path}: visible section missing: {heading}")
+            continue
+        normalized = normalize(body)
+        for phrase in phrases:
+            if phrase not in normalized:
+                failures.append(f"{path} {heading}: missing contract phrase {phrase!r}")
+        # The development recipe is a fenced example, read as text and never executed.
+        if recipe is not None and recipe not in sections_of(text).get(heading, ""):
+            failures.append(f"{path} {heading}: development source-build recipe missing")
+
+    return failures
+
+
+def verify(guide, readme, exists, companions):
     failures = []
     shown = visible(guide)
     preamble = normalize(shown.split("\n## ", 1)[0])
@@ -347,6 +388,7 @@ def verify(guide, readme, exists):
 
     failures.extend(source_build_errors(guide))
     failures.extend(order_errors(shown))
+    failures.extend(companion_errors(companions))
 
     contracts = CONTRACT.findall(guide)
     if len(contracts) != 1:
@@ -376,7 +418,7 @@ def repository_file(relative):
     return path.is_file() and path.resolve().is_relative_to(ROOT)
 
 
-def self_test(guide, readme):
+def self_test(guide, readme, companions):
     sections = sections_of(guide)
     contract = CONTRACT.search(guide)
     if contract is None:
@@ -398,6 +440,15 @@ def self_test(guide, readme):
         data = json.loads(contract[1])
         change(data)
         return guide[:contract.start(1)] + json.dumps(data, indent=2) + guide[contract.end(1):]
+
+    def companion_case(name, path, old, new, expected):
+        # Prose phrases may wrap, so whitespace inside a target matches any run.
+        pattern = r"\s+".join(map(re.escape, old.split()))
+        changed, count = re.subn(pattern, lambda _: new, companions[path], count=1)
+        if count != 1:
+            raise ValueError(f"self-test mutation target absent: {path}: {old!r}")
+
+        return (name, guide, readme, repository_file, expected, {**companions, path: changed})
 
     def phrase_case(name, heading, phrase):
         return (name, edit(heading, phrase), readme, repository_file,
@@ -570,6 +621,44 @@ def self_test(guide, readme):
             lambda c: c["identities"].pop("result_check")), readme, repository_file,
          "contract: identities.result_check missing"),
     ]
+    for path in COMPANIONS:
+        missing = f"{path} {COMPANIONS[path][0]}: missing contract phrase 'Pilot acceptance installs only"
+        cases += [
+            companion_case(f"{path} policy removed", path, POLICY, "", missing),
+            companion_case(f"{path} policy only in HTML comment", path, POLICY, f"<!-- {POLICY} -->", missing),
+            companion_case(f"{path} policy only in code fence", path, POLICY,
+                           f"\n```text\n{POLICY}\n```\n", missing),
+            companion_case(f"{path} rewrapped visible policy", path, POLICY,
+                           POLICY.replace(" verified ", "\nverified ").replace(" a local ", "\na local "), None),
+            companion_case(f"{path} missing native asset rebuilt locally", path,
+                           "no native asset is published for it, STOP the binary path",
+                           "no native asset is published for it, build it locally from the tag instead",
+                           f"{path} {COMPANIONS[path][0]}: missing contract phrase 'If the platform is unsupported"),
+        ]
+    cases += [
+        companion_case("development source-build path dropped", "docs/USER-INSTALL.md",
+                       "A source build and published-byte acceptance are different paths.", "",
+                       "missing contract phrase 'A source build and published-byte acceptance"),
+        companion_case("development recipe removed", "docs/USER-INSTALL.md",
+                       'python3 scripts/stage_mail_candidate.py --revision "$REVIEWED_REVISION"', "",
+                       "development source-build recipe missing"),
+        ("install guide missing", guide, readme, repository_file,
+         "docs/USER-INSTALL.md: visible section missing: Source build",
+         {**companions, "docs/USER-INSTALL.md": ""}),
+        ("contract dotted-key collision", edit_contract(lambda c: (
+            c["release"].update(pilot_artifact="source_build"),
+            c.update({"release.pilot_artifact": "published_native_binary"}))), readme, repository_file,
+         "contract: release.pilot_artifact changed"),
+        ("contract dotted key", edit_contract(
+            lambda c: c.update({"release.pilot_artifact": "published_native_binary"})), readme,
+         repository_file, "contract: unexpected release.pilot_artifact"),
+        ("contract duplicate key", guide.replace(
+            '"pilot_artifact": "published_native_binary",',
+            '"pilot_artifact": "source_build",\n    "pilot_artifact": "published_native_binary",', 1),
+         readme, repository_file, "contract: invalid JSON"),
+        ("contract object replaced by value", edit_contract(lambda c: c.update(release="published")),
+         readme, repository_file, "contract: release changed"),
+    ]
     for name, phrase in STOPS:
         cases.append(phrase_case(f"{name} without STOP", release, phrase))
     for tool in ACTIONS:
@@ -632,8 +721,8 @@ def self_test(guide, readme):
 
     executed = 0
     failed = []
-    for name, candidate, candidate_readme, exists, expected in cases:
-        errors = verify(candidate, candidate_readme, exists)
+    for name, candidate, candidate_readme, exists, expected, *bundle in cases:
+        errors = verify(candidate, candidate_readme, exists, bundle[0] if bundle else companions)
         executed += 1
         if (expected is None and errors) or (expected is not None and not any(
                 expected in error for error in errors)):
@@ -653,9 +742,10 @@ def main():
     try:
         guide = GUIDE.read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        failures = verify(guide, readme, repository_file)
+        companions = {path: (ROOT / path).read_text(encoding="utf-8") for path in COMPANIONS}
+        failures = verify(guide, readme, repository_file, companions)
         if args.self_test:
-            failures.extend(self_test(guide, readme))
+            failures.extend(self_test(guide, readme, companions))
     except (OSError, ValueError) as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1
