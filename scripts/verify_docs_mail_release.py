@@ -24,8 +24,6 @@ import verify_docs_user_install as installer
 ROOT = Path(__file__).resolve().parents[1]
 PATHS = {"release": "docs/RELEASE.md", "guide": "docs/USER-INSTALL.md", "readme": "README.md",
          "pilot": "docs/MAIL-TRIAGE-PILOT.md"}
-PILOT_POLICY = ("Pilot acceptance installs only the selected published native binary asset verified against both "
-                "the published manifest and release-note SHA-256; a local source build is not a pilot artifact.")
 PILOT_CONTRACT = '"pilot_artifact": "published_native_binary"'
 RECIPE = re.compile(r"<!-- mail-release-tagged-recipe -->\s*```sh\n(.*?)\n```", re.S)
 DOWNLOAD = re.compile(r"<!-- mail-release-download-recipe -->\s*```sh\n(.*?)\n```", re.S)
@@ -103,9 +101,9 @@ CLAUSES = {
          "Record the printed full SHA and confirm HEAD equals it."),
     ),
     "test_integrity_limitations": (
-        ("pilot", "Release selection prerequisite", "pilot published-artifact policy", PILOT_POLICY),
-        ("release", "Integrity limitations", "release published-artifact policy", PILOT_POLICY),
-        ("guide", "Source build", "install published-artifact policy", PILOT_POLICY),
+        ("pilot", "Release selection prerequisite", "pilot published-artifact policy", pilot.POLICY),
+        ("release", "Integrity limitations", "release published-artifact policy", pilot.POLICY),
+        ("guide", "Source build", "install published-artifact policy", pilot.POLICY),
         ("release", "Integrity limitations", "checksum is not a signature",
          "Checksums provide integrity, not signatures or provenance."),
         ("release", "Integrity limitations", "rebuild not assumed equal",
@@ -440,11 +438,11 @@ def self_test(docs):
     for doc, name in policy_names.items():
         missing = f"missing {name} published-artifact policy"
         cases += [
-            (f"{doc} policy only in HTML comment", reword(docs, doc, PILOT_POLICY, f"<!-- {PILOT_POLICY} -->"),
+            (f"{doc} policy only in HTML comment", reword(docs, doc, pilot.POLICY, f"<!-- {pilot.POLICY} -->"),
              test_integrity_limitations, missing),
-            (f"{doc} policy only in code fence", reword(docs, doc, PILOT_POLICY, f"\n```text\n{PILOT_POLICY}\n```\n"),
+            (f"{doc} policy only in code fence", reword(docs, doc, pilot.POLICY, f"\n```text\n{pilot.POLICY}\n```\n"),
              test_integrity_limitations, missing),
-            (f"{doc} rewrapped visible policy", reword(docs, doc, PILOT_POLICY, PILOT_POLICY.replace(
+            (f"{doc} rewrapped visible policy", reword(docs, doc, pilot.POLICY, pilot.POLICY.replace(
                 " verified ", "\nverified ").replace(" a local ", "\na local ")), None, None),
         ]
     cases += [
