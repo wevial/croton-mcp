@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"math"
-	"reflect"
 	"testing"
 )
 
@@ -64,33 +63,17 @@ func newPublicIdentityAdapter(sessions ...readSession) *Adapter {
 	return adapter
 }
 
-// exportedIdentity reads the public tuple by reflection so this test compiles
-// and fails, rather than breaking the build, while the fields are absent.
-func exportedIdentity(t *testing.T, metadata MessageMetadata) (uint32, uint32) {
-	t.Helper()
-
-	value := reflect.ValueOf(metadata)
-	uidValidity := value.FieldByName("UIDValidity")
-	uid := value.FieldByName("UID")
-	if !uidValidity.IsValid() || !uid.IsValid() || uidValidity.Kind() != reflect.Uint32 || uid.Kind() != reflect.Uint32 {
-		t.Fatalf("MessageMetadata lacks exported uint32 UIDValidity and UID: %#v", metadata)
-	}
-
-	return uint32(uidValidity.Uint()), uint32(uid.Uint())
-}
-
 // requireBoundIdentity proves the exported tuple is exactly the one the
 // adapter bound into the opaque ID and the fixture's independent tuple.
 func requireBoundIdentity(t *testing.T, adapter *Adapter, metadata MessageMetadata, want messageIDPayload) {
 	t.Helper()
 
-	uidValidity, uid := exportedIdentity(t, metadata)
 	payload, err := adapter.decodeMessageID(metadata.ID)
 	if err != nil {
 		t.Fatalf("decode adapter ID: %v", err)
 	}
-	if payload != want || metadata.Mailbox != want.Mailbox || uidValidity != want.UIDValidity || uid != want.UID {
-		t.Fatalf("identity = (%q, %d, %d) bound %#v, want %#v", metadata.Mailbox, uidValidity, uid, payload, want)
+	if payload != want || metadata.Mailbox != want.Mailbox || metadata.UIDValidity != want.UIDValidity || metadata.UID != want.UID {
+		t.Fatalf("identity = (%q, %d, %d) bound %#v, want %#v", metadata.Mailbox, metadata.UIDValidity, metadata.UID, payload, want)
 	}
 
 	encoded, err := json.Marshal(metadata)
@@ -272,7 +255,7 @@ func TestPublicReadIdentityAdapter(t *testing.T) {
 				if CodeOf(err) != CodeStaleMessageID {
 					t.Fatalf("GetMessageMetadata error = %v, want %q", err, CodeStaleMessageID)
 				}
-				if uidValidity, uid := exportedIdentity(t, metadata); metadata.ID != "" || uidValidity != 0 || uid != 0 {
+				if metadata.ID != "" || metadata.UIDValidity != 0 || metadata.UID != 0 {
 					t.Fatalf("refused read returned identity %#v", metadata)
 				}
 			})

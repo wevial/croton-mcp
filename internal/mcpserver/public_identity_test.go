@@ -12,7 +12,6 @@ import (
 	"math"
 	"net/mail"
 	"os"
-	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -429,13 +428,12 @@ func TestPublicReadIdentityFlatMCP(t *testing.T) {
 
 		t.Run("zero or absent adapter identity", func(t *testing.T) {
 			body := []byte("From: Fixture <fixture@croton.test>\r\nSubject: Zero identity fixture\r\n\r\nzero identity body\r\n")
-			zero := bridge.MessageMetadata{ID: "opaque-zero", Mailbox: "INBOX", Subject: "Zero identity fixture"}
 			for _, metadata := range []bridge.MessageMetadata{
-				withReadIdentity(zero, 0, 0),
-				withReadIdentity(zero, 9001, 0),
-				withReadIdentity(zero, 0, 101),
+				{ID: "opaque-zero", Mailbox: "INBOX", Subject: "Zero identity fixture"},
+				{ID: "opaque-zero", Mailbox: "INBOX", UIDValidity: 9001, Subject: "Zero identity fixture"},
+				{ID: "opaque-zero", Mailbox: "INBOX", UID: 101, Subject: "Zero identity fixture"},
 			} {
-				valid := withReadIdentity(bridge.MessageMetadata{ID: "opaque-valid", Mailbox: "INBOX", Subject: "Valid identity fixture"}, 9001, 102)
+				valid := bridge.MessageMetadata{ID: "opaque-valid", Mailbox: "INBOX", UIDValidity: 9001, UID: 102, Subject: "Valid identity fixture"}
 				mail := &fakeMail{
 					status:   bridge.MailboxStatus{Messages: 2, Unseen: 2},
 					searched: []bridge.MessageMetadata{valid, metadata},
@@ -555,19 +553,6 @@ func TestPublicReadIdentityFlatMCP(t *testing.T) {
 			}
 		}
 	})
-}
-
-// withReadIdentity sets the adapter tuple by reflection so this file compiles,
-// and its assertions fail, while the exported fields are absent.
-func withReadIdentity(metadata bridge.MessageMetadata, uidValidity, uid uint32) bridge.MessageMetadata {
-	value := reflect.ValueOf(&metadata).Elem()
-	if field := value.FieldByName("UIDValidity"); field.IsValid() {
-		field.SetUint(uint64(uidValidity))
-	}
-	if field := value.FieldByName("UID"); field.IsValid() {
-		field.SetUint(uint64(uid))
-	}
-	return metadata
 }
 
 // mapOrEmptyList lets an omitted optional list decode as empty.
