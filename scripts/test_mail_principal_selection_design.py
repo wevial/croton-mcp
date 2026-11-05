@@ -42,6 +42,13 @@ CANDIDATES = (
 CANDIDATE_VERDICTS = ("source-supported", "unsupported")
 # The Blockers row that each candidate leaves open while it is unsupported.
 BLOCKERS = dict(zip(CANDIDATES, ("session-bound principal", "Bridge-local binding", "helper attestation")))
+# Record statements that contradict a source-supported verdict for the candidate; casefolded substrings.
+CANDIDATE_DENIALS = {
+    "native authenticated-session identity": (
+        "the imap connection never receives it",
+        "no session command exposes the userid or a keyed derivative",
+    ),
+}
 EXCLUSIONS = ("username-only", "TLS-only", "credential-fingerprint-only", "UID-tuple-only", "opaque-ID-only")
 
 DECISION_FIELDS = (
@@ -325,6 +332,11 @@ def check_candidates(record):
             record.errors.append(f"{where}: limit missing")
         if row["Executed evidence"] != "NOT RUN":
             record.errors.append(f"{where}: executed evidence must be NOT RUN")
+        if row["Verdict"] == "source-supported":
+            evidence = " ".join(row[field] for field in ("Trust and connection binding", "Limit")).casefold()
+            for denial in CANDIDATE_DENIALS.get(name, ()):
+                if denial in evidence:
+                    record.errors.append(f"{where}: source-supported contradicts evidence {denial!r}")
 
     exclusions = record.keyed("Insufficient claims", "Claim", ("Claim", "Verdict", "Reason"), EXCLUSIONS)
     for name, row in exclusions.items():
@@ -480,6 +492,10 @@ def substitute(text, clause, replacement):
 
 def design_only(text):
     """A synthetic, evidence-supported design-only bundle derived from the real record."""
+    text = set_cell(text, "native authenticated-session identity", 2,
+                    "This synthetic fixture binds a private principal to the authenticated session.")
+    text = set_cell(text, "native authenticated-session identity", 6,
+                    "This synthetic fixture supplies the required private principal evidence.")
     text = set_cell(text, "native authenticated-session identity", 1, "source-supported")
     text = set_cell(text, "decision", 1, "design-only")
     text = set_cell(text, "design candidate", 1, "native authenticated-session identity")
@@ -541,6 +557,12 @@ class PrincipalSelectionDesign(unittest.TestCase):
 
     def test_decision_states(self):
         self.assertEqual(record_errors(design_only(self.text)), [], "positive design-only bundle")
+        native = "native authenticated-session identity"
+        real = re.search(r"^\| " + re.escape(native) + r" \|.*$", self.text, flags=re.M).group(0)
+        for column in (2, 6):
+            with self.subTest(denial=column):
+                self.assertRejected(set_cell(design_only(self.text), native, column, cells(real)[column]),
+                                    "source-supported contradicts evidence")
         self.assertRejected(set_cell(design_only(self.text), "runtime proof", 1, "available"),
                             "runtime proof must be unavailable")
         self.assertRejected(set_cell(design_only(self.text), "runtime implementation", 1, "available"),
