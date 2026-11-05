@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"math"
+	"reflect"
 	"testing"
 )
 
@@ -63,18 +64,54 @@ func newPublicIdentityAdapter(sessions ...readSession) *Adapter {
 	return adapter
 }
 
+// exportedIdentity reads the public tuple by reflection so this test compiles
+// and fails, rather than breaking the build, while the fields are absent.
+func exportedIdentity(t *testing.T, metadata MessageMetadata) (uint32, uint32) {
+	t.Helper()
+
+	value := reflect.ValueOf(metadata)
+	uidValidity := value.FieldByName("UIDValidity")
+	uid := value.FieldByName("UID")
+	if !uidValidity.IsValid() || !uid.IsValid() || uidValidity.Kind() != reflect.Uint32 || uid.Kind() != reflect.Uint32 {
+		t.Fatalf("MessageMetadata lacks exported uint32 UIDValidity and UID: %#v", metadata)
+	}
+
+	return uint32(uidValidity.Uint()), uint32(uid.Uint())
+}
+
 // requireBoundIdentity proves the exported tuple is exactly the one the
-// adapter bound into the opaque ID.
+// adapter bound into the opaque ID and the fixture's independent tuple.
 func requireBoundIdentity(t *testing.T, adapter *Adapter, metadata MessageMetadata, want messageIDPayload) {
 	t.Helper()
 
+	uidValidity, uid := exportedIdentity(t, metadata)
 	payload, err := adapter.decodeMessageID(metadata.ID)
 	if err != nil {
 		t.Fatalf("decode adapter ID: %v", err)
 	}
-	if payload != want || metadata.Mailbox != want.Mailbox || metadata.UIDValidity != want.UIDValidity || metadata.UID != want.UID {
-		t.Fatalf("identity = (%q, %d, %d) bound %#v, want %#v", metadata.Mailbox, metadata.UIDValidity, metadata.UID, payload, want)
+	if payload != want || metadata.Mailbox != want.Mailbox || uidValidity != want.UIDValidity || uid != want.UID {
+		t.Fatalf("identity = (%q, %d, %d) bound %#v, want %#v", metadata.Mailbox, uidValidity, uid, payload, want)
 	}
+
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+	var serialized struct {
+		UIDValidity json.Number
+		UID         json.Number
+	}
+	if err := json.Unmarshal(encoded, &serialized); err != nil {
+		t.Fatalf("decode serialized metadata: %v", err)
+	}
+	if serialized.UIDValidity.String() != jsonUint(want.UIDValidity) || serialized.UID.String() != jsonUint(want.UID) {
+		t.Fatalf("serialized identity = %s, want (%d, %d)", encoded, want.UIDValidity, want.UID)
+	}
+}
+
+func jsonUint(value uint32) string {
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
 }
 
 // forgedMessageID signs a payload the encoder would refuse, so the decoder's
@@ -122,23 +159,63 @@ func TestPublicReadIdentityAdapter(t *testing.T) {
 				requireBoundIdentity(t, adapter, selected, messageIDPayload{Mailbox: "INBOX", UIDValidity: fixture.uidValidity, UID: fixture.members[0]})
 			})
 		}
+
+		t.Run("selected boundaries", func(t *testing.T) {
+			for _, want := range []messageIDPayload{
+				{Mailbox: "INBOX", UIDValidity: 1, UID: 1},
+				{Mailbox: "Folders/Synthetic", UIDValidity: math.MaxUint32, UID: math.MaxUint32},
+			} {
+				// Selected metadata needs no UIDNEXT, so the maximum UID is
+				// exercised without a wrapping mailbox snapshot.
+				session := &publicIdentitySession{snapshot: mailboxSnapshot{UIDValidity: want.UIDValidity}, members: []uint32{want.UID}}
+				adapter := newPublicIdentityAdapter(session)
+				identifier, err := adapter.encodeMessageID(want)
+				if err != nil {
+					t.Fatalf("encodeMessageID: %v", err)
+				}
+
+				selected, err := adapter.GetMessageMetadata(context.Background(), identifier)
+				if err != nil {
+					t.Fatalf("GetMessageMetadata(%#v): %v", want, err)
+				}
+				if selected.ID != identifier {
+					t.Fatalf("selected ID changed: %q", selected.ID)
+				}
+				requireBoundIdentity(t, adapter, selected, want)
+			}
+		})
 	})
 
 	t.Run("invalid_tuple", func(t *testing.T) {
-		t.Run("zero fetched UID after a valid UID", func(t *testing.T) {
-			adapter := newPublicIdentityAdapter(&publicIdentitySession{
-				snapshot: mailboxSnapshot{UIDValidity: 9001, UIDNext: 3},
-				members:  []uint32{1, 2},
-				fetched:  []MessageMetadata{{Subject: "valid", uid: 1}, {Subject: "zero", uid: 0}},
+		searches := []struct {
+			name    string
+			session *publicIdentitySession
+		}{
+			{
+				name:    "zero UIDVALIDITY",
+				session: &publicIdentitySession{snapshot: mailboxSnapshot{UIDNext: 3}, members: []uint32{1, 2}},
+			},
+			{
+				name: "zero fetched UID after a valid UID",
+				session: &publicIdentitySession{
+					snapshot: mailboxSnapshot{UIDValidity: 9001, UIDNext: 3},
+					members:  []uint32{1, 2},
+					fetched:  []MessageMetadata{{Subject: "valid", uid: 1}, {Subject: "zero", uid: 0}},
+				},
+			},
+		}
+		for _, test := range searches {
+			t.Run(test.name, func(t *testing.T) {
+				adapter := newPublicIdentityAdapter(test.session)
+				page, err := adapter.SearchMailPage(context.Background(), SearchQuery{Mailbox: "INBOX"})
+				if CodeOf(err) != CodeIMAPProtocol {
+					t.Fatalf("SearchMailPage error = %v, want %q", err, CodeIMAPProtocol)
+				}
+				if page.Messages != nil || page.Truncated {
+					t.Fatalf("SearchMailPage returned partial page %#v", page)
+				}
 			})
-			page, err := adapter.SearchMailPage(context.Background(), SearchQuery{Mailbox: "INBOX"})
-			if CodeOf(err) != CodeIMAPProtocol {
-				t.Fatalf("SearchMailPage error = %v, want %q", err, CodeIMAPProtocol)
-			}
-			if page.Messages != nil || page.Truncated {
-				t.Fatalf("SearchMailPage returned partial page %#v", page)
-			}
-		})
+		}
 
 		selected := []struct {
 			name    string
@@ -146,6 +223,16 @@ func TestPublicReadIdentityAdapter(t *testing.T) {
 			session *publicIdentitySession
 			forged  bool
 		}{
+			{
+				name:    "changed UIDVALIDITY",
+				payload: messageIDPayload{Mailbox: "INBOX", UIDValidity: 9001, UID: 1},
+				session: &publicIdentitySession{snapshot: mailboxSnapshot{UIDValidity: 9002}, members: []uint32{1}},
+			},
+			{
+				name:    "missing UID",
+				payload: messageIDPayload{Mailbox: "INBOX", UIDValidity: 9001, UID: 1},
+				session: &publicIdentitySession{snapshot: mailboxSnapshot{UIDValidity: 9001}},
+			},
 			{
 				name:    "FETCH answers another UID",
 				payload: messageIDPayload{Mailbox: "INBOX", UIDValidity: 9001, UID: 1},
@@ -181,8 +268,12 @@ func TestPublicReadIdentityAdapter(t *testing.T) {
 					}
 				}
 
-				if _, err := adapter.GetMessageMetadata(context.Background(), identifier); CodeOf(err) != CodeStaleMessageID {
+				metadata, err := adapter.GetMessageMetadata(context.Background(), identifier)
+				if CodeOf(err) != CodeStaleMessageID {
 					t.Fatalf("GetMessageMetadata error = %v, want %q", err, CodeStaleMessageID)
+				}
+				if uidValidity, uid := exportedIdentity(t, metadata); metadata.ID != "" || uidValidity != 0 || uid != 0 {
+					t.Fatalf("refused read returned identity %#v", metadata)
 				}
 			})
 		}
@@ -208,9 +299,12 @@ func TestPublicReadIdentityAdapter(t *testing.T) {
 		if err != nil {
 			t.Fatalf("SearchMailPage: %v", err)
 		}
-		if len(page.Messages) != 1 {
+		if len(page.Messages) != 1 || page.Messages[0].Subject != "replacement" {
 			t.Fatalf("page = %#v, want only the replacement attempt", page)
 		}
 		requireBoundIdentity(t, adapter, page.Messages[0], messageIDPayload{Mailbox: "INBOX", UIDValidity: 7002, UID: 2})
+		if first.metadataCalls != 2 || second.metadataCalls != 1 {
+			t.Fatalf("metadata calls = %d/%d, want a failed first attempt and one replay", first.metadataCalls, second.metadataCalls)
+		}
 	})
 }
