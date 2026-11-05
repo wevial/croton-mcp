@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"slices"
 	"testing"
 )
 
@@ -119,9 +120,7 @@ func TestSearchOrderAdapter(t *testing.T) {
 				}
 
 				want := uidRange(uint32(101-budget), 100)
-				for i, j := 0, len(want)-1; i < j; i, j = i+1, j-1 {
-					want[i], want[j] = want[j], want[i]
-				}
+				slices.Reverse(want)
 				requireDescendingIdentities(t, adapter, page, 9001, want)
 				if !page.Truncated {
 					t.Fatal("dense bottom window with omitted matches reported truncated=false")

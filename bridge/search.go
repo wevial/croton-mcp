@@ -95,8 +95,7 @@ func (adapter *Adapter) SearchMailPage(ctx context.Context, query SearchQuery) (
 			if remaining > searchWindowWidth {
 				start = remaining - searchWindowWidth
 			}
-			end := remaining - 1
-			window := uidWindow{Start: start, End: end}
+			window := uidWindow{Start: start, End: remaining - 1}
 			uids, err := session.UIDSearchWindow(operationContext, query, window, window.width())
 			if err != nil {
 				return err
