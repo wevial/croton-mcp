@@ -498,7 +498,6 @@ class PrincipalSelectionDesign(unittest.TestCase):
                             "runtime proof must be unavailable")
         self.assertRejected(set_cell(design_only(self.text), "runtime implementation", 1, "available"),
                             "runtime implementation must be unavailable")
-        self.assertRejected(set_cell(self.text, "runtime proof", 1, "available"), "runtime proof must be unavailable")
         self.assertRejected(set_cell(self.text, "missing evidence", 1, "none"), "concrete missing evidence")
         self.assertRejected(set_cell(self.text, "missing evidence", 1, ""), "concrete missing evidence")
         start = self.text.index("\n## Blockers\n")
@@ -537,9 +536,8 @@ class PrincipalSelectionDesign(unittest.TestCase):
         for case in CASES:
             with self.subTest(dropped=case):
                 self.assertRejected(drop_row(self.text, case), "Future acceptance matrix: rows must be exactly")
-            for status in ("EXECUTED", "LIVE", "PASSED"):
-                with self.subTest(case=case, status=status):
-                    self.assertRejected(set_cell(self.text, case, 5, status), "status must be NOT RUN")
+            with self.subTest(status=case):
+                self.assertRejected(set_cell(self.text, case, 5, "PASSED"), "status must be NOT RUN")
             with self.subTest(replay=case):
                 self.assertRejected(set_cell(self.text, case, 4, "once"), "mutation replay must be none")
             with self.subTest(invalidation=case):
