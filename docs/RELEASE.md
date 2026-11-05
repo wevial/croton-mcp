@@ -128,6 +128,9 @@ its Update and rollback procedure.
   differently. Never compare only the commit identity.
 - Pilot acceptance requires the selected published staged bytes whose SHA-256
   matches the release notes and the published manifest.
+- Pilot acceptance installs only the selected published native binary asset
+  verified against both the published manifest and release-note SHA-256; a
+  local source build is not a pilot artifact.
 - If the platform is unsupported or no native asset is published for it, STOP
   the binary path; a local source build is not pilot acceptance of published bytes.
 - No signing is required while Ko is the only installer. The person who

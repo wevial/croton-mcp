@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """Offline witness for the Mail triage pilot runbook; uses repository text only.
 
-It checks documented boundaries and synthetic negative fixtures. It never
-launches Croton, runs a helper, opens an account connection or records a
-pilot outcome, and it cannot prove live behavior or human consent.
+It checks documented boundaries and synthetic negative fixtures. Prose is
+matched in visible text: HTML comments and top-level fenced code blocks are
+removed, and whitespace is collapsed so wrapped lines still match. The marked
+JSON contract is extracted separately. It never launches Croton, runs a helper,
+calls git, gh or the network, opens an account connection or records a pilot
+outcome. It inspects repository text and synthetic fixtures only and does not
+demonstrate a real release, human consent, installed bytes or live mail
+behavior.
 """
 
 import argparse
@@ -15,18 +20,89 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 GUIDE = ROOT / "docs/MAIL-TRIAGE-PILOT.md"
 LINK = "docs/MAIL-TRIAGE-PILOT.md"
-GUIDE_LINKS = ("USER-INSTALL.md", "MCP.md", "design/0005-mail-triage.md")
+GUIDE_LINKS = ("USER-INSTALL.md", "RELEASE.md", "MCP.md", "design/0005-mail-triage.md")
 CONTRACT = re.compile(r"<!-- mail-triage-pilot-contract -->\s*```json\n(.*?)\n```", re.S)
 EVIDENCE = re.compile(r"<!-- mail-triage-pilot-evidence -->\n((?:\|[^\n]*\n)+)")
 READ_TOOLS = ["list_folders", "search_mail", "get_message", "get_thread",
               "list_attachments", "select_digest_candidates"]
 ACTIONS = ["mark_read", "mark_unread", "move_mail", "archive_mail", "trash_mail"]
 EVIDENCE_STEPS = ACTIONS + ["refusal probe", "rollback rehearsal"]
-# Checksum steps must appear in this order: staged comparison before install
-# approval, installed verification after installation and reinstallation, then
-# enablement. A first install has no executable to hash beforehand.
+POLICY = ("Pilot acceptance installs only the selected published native binary asset verified against "
+          "both the published manifest and release-note SHA-256; a local source build is not a pilot artifact.")
+# Companion guides must state the same visible policy and keep the development
+# source-build path, which never satisfies pilot acceptance.
+COMPANIONS = {
+    "docs/RELEASE.md": ("Integrity limitations", (
+        POLICY,
+        "If the platform is unsupported or no native asset is published for it, STOP the binary path",
+    ), None),
+    "docs/USER-INSTALL.md": ("Source build", (
+        POLICY,
+        "If the platform is unsupported or no native asset is published for it, STOP the binary path",
+        "A source build and published-byte acceptance are different paths.",
+    ), "python3 scripts/stage_mail_candidate.py"),
+}
+# Each selection failure must STOP without a rebuild fallback.
+STOPS = (
+    ("missing tag", "Without a selected published tag, STOP."),
+    ("missing publication",
+     "For a tag without a matching published release, a draft release, or a release without the tag, STOP."),
+    ("unresolved full revision", "For an unresolved tag name, a moving branch or an untagged SHA, STOP."),
+    ("missing native pair", "If either asset of the native binary/manifest pair is missing, STOP."),
+    ("platform mismatch", "On a platform mismatch or any other identity mismatch, STOP."),
+    ("checksum mismatch", "On a checksum mismatch with either value, STOP."),
+)
+# Visible pilot instructions that would make a local source build the artifact.
+SOURCE_BUILD = (
+    r"\bdo not download (?:a|the) (?:[\w-]+ )?(?:release )?binary",
+    r"\bbuild (?:it |the (?:candidate|binary) )?(?:locally )?from (?:the )?(?:resolved revision|tag|source)",
+    r"\bstaging helper\b",
+    r"\bstage_mail_candidate\b",
+    r"`reviewed_revision` in the source build",
+    r"\bfall(?:s|ing)? back to (?:a )?(?:local )?(?:source )?(?:build|rebuild)",
+)
+# The contradictory source-built pilot from public main 103557c, kept verbatim
+# as a regression fixture: it must be rejected.
+BASE_SELECTION = """## Release selection prerequisite
+
+The pilot is blocked until a suitable tagged release is published. Before
+install approval, the operator records privately:
+
+1. An operator-selected published git tag in the public repository.
+2. A matching GitHub release for that same tag. A tag without a matching
+   published release, or a release without the tag, stops the pilot.
+3. The resolved full revision: the full 40-hex commit SHA the tag points to,
+   reviewed by the maintainer. Use it as `REVIEWED_REVISION` in the source
+   build; never build a moving branch or an unresolved tag name.
+4. The staged-manifest SHA-256: build the candidate with the installation
+   guide's staging helper into a new candidate directory, outside the install
+   layout, and record the `sha256` from its `manifest.json`, whose `revision`
+   must equal the resolved full revision.
+5. A staged-binary checksum: compute the SHA-256 of the candidate directory's
+   `croton-mcp` with the platform's local hash utility and compare it with the
+   manifest SHA-256. A mismatch stops the pilot.
+
+Staging a candidate installs nothing and changes no installed executable. The
+independent installed-binary checksum cannot exist yet: a first install has no
+executable, and an upgrade's existing executable is the previous release. It is
+verified after installation instead, as described under Installation.
+
+Do not download a release binary; build from the resolved revision. Checksums
+provide integrity, not signatures or provenance attestation.
+
+"""
+BASE_RELEASE = (
+    ('    "pilot_artifact": "published_native_binary",\n', ""),
+    ('"recorded_from_published_manifest"', '"recorded_from_staged_manifest"'),
+    ('"published_binary_sha256": "compared_with_release_notes_and_manifest_before_install_approval"',
+     '"staged_binary_sha256": "compared_before_install_approval"'),
+)
+# Checksum steps must appear in this order: published-byte comparison before
+# install approval, installed verification after installation and
+# reinstallation, then enablement. A first install has no executable to hash
+# beforehand.
 ORDER = ("Before install approval, the operator records privately",
-         "A staged-binary checksum", "1. Install approval:",
+         "A published-binary checksum", "1. Install approval:",
          "verify the independent installed-binary checksum:",
          "verify the independent installed-binary checksum again",
          "Only after both installed-binary checks match, enable")
@@ -40,8 +116,9 @@ EXPECTED = {
         "published_git_tag": "operator_selected",
         "matching_github_release": True,
         "full_revision": "resolved_and_reviewed",
-        "manifest_sha256": "recorded_from_staged_manifest",
-        "staged_binary_sha256": "compared_before_install_approval",
+        "pilot_artifact": "published_native_binary",
+        "manifest_sha256": "recorded_from_published_manifest",
+        "published_binary_sha256": "compared_with_release_notes_and_manifest_before_install_approval",
         "installed_binary_sha256": "verified_after_install_and_reinstall_before_enablement",
         "pilot_blocked_until_published": True,
     },
@@ -91,20 +168,30 @@ EXPECTED = {
 }
 REQUIRED = {
     "Release selection prerequisite": (
-        "blocked until a suitable tagged release is published",
-        "operator-selected published git tag", "matching GitHub release",
+        "blocked until a suitable tagged release is published", POLICY,
+        "[Mail release guide](RELEASE.md)",
+        "operator-selected published git tag", "matching published non-draft GitHub release",
+        "`tagName` exactly equals the tag and `isDraft` is false",
         "Before install approval", "resolved full revision", "full 40-hex commit SHA",
-        "staged-manifest SHA-256", "A staged-binary checksum",
-        "compare it with the manifest SHA-256", "A mismatch stops the pilot",
-        "Staging a candidate installs nothing", "cannot exist yet",
-        "Do not download a release binary"),
+        "`targetCommitish` alone is not proof",
+        "the host `GOHOSTOS` and `GOHOSTARCH`, not the configured `GOOS` and `GOARCH`",
+        "its `revision` equals the resolved full revision", "its `toolchain` is `go1.26.10`",
+        "its `GOOS` and `GOARCH` equal the native platform",
+        "The published manifest SHA-256", "binary `sha256` field, not a hash of the manifest file",
+        "A published-binary checksum",
+        "compare it with both the release-note SHA-256 and the published manifest SHA-256 "
+        "before install approval",
+        *(phrase for _, phrase in STOPS),
+        "there is no rebuild fallback", "never substitute a local source build",
+        "grants no install authority", "needs the separate install approval",
+        "cannot exist yet"),
     "Authorization gates": (
         "four gates", "Approval of one gate grants nothing for the next",
         "Install approval:", "Rollback-rehearsal approval:", "Enablement approval:",
         "Bounded live read/write approval:", "per-payload confirmation"),
     "Installation": (
         "[user-owned installation guide](USER-INSTALL.md)",
-        "does not rewrite or relax that guide", "Leave `mutations` absent",
+        "does not rewrite or relax that guide", "Published-byte entry", "Leave `mutations` absent",
         "After the authorized installation", "independent installed-binary checksum",
         "final installed executable"),
     "Catalog and rollback rehearsal": (
@@ -145,6 +232,22 @@ REQUIRED = {
 }
 
 
+def visible(text):
+    text = re.sub(r"<!--.*?(?:-->|\Z)", "", text, flags=re.S)
+    lines, fence = [], None
+    for line in text.splitlines():
+        marker = re.match(r" {0,3}(`{3,}|~{3,})", line)
+        closing = re.fullmatch(r" {0,3}(`{3,}|~{3,})[ \t]*", line)
+        if fence is None and marker:
+            fence = marker.group(1)
+        elif fence is not None and closing and closing.group(1).startswith(fence):
+            fence = None
+        elif fence is None:
+            lines.append(line)
+
+    return "\n".join(lines)
+
+
 def sections_of(text):
     return dict(re.findall(r"^## ([^\n]+)\n(.*?)(?=^## |\Z)", text, re.M | re.S))
 
@@ -163,35 +266,51 @@ def table_rows(block):
     return rows[1:]
 
 
-def flatten(value, prefix=""):
-    if isinstance(value, dict):
-        items = {}
-        for key, child in value.items():
-            items.update(flatten(child, f"{prefix}{key}."))
-        return items
+def unique_object(pairs):
+    keys = [key for key, _ in pairs]
+    if len(set(keys)) != len(keys):
+        raise ValueError("duplicate JSON key")
 
-    return {prefix[:-1]: value}
+    return dict(pairs)
+
+
+def shape_errors(actual, expected, path=""):
+    # Walk the nested objects directly, so a dotted key cannot stand in for a nested one.
+    if not isinstance(expected, dict):
+        if actual != expected or type(actual) is not type(expected):
+            return [f"contract: {path} changed"]
+        return []
+    if not isinstance(actual, dict):
+        return [f"contract: {path} changed"]
+
+    failures = []
+    for key, child in expected.items():
+        child_path = f"{path}.{key}" if path else key
+        if key not in actual:
+            failures.append(f"contract: {child_path} missing")
+        else:
+            failures.extend(shape_errors(actual[key], child, child_path))
+    for key in sorted(set(actual) - set(expected)):
+        failures.append(f"contract: unexpected {path + '.' if path else ''}{key}")
+
+    return failures
 
 
 def contract_errors(raw):
     try:
-        contract = json.loads(raw)
+        contract = json.loads(raw, object_pairs_hook=unique_object)
     except ValueError:
         return ["contract: invalid JSON"]
     if not isinstance(contract, dict):
         return ["contract: invalid JSON"]
 
-    failures = []
-    actual = flatten(contract)
-    for path, expected in flatten(EXPECTED).items():
-        if path not in actual:
-            failures.append(f"contract: {path} missing")
-        elif actual[path] != expected or type(actual[path]) is not type(expected):
-            failures.append(f"contract: {path} changed")
-    for path in sorted(set(actual) - set(flatten(EXPECTED))):
-        failures.append(f"contract: unexpected {path}")
+    return shape_errors(contract, EXPECTED)
 
-    return failures
+
+def source_build_errors(guide):
+    prose = normalize(visible(guide)).lower()
+    return [f"source build: pilot instruction {pattern!r}" for pattern in SOURCE_BUILD
+            if re.search(pattern, prose)]
 
 
 def order_errors(guide):
@@ -266,14 +385,34 @@ def evidence_errors(guide, section):
     return failures
 
 
-def verify(guide, readme, exists):
+def companion_errors(companions):
     failures = []
-    preamble = normalize(guide.split("\n## ", 1)[0])
+    for path, (heading, phrases, recipe) in COMPANIONS.items():
+        text = companions.get(path, "")
+        body = sections_of(visible(text)).get(heading)
+        if body is None:
+            failures.append(f"{path}: visible section missing: {heading}")
+            continue
+        normalized = normalize(body)
+        for phrase in phrases:
+            if phrase not in normalized:
+                failures.append(f"{path} {heading}: missing contract phrase {phrase!r}")
+        # The development recipe is a fenced example, read as text and never executed.
+        if recipe is not None and recipe not in sections_of(text).get(heading, ""):
+            failures.append(f"{path} {heading}: development source-build recipe missing")
+
+    return failures
+
+
+def verify(guide, readme, exists, companions):
+    failures = []
+    shown = visible(guide)
+    preamble = normalize(shown.split("\n## ", 1)[0])
     for phrase in PREAMBLE:
         if phrase not in preamble:
             failures.append(f"preamble: missing contract phrase {phrase!r}")
 
-    sections = sections_of(guide)
+    sections = sections_of(shown)
     for heading, phrases in REQUIRED.items():
         if heading not in sections:
             failures.append(f"section missing: {heading}")
@@ -283,7 +422,9 @@ def verify(guide, readme, exists):
             if phrase not in normalized:
                 failures.append(f"{heading}: missing contract phrase {phrase!r}")
 
-    failures.extend(order_errors(guide))
+    failures.extend(source_build_errors(guide))
+    failures.extend(order_errors(shown))
+    failures.extend(companion_errors(companions))
 
     contracts = CONTRACT.findall(guide)
     if len(contracts) != 1:
@@ -308,12 +449,24 @@ def verify(guide, readme, exists):
     return failures
 
 
+def contradictory_base(guide):
+    # Restore the 103557c source-built selection section and release contract.
+    candidate, count = re.subn(r"^## Release selection prerequisite\n.*?(?=^## )",
+                               lambda _: BASE_SELECTION, guide, count=1, flags=re.M | re.S)
+    for old, new in BASE_RELEASE:
+        if count != 1 or old not in candidate:
+            raise ValueError(f"self-test base fixture target absent: {old!r}")
+        candidate = candidate.replace(old, new, 1)
+
+    return candidate
+
+
 def repository_file(relative):
     path = ROOT / relative
     return path.is_file() and path.resolve().is_relative_to(ROOT)
 
 
-def self_test(guide, readme):
+def self_test(guide, readme, companions):
     sections = sections_of(guide)
     contract = CONTRACT.search(guide)
     if contract is None:
@@ -336,6 +489,15 @@ def self_test(guide, readme):
         change(data)
         return guide[:contract.start(1)] + json.dumps(data, indent=2) + guide[contract.end(1):]
 
+    def companion_case(name, path, old, new, expected):
+        # Prose phrases may wrap, so whitespace inside a target matches any run.
+        pattern = r"\s+".join(map(re.escape, old.split()))
+        changed, count = re.subn(pattern, lambda _: new, companions[path], count=1)
+        if count != 1:
+            raise ValueError(f"self-test mutation target absent: {path}: {old!r}")
+
+        return (name, guide, readme, repository_file, expected, {**companions, path: changed})
+
     def phrase_case(name, heading, phrase):
         return (name, edit(heading, phrase), readme, repository_file,
                 f"missing contract phrase {phrase!r}")
@@ -355,11 +517,53 @@ def self_test(guide, readme):
     evidence = "Public evidence template"
     cases = [
         ("baseline", guide, readme, repository_file, None),
-        phrase_case("missing release publication", release, "matching GitHub release"),
+        phrase_case("missing release publication", release, "matching published non-draft GitHub release"),
+        phrase_case("missing draft check", release,
+                    "`tagName` exactly equals the tag and `isDraft` is false"),
         phrase_case("missing tag selection", release, "operator-selected published git tag"),
         phrase_case("missing full revision", release, "full 40-hex commit SHA"),
-        phrase_case("missing manifest checksum", release, "staged-manifest SHA-256"),
-        phrase_case("missing staged-binary checksum", release, "A staged-binary checksum"),
+        phrase_case("targetCommitish trusted", release, "`targetCommitish` alone is not proof"),
+        phrase_case("configured target platform", release,
+                    "the host `GOHOSTOS` and `GOHOSTARCH`, not the configured `GOOS` and `GOARCH`"),
+        phrase_case("missing manifest revision identity", release,
+                    "its `revision` equals the resolved full revision"),
+        phrase_case("missing manifest toolchain identity", release, "its `toolchain` is `go1.26.10`"),
+        phrase_case("missing manifest platform identity", release,
+                    "its `GOOS` and `GOARCH` equal the native platform"),
+        phrase_case("missing manifest checksum", release, "The published manifest SHA-256"),
+        phrase_case("manifest file hash used", release,
+                    "binary `sha256` field, not a hash of the manifest file"),
+        phrase_case("missing published-binary checksum", release, "A published-binary checksum"),
+        ("release-note comparison dropped", edit(
+            release, "both the release-note SHA-256 and the published manifest SHA-256",
+            "the published manifest SHA-256"), readme, repository_file,
+         "missing contract phrase 'compare it with both the release-note SHA-256"),
+        ("manifest comparison dropped", edit(
+            release, "both the release-note SHA-256 and the published manifest SHA-256",
+            "the release-note SHA-256"), readme, repository_file,
+         "missing contract phrase 'compare it with both the release-note SHA-256"),
+        phrase_case("missing no rebuild fallback", release, "there is no rebuild fallback"),
+        phrase_case("missing separate install authority", release, "grants no install authority"),
+        phrase_case("missing separate install approval", release, "needs the separate install approval"),
+        phrase_case("missing published policy", release, POLICY),
+        ("policy only in HTML comment", edit(release, POLICY, f"<!-- {POLICY} -->"), readme,
+         repository_file, "missing contract phrase 'Pilot acceptance installs only"),
+        ("policy only in code fence", edit(release, POLICY, f"```text\n{POLICY}\n```"), readme,
+         repository_file, "missing contract phrase 'Pilot acceptance installs only"),
+        ("rewrapped visible policy", edit(release, POLICY, POLICY.replace(" verified ", "\nverified ").replace(
+            " a local ", "\na local ")), readme, repository_file, None),
+        ("source-built pilot instruction", edit(
+            release, "there is no rebuild fallback",
+            "there is no rebuild fallback. Do not download a release binary; build from the resolved revision"),
+         readme, repository_file, "source build: pilot instruction"),
+        ("missing native asset rebuilt locally", edit(
+            release, STOPS[3][1], "If either asset of the native binary/manifest pair is missing, "
+            "build it locally from the resolved revision instead."), readme, repository_file,
+         "source build: pilot instruction"),
+        ("source build via staging helper", edit(
+            "Installation", "with the accepted published asset as the candidate.",
+            "with the staging helper output as the candidate."), readme, repository_file,
+         "source build: pilot instruction"),
         phrase_case("missing installed-binary checksum", "Installation",
                     "independent installed-binary checksum"),
         phrase_case("missing reinstall checksum", catalog,
@@ -367,13 +571,35 @@ def self_test(guide, readme):
         phrase_case("enablement not after checksums", catalog,
                     "Only after both installed-binary checks match"),
         ("installed hash before install approval", edit(
-            release, "Do not download a release binary",
-            "Then verify the independent installed-binary checksum: hash the installed "
-            "executable. Do not download a release binary"), readme, repository_file,
+            release, "there is no rebuild fallback",
+            "there is no rebuild fallback. Then verify the independent installed-binary checksum: "
+            "hash the installed executable"), readme, repository_file,
          "order: '1. Install approval:' must precede 'verify the independent installed-binary"),
+        ("binary-only rollback", edit(
+            catalog, "restores the complete matched artifact set", "restores only the prior binary"),
+         readme, repository_file, "missing contract phrase 'complete matched artifact set'"),
+        phrase_case("missing published-byte install entry", "Installation", "Published-byte entry"),
         ("contract without publication gate", edit_contract(
             lambda c: c["release"].pop("matching_github_release")), readme, repository_file,
          "contract: release.matching_github_release missing"),
+        ("contract source-built artifact", edit_contract(
+            lambda c: c["release"].update(pilot_artifact="source_build")), readme, repository_file,
+         "contract: release.pilot_artifact changed"),
+        ("contract staged manifest", edit_contract(
+            lambda c: c["release"].update(manifest_sha256="recorded_from_staged_manifest")), readme,
+         repository_file, "contract: release.manifest_sha256 changed"),
+        ("contract without published hash", edit_contract(
+            lambda c: c["release"].pop("published_binary_sha256")), readme, repository_file,
+         "contract: release.published_binary_sha256 missing"),
+        ("contract published hash vs manifest only", edit_contract(
+            lambda c: c["release"].update(published_binary_sha256="compared_with_manifest_before_install_approval")),
+         readme, repository_file, "contract: release.published_binary_sha256 changed"),
+        ("contract rebuild fallback", edit_contract(
+            lambda c: c["release"].update(rebuild_fallback={})), readme, repository_file,
+         "contract: unexpected release.rebuild_fallback"),
+        ("contract obsolete staged hash", edit_contract(
+            lambda c: c["release"].update(staged_binary_sha256="compared_before_install_approval")), readme,
+         repository_file, "contract: unexpected release.staged_binary_sha256"),
         ("contract without binary comparison", edit_contract(
             lambda c: c["release"].update(installed_binary_sha256="trusted")), readme,
          repository_file, "contract: release.installed_binary_sha256 changed"),
@@ -443,6 +669,55 @@ def self_test(guide, readme):
             lambda c: c["identities"].pop("result_check")), readme, repository_file,
          "contract: identities.result_check missing"),
     ]
+    for path in COMPANIONS:
+        missing = f"{path} {COMPANIONS[path][0]}: missing contract phrase 'Pilot acceptance installs only"
+        cases += [
+            companion_case(f"{path} policy removed", path, POLICY, "", missing),
+            companion_case(f"{path} policy only in HTML comment", path, POLICY, f"<!-- {POLICY} -->", missing),
+            companion_case(f"{path} policy only in code fence", path, POLICY,
+                           f"\n```text\n{POLICY}\n```\n", missing),
+            companion_case(f"{path} rewrapped visible policy", path, POLICY,
+                           POLICY.replace(" verified ", "\nverified ").replace(" a local ", "\na local "), None),
+            companion_case(f"{path} missing native asset rebuilt locally", path,
+                           "no native asset is published for it, STOP the binary path",
+                           "no native asset is published for it, build it locally from the tag instead",
+                           f"{path} {COMPANIONS[path][0]}: missing contract phrase 'If the platform is unsupported"),
+        ]
+    cases += [
+        companion_case("development source-build path dropped", "docs/USER-INSTALL.md",
+                       "A source build and published-byte acceptance are different paths.", "",
+                       "missing contract phrase 'A source build and published-byte acceptance"),
+        companion_case("development recipe removed", "docs/USER-INSTALL.md",
+                       'python3 scripts/stage_mail_candidate.py --revision "$REVIEWED_REVISION"', "",
+                       "development source-build recipe missing"),
+        ("install guide missing", guide, readme, repository_file,
+         "docs/USER-INSTALL.md: visible section missing: Source build",
+         {**companions, "docs/USER-INSTALL.md": ""}),
+        ("contract dotted-key collision", edit_contract(lambda c: (
+            c["release"].update(pilot_artifact="source_build"),
+            c.update({"release.pilot_artifact": "published_native_binary"}))), readme, repository_file,
+         "contract: release.pilot_artifact changed"),
+        ("contract dotted key", edit_contract(
+            lambda c: c.update({"release.pilot_artifact": "published_native_binary"})), readme,
+         repository_file, "contract: unexpected release.pilot_artifact"),
+        ("contract duplicate key", guide.replace(
+            '"pilot_artifact": "published_native_binary",',
+            '"pilot_artifact": "source_build",\n    "pilot_artifact": "published_native_binary",', 1),
+         readme, repository_file, "contract: invalid JSON"),
+        ("contract object replaced by value", edit_contract(lambda c: c.update(release="published")),
+         readme, repository_file, "contract: release changed"),
+    ]
+    base = contradictory_base(guide)
+    cases += [
+        ("103557c base pilot lacks policy", base, readme, repository_file,
+         "Release selection prerequisite: missing contract phrase 'Pilot acceptance installs only"),
+        ("103557c base pilot source build", base, readme, repository_file,
+         "source build: pilot instruction"),
+        ("103557c base pilot contract", base, readme, repository_file,
+         "contract: unexpected release.staged_binary_sha256"),
+    ]
+    for name, phrase in STOPS:
+        cases.append(phrase_case(f"{name} without STOP", release, phrase))
     for tool in ACTIONS:
         cases.append((f"missing {tool} row", edit("Action procedure", row(tool)), readme,
                       repository_file, "actions: expected rows"))
@@ -503,8 +778,8 @@ def self_test(guide, readme):
 
     executed = 0
     failed = []
-    for name, candidate, candidate_readme, exists, expected in cases:
-        errors = verify(candidate, candidate_readme, exists)
+    for name, candidate, candidate_readme, exists, expected, *bundle in cases:
+        errors = verify(candidate, candidate_readme, exists, bundle[0] if bundle else companions)
         executed += 1
         if (expected is None and errors) or (expected is not None and not any(
                 expected in error for error in errors)):
@@ -524,9 +799,10 @@ def main():
     try:
         guide = GUIDE.read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        failures = verify(guide, readme, repository_file)
+        companions = {path: (ROOT / path).read_text(encoding="utf-8") for path in COMPANIONS}
+        failures = verify(guide, readme, repository_file, companions)
         if args.self_test:
-            failures.extend(self_test(guide, readme))
+            failures.extend(self_test(guide, readme, companions))
     except (OSError, ValueError) as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1
