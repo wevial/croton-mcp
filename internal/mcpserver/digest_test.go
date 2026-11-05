@@ -26,8 +26,8 @@ func TestSelectDigestCandidatesComposesStatusAndBoundedSearch(t *testing.T) {
 	mail := &fakeMail{
 		status: bridge.MailboxStatus{Messages: 40, Unseen: 5},
 		searched: []bridge.MessageMetadata{
-			{ID: "id-1", Mailbox: "INBOX", Subject: "Croton status", Size: 512},
-			{ID: "id-2", Mailbox: "INBOX", Subject: "Welcome", Size: 1024},
+			{ID: "id-1", Mailbox: "INBOX", UIDValidity: 9001, UID: 101, Subject: "Croton status", Size: 512},
+			{ID: "id-2", Mailbox: "INBOX", UIDValidity: 9001, UID: 102, Subject: "Welcome", Size: 1024},
 		},
 	}
 	session := connectTestClient(t, Options{Mail: mail})
@@ -69,7 +69,7 @@ func TestSelectDigestCandidatesHonorsExplicitWindowAndLimit(t *testing.T) {
 	t.Parallel()
 
 	mail := &fakeMail{searched: []bridge.MessageMetadata{
-		{ID: "id-1", Mailbox: "INBOX"}, {ID: "id-2", Mailbox: "INBOX"}, {ID: "id-3", Mailbox: "INBOX"},
+		{ID: "id-1", Mailbox: "INBOX", UIDValidity: 9001, UID: 101}, {ID: "id-2", Mailbox: "INBOX", UIDValidity: 9001, UID: 102}, {ID: "id-3", Mailbox: "INBOX", UIDValidity: 9001, UID: 103},
 	}}
 	session := connectTestClient(t, Options{Mail: mail})
 
@@ -94,7 +94,7 @@ func TestSelectDigestCandidatesPropagatesAdapterTruncation(t *testing.T) {
 	t.Parallel()
 
 	mail := &fakeMail{
-		searched:        []bridge.MessageMetadata{{ID: "id-1", Mailbox: "INBOX"}},
+		searched:        []bridge.MessageMetadata{{ID: "id-1", Mailbox: "INBOX", UIDValidity: 9001, UID: 101}},
 		searchTruncated: true,
 	}
 	session := connectTestClient(t, Options{Mail: mail})

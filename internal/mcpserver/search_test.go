@@ -22,8 +22,8 @@ func TestSearchMailPassesBoundedStructuredQuery(t *testing.T) {
 	t.Parallel()
 
 	mail := &fakeMail{searched: []bridge.MessageMetadata{
-		{ID: "opaque-1", Mailbox: "INBOX", Subject: "Croton status", Size: 512},
-		{ID: "opaque-2", Mailbox: "INBOX", Subject: "Welcome", Size: 1024},
+		{ID: "opaque-1", Mailbox: "INBOX", UIDValidity: 9001, UID: 101, Subject: "Croton status", Size: 512},
+		{ID: "opaque-2", Mailbox: "INBOX", UIDValidity: 9001, UID: 102, Subject: "Welcome", Size: 1024},
 	}}
 	session := connectTestClient(t, Options{Mail: mail})
 
@@ -65,7 +65,7 @@ func TestSearchMailLimitSlicesResults(t *testing.T) {
 	t.Parallel()
 
 	mail := &fakeMail{searched: []bridge.MessageMetadata{
-		{ID: "a", Mailbox: "INBOX"}, {ID: "b", Mailbox: "INBOX"}, {ID: "c", Mailbox: "INBOX"},
+		{ID: "a", Mailbox: "INBOX", UIDValidity: 9001, UID: 101}, {ID: "b", Mailbox: "INBOX", UIDValidity: 9001, UID: 102}, {ID: "c", Mailbox: "INBOX", UIDValidity: 9001, UID: 103},
 	}}
 	session := connectTestClient(t, Options{Mail: mail})
 
@@ -82,7 +82,7 @@ func TestSearchMailPropagatesAdapterTruncation(t *testing.T) {
 	t.Parallel()
 
 	mail := &fakeMail{
-		searched:        []bridge.MessageMetadata{{ID: "a", Mailbox: "INBOX"}},
+		searched:        []bridge.MessageMetadata{{ID: "a", Mailbox: "INBOX", UIDValidity: 9001, UID: 101}},
 		searchTruncated: true,
 	}
 	session := connectTestClient(t, Options{Mail: mail})

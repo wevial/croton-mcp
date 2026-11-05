@@ -57,7 +57,7 @@ func TestGetMessageComposesMetadataBodyAndNormalization(t *testing.T) {
 	t.Parallel()
 
 	mail := &fakeMail{
-		metadata: bridge.MessageMetadata{ID: "opaque-1", Mailbox: "INBOX", Subject: "Welcome to Croton", Size: int64(len(syntheticPlainMIME))},
+		metadata: bridge.MessageMetadata{ID: "opaque-1", Mailbox: "INBOX", UIDValidity: 9001, UID: 101, Subject: "Welcome to Croton", Size: int64(len(syntheticPlainMIME))},
 		body:     []byte(syntheticPlainMIME),
 	}
 	session := connectTestClient(t, Options{Mail: mail})
@@ -84,7 +84,7 @@ func TestGetMessageReturnsAttachmentMetadataWithoutBytes(t *testing.T) {
 	t.Parallel()
 
 	mail := &fakeMail{
-		metadata: bridge.MessageMetadata{ID: "opaque-2", Mailbox: "INBOX", Subject: "Attachment fixture"},
+		metadata: bridge.MessageMetadata{ID: "opaque-2", Mailbox: "INBOX", UIDValidity: 9001, UID: 102, Subject: "Attachment fixture"},
 		body:     []byte(syntheticAttachmentMIME),
 	}
 	session := connectTestClient(t, Options{Mail: mail})

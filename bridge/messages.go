@@ -32,6 +32,8 @@ func (adapter *Adapter) GetMessageMetadata(ctx context.Context, identifier strin
 		result = metadata[0]
 		result.ID = identifier
 		result.Mailbox = payload.Mailbox
+		result.UIDValidity = payload.UIDValidity
+		result.UID = payload.UID
 		return nil
 	})
 	if err != nil {

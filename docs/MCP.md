@@ -173,6 +173,28 @@ transport admits only one unambiguous newline-delimited JSON object of at most
 Message identifiers are the bridge's opaque HMAC-bound ids; they are validated
 against a fresh UIDVALIDITY generation on every use.
 
+### Flat read identities
+
+Four flat read shapes carry numeric `uidvalidity` and `uid` beside the opaque
+`id` and the exact `mailbox`: each `search_mail` result, each
+`select_digest_candidates` candidate, and the parent message of `get_message`
+and `list_attachments`. Both values are positive 32-bit integers, 1 to
+4294967295. They come from the same successful read-only EXAMINE and UID FETCH
+generation that the bridge bound into that `id`, so clients never decode the
+opaque id. A read that cannot supply a positive tuple fails rather than
+returning a partial, zero or guessed identity, and a stale id fails with
+`stale_id` and no tuple. Attachment entries, digest counters and `get_thread`
+results carry no UID.
+
+These fields are read metadata only. They are not account authentication or
+approval, grant no write authority, and different accounts may share the same
+tuple. Account continuity is unavailable. The write pilot remains blocked. The
+[Mail principal selection record](design/0007-mail-principal-selection.md)
+describes the blocked continuity work.
+
+Thread identities and exact bounded-output identities are deferred.
+Truncated and fallback results are not complete selection snapshots.
+
 ### Triage tools
 
 When `mutations.enabled` is true, five more tools are registered with
