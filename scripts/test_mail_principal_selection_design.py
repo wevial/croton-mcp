@@ -48,6 +48,15 @@ CANDIDATE_DENIALS = {
         "the imap connection never receives it",
         "no session command exposes the userid or a keyed derivative",
     ),
+    "trusted Bridge-local metadata bound to that session": (
+        "nothing ties one of its answers to croton's imap connection",
+        "would expose credentials and account data",
+        "time-of-check race with the imap login",
+    ),
+    "privileged helper/config attestation": (
+        "its output is not bound to the account that bridge authenticates",
+        "a configured name that bridge never confirms",
+    ),
 }
 EXCLUSIONS = ("username-only", "TLS-only", "credential-fingerprint-only", "UID-tuple-only", "opaque-ID-only")
 
@@ -490,17 +499,16 @@ def substitute(text, clause, replacement):
     return mutated
 
 
-def design_only(text):
-    """A synthetic, evidence-supported design-only bundle derived from the real record."""
-    text = set_cell(text, "native authenticated-session identity", 2,
+def design_only(text, candidate=CANDIDATES[0]):
+    """A synthetic, evidence-supported design-only bundle for candidate derived from the real record."""
+    text = set_cell(text, candidate, 2,
                     "This synthetic fixture binds a private principal to the authenticated session.")
-    text = set_cell(text, "native authenticated-session identity", 6,
-                    "This synthetic fixture supplies the required private principal evidence.")
-    text = set_cell(text, "native authenticated-session identity", 1, "source-supported")
+    text = set_cell(text, candidate, 6, "This synthetic fixture supplies the required private principal evidence.")
+    text = set_cell(text, candidate, 1, "source-supported")
     text = set_cell(text, "decision", 1, "design-only")
-    text = set_cell(text, "design candidate", 1, "native authenticated-session identity")
+    text = set_cell(text, "design candidate", 1, candidate)
     text = set_cell(text, "missing evidence", 1, "none")
-    text = drop_row(text, BLOCKERS["native authenticated-session identity"])
+    text = drop_row(text, BLOCKERS[candidate])
     for heading, clauses in STATE_PROSE["blocked"].items():
         for clause, replacement in zip(clauses, STATE_PROSE["design-only"][heading]):
             text = substitute(text, clause, replacement)
@@ -556,13 +564,18 @@ class PrincipalSelectionDesign(unittest.TestCase):
                 self.assertRejected(set_cell(self.text, claim, 1, "sufficient"), "must be insufficient")
 
     def test_decision_states(self):
-        self.assertEqual(record_errors(design_only(self.text)), [], "positive design-only bundle")
-        native = "native authenticated-session identity"
-        real = re.search(r"^\| " + re.escape(native) + r" \|.*$", self.text, flags=re.M).group(0)
-        for column in (2, 6):
-            with self.subTest(denial=column):
-                self.assertRejected(set_cell(design_only(self.text), native, column, cells(real)[column]),
-                                    "source-supported contradicts evidence")
+        for name in CANDIDATES:
+            supported = design_only(self.text, name)
+            with self.subTest(design_only=name):
+                self.assertEqual(record_errors(supported), [], "positive design-only bundle")
+            real = re.search(r"^\| " + re.escape(name) + r" \|.*$", self.text, flags=re.M).group(0)
+            for column in (2, 6):
+                with self.subTest(denial=name, column=column):
+                    self.assertRejected(set_cell(supported, name, column, cells(real)[column]),
+                                        "source-supported contradicts evidence")
+            for denial in CANDIDATE_DENIALS[name]:
+                with self.subTest(denial=name, evidence=denial):
+                    self.assertIn(denial, cells(real)[2].casefold() + " " + cells(real)[6].casefold())
         self.assertRejected(set_cell(design_only(self.text), "runtime proof", 1, "available"),
                             "runtime proof must be unavailable")
         self.assertRejected(set_cell(design_only(self.text), "runtime implementation", 1, "available"),
