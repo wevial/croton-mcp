@@ -97,7 +97,9 @@ REQUIRED = {
         "staged-manifest SHA-256", "A staged-binary checksum",
         "compare it with the manifest SHA-256", "A mismatch stops the pilot",
         "Staging a candidate installs nothing", "cannot exist yet",
-        "Do not download a release binary"),
+        "Do not download a release binary",
+        "Pilot acceptance installs only the selected published native binary asset verified against "
+        "both the published manifest and release-note SHA-256; a local source build is not a pilot artifact."),
     "Authorization gates": (
         "four gates", "Approval of one gate grants nothing for the next",
         "Install approval:", "Rollback-rehearsal approval:", "Enablement approval:",

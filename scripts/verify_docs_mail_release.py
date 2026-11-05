@@ -18,7 +18,10 @@ import sys
 import verify_docs_user_install as installer
 
 ROOT = Path(__file__).resolve().parents[1]
-PATHS = {"release": "docs/RELEASE.md", "guide": "docs/USER-INSTALL.md", "readme": "README.md"}
+PATHS = {"release": "docs/RELEASE.md", "guide": "docs/USER-INSTALL.md", "readme": "README.md",
+         "pilot": "docs/MAIL-TRIAGE-PILOT.md"}
+PILOT_POLICY = ("Pilot acceptance installs only the selected published native binary asset verified against both "
+                "the published manifest and release-note SHA-256; a local source build is not a pilot artifact.")
 RECIPE = re.compile(r"<!-- mail-release-tagged-recipe -->\s*```sh\n(.*?)\n```", re.S)
 DOWNLOAD = re.compile(r"<!-- mail-release-download-recipe -->\s*```sh\n(.*?)\n```", re.S)
 FENCE = re.compile(r"^```sh\n(.*?)\n```", re.S | re.M)
@@ -95,6 +98,9 @@ CLAUSES = {
          "Record the printed full SHA and confirm HEAD equals it."),
     ),
     "test_integrity_limitations": (
+        ("pilot", "Release selection prerequisite", "pilot published-artifact policy", PILOT_POLICY),
+        ("release", "Integrity limitations", "release published-artifact policy", PILOT_POLICY),
+        ("guide", "Source build", "install published-artifact policy", PILOT_POLICY),
         ("release", "Integrity limitations", "checksum is not a signature",
          "Checksums provide integrity, not signatures or provenance."),
         ("release", "Integrity limitations", "rebuild not assumed equal",
