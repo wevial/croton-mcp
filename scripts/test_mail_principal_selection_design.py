@@ -4,7 +4,8 @@
 The record must state its contract in visible sections and GFM tables. HTML
 comments, including an unterminated one, and top-level fenced code blocks are
 removed before matching, and whitespace is collapsed so that wrapped prose
-still matches. The checks cover record consistency and citation form only:
+still matches. Candidate evidence also ignores Markdown emphasis and code-span
+markers, so formatting cannot hide a recorded denial. The checks cover record consistency and citation form only:
 they do not prove upstream semantics, Bridge behavior, human approval or the
 absence of secrets in arbitrary text.
 
@@ -322,6 +323,12 @@ def check_current_surface(record):
             record.errors.append(f"{where}: must not be relabeled as a principal source or public epoch API")
 
 
+def evidence_text(value):
+    """Casefold value with Markdown emphasis and code-span markers removed and whitespace collapsed."""
+    value = re.sub(r"[*`]|(?<!\w)_+|_+(?!\w)", "", value)
+    return " ".join(value.casefold().split())
+
+
 def check_candidates(record):
     columns = ("Candidate", "Verdict", "Trust and connection binding", "Evidence kind", "Citation", "Symbol",
                "Limit", "Executed evidence")
@@ -342,10 +349,9 @@ def check_candidates(record):
         if row["Executed evidence"] != "NOT RUN":
             record.errors.append(f"{where}: executed evidence must be NOT RUN")
         if row["Verdict"] == "source-supported":
-            evidence = " ".join(" ".join(row[field] for field in ("Trust and connection binding", "Limit"))
-                                .casefold().split())
+            evidence = evidence_text(" ".join(row[field] for field in ("Trust and connection binding", "Limit")))
             for denial in CANDIDATE_DENIALS.get(name, ()):
-                if " ".join(denial.split()) in evidence:
+                if evidence_text(denial) in evidence:
                     record.errors.append(f"{where}: source-supported contradicts evidence {denial!r}")
 
     exclusions = record.keyed("Insufficient claims", "Claim", ("Claim", "Verdict", "Reason"), EXCLUSIONS)
@@ -578,6 +584,14 @@ class PrincipalSelectionDesign(unittest.TestCase):
                     with self.subTest(denial=name, column=column, separator=separator):
                         spaced = separator.join(cells(real)[column].split())
                         self.assertRejected(set_cell(supported, name, column, spaced),
+                                            "source-supported contradicts evidence")
+                for marker in ("*", "**", "***", "_", "__", "`"):
+                    with self.subTest(denial=name, column=column, marker=marker):
+                        words = cells(real)[column].split()
+                        middle = len(words) // 2
+                        emphasized = " ".join(words[:middle] + [marker + " ".join(words[middle:middle + 2]) + marker]
+                                              + words[middle + 2:])
+                        self.assertRejected(set_cell(supported, name, column, emphasized),
                                             "source-supported contradicts evidence")
             for denial in CANDIDATE_DENIALS[name]:
                 with self.subTest(denial=name, evidence=denial):
