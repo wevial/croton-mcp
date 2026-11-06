@@ -204,9 +204,7 @@ func TestBodyStructureFixture(t *testing.T) {
 
 		// UID is mandatory even when omitted from the item list; duplicate
 		// structures and Seen-setting items are refused.
-		raw := connectClient(t, server, ImplicitTLS)
-		t.Cleanup(func() { _ = raw.Close() })
-		raw.command(t, "s0 LOGIN fixture-user@client.test not-a-secret", "s0 OK LOGIN completed")
+		raw := metadataSession(t, server, ImplicitTLS)
 		raw.command(t, "s1 UID FETCH 102 (BODYSTRUCTURE)", "* 2 FETCH (UID 102 BODYSTRUCTURE "+wantMixedWire+")")
 		if line := raw.readLine(t); line != "s1 OK FETCH completed" {
 			t.Fatalf("UID-less FETCH completion = %q", line)
@@ -380,10 +378,8 @@ func TestBodyStructureFixture(t *testing.T) {
 				continue
 			}
 
-			raw := connectClient(t, server, ImplicitTLS)
-			raw.command(t, "c0 LOGIN fixture-user@client.test not-a-secret", "c0 OK LOGIN completed")
+			raw := metadataSession(t, server, ImplicitTLS)
 			raw.command(t, fmt.Sprintf("c1 UID FETCH %d (BODYSTRUCTURE)", test.uid), fmt.Sprintf("* %d FETCH (UID %d BODYSTRUCTURE %s)", test.uid-100, test.uid, test.wire))
-			_ = raw.Close()
 		}
 		if len(sizedWire) != maxBodyStructureBytes {
 			t.Fatalf("serialized cap witness = %d bytes", len(sizedWire))
@@ -401,9 +397,7 @@ func TestBodyStructureFixture(t *testing.T) {
 		tree.Children = tree.Children[:1]
 		callerStructures[0] = plainStructure()
 
-		raw := connectClient(t, server, ImplicitTLS)
-		t.Cleanup(func() { _ = raw.Close() })
-		raw.command(t, "c0 LOGIN fixture-user@client.test not-a-secret", "c0 OK LOGIN completed")
+		raw := metadataSession(t, server, ImplicitTLS)
 		raw.command(t, "c1 UID FETCH 101 (UID BODYSTRUCTURE)", "* 1 FETCH (UID 101 BODYSTRUCTURE "+wantMixedWire+")")
 	})
 
