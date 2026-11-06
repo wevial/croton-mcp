@@ -249,6 +249,15 @@ func TestThreadHeaderTransport(t *testing.T) {
 	})
 
 	t.Run("capability_and_systemic", func(t *testing.T) {
+		// threeMemberFake adds an eligible sibling after id-root so a failing
+		// id-root read must visibly stop further reads.
+		threeMemberFake := func() *fakeMail {
+			mail := threadFake()
+			mail.metadataByID["id-other"] = bridge.MessageMetadata{ID: "id-other", Mailbox: "INBOX", UIDValidity: 9001, UID: 103, Subject: "Planning"}
+			mail.bodyByID["id-other"] = []byte(strings.ReplaceAll(threadRootMIME, "<root@", "<other@"))
+			mail.searched = append(mail.searched, bridge.MessageMetadata{ID: "id-other", Mailbox: "INBOX", Subject: "Planning"})
+			return mail
+		}
 		requireNoBodyOrMetadata := func(t *testing.T, mail *fakeMail) {
 			t.Helper()
 
@@ -274,8 +283,20 @@ func TestThreadHeaderTransport(t *testing.T) {
 			want string
 		}
 		failures := []failure{
+			{"auth", &bridge.Error{Code: bridge.CodeAuthentication}, errUnavailable},
+			{"tls", &bridge.Error{Code: bridge.CodeTLSNegotiation}, errUnavailable},
+			{"tls_mismatch", &bridge.Error{Code: bridge.CodeTLSMismatch}, errUnavailable},
+			{"helper", &bridge.Error{Code: bridge.CodeCredentialCommand}, errUnavailable},
 			{"transport", &bridge.Error{Code: bridge.CodeBridgeUnreachable}, errUnavailable},
+			{"protocol", &bridge.Error{Code: bridge.CodeIMAPProtocol}, errUnavailable},
+			{"command", &bridge.Error{Code: bridge.CodeIMAPCommand}, errUnavailable},
 			{"bounds", &bridge.Error{Code: bridge.CodeBoundsExceeded}, errBoundsExceeded},
+			{"timeout", &bridge.Error{Code: bridge.CodeCommandTimedOut}, errTimedOut},
+			{"cancel", &bridge.Error{Code: bridge.CodeOperationCanceled}, errCanceled},
+			{"closed_adapter", &bridge.Error{Code: bridge.CodeAdapterClosed}, errUnavailable},
+			{"unsupported", &bridge.Error{Code: bridge.CodeUnsupported}, errUnsupported},
+			{"invalid_request", &bridge.Error{Code: bridge.CodeInvalidRequest}, errInvalidArgument},
+			{"missing_mailbox", &bridge.Error{Code: bridge.CodeMailboxNotFound}, errNotFound},
 			{"malformed_header", &bridge.NormalizeError{Code: "malformed_header"}, errInternal},
 		}
 
@@ -295,7 +316,7 @@ func TestThreadHeaderTransport(t *testing.T) {
 
 		t.Run("systemic sibling failure", func(t *testing.T) {
 			for _, failure := range failures {
-				mail := threadFake()
+				mail := threeMemberFake()
 				mail.headerErrByID = map[string]error{"id-root": failure.err}
 				result := callTool(t, connectTestClient(t, Options{Mail: mail}), "get_thread", map[string]any{"messageId": "id-reply"})
 
