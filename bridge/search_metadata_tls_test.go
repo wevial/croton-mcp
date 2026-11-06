@@ -18,7 +18,6 @@ var tlsMetadataMessages = []string{
 
 var tlsMetadataSeen = []bool{true, false, true}
 
-// tlsMetadataWant is the expected sourced metadata for tlsMetadataMessages.
 var tlsMetadataWant = []struct{ from, date, source, read string }{
 	{from: "Seen Fixture <seen@croton.test>", date: "2026-11-03T17:15:00Z", source: "header", read: "read"},
 	{from: "Unseen Fixtüre <unseen@croton.test>", date: "2026-11-04T22:30:00Z", source: "header", read: "unread"},
