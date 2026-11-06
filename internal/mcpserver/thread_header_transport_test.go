@@ -8,7 +8,6 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/wevial/croton-mcp/bridge"
@@ -38,10 +37,8 @@ func threadHeaderMessages() []string {
 // countingHeaderMail delegates to a header-capable adapter and counts each
 // public adapter operation separately.
 type countingHeaderMail struct {
-	Mail
-	headers MessageHeaderReader
+	*bridge.Adapter
 
-	mu          sync.Mutex
 	headerCalls int
 	metaCalls   int
 	bodyCalls   int
@@ -49,41 +46,30 @@ type countingHeaderMail struct {
 }
 
 func (mail *countingHeaderMail) GetMessageHeaders(ctx context.Context, identifier string) (bridge.MessageHeaders, error) {
-	mail.mu.Lock()
 	mail.headerCalls++
-	mail.mu.Unlock()
 
-	return mail.headers.GetMessageHeaders(ctx, identifier)
+	return mail.Adapter.GetMessageHeaders(ctx, identifier)
 }
 
 func (mail *countingHeaderMail) GetMessageMetadata(ctx context.Context, identifier string) (bridge.MessageMetadata, error) {
-	mail.mu.Lock()
 	mail.metaCalls++
-	mail.mu.Unlock()
 
-	return mail.Mail.GetMessageMetadata(ctx, identifier)
+	return mail.Adapter.GetMessageMetadata(ctx, identifier)
 }
 
 func (mail *countingHeaderMail) GetMessageBody(ctx context.Context, identifier string) ([]byte, error) {
-	mail.mu.Lock()
 	mail.bodyCalls++
-	mail.mu.Unlock()
 
-	return mail.Mail.GetMessageBody(ctx, identifier)
+	return mail.Adapter.GetMessageBody(ctx, identifier)
 }
 
 func (mail *countingHeaderMail) SearchMailPage(ctx context.Context, query bridge.SearchQuery) (bridge.SearchPage, error) {
-	mail.mu.Lock()
 	mail.searchCalls++
-	mail.mu.Unlock()
 
-	return mail.Mail.SearchMailPage(ctx, query)
+	return mail.Adapter.SearchMailPage(ctx, query)
 }
 
 func (mail *countingHeaderMail) reset() {
-	mail.mu.Lock()
-	defer mail.mu.Unlock()
-
 	mail.headerCalls, mail.metaCalls, mail.bodyCalls, mail.searchCalls = 0, 0, 0, 0
 }
 
@@ -189,7 +175,7 @@ func TestThreadHeaderTransport(t *testing.T) {
 		} {
 			t.Run(mode.name, func(t *testing.T) {
 				server, adapter := startThreadHeaderAdapter(t, mode.mode)
-				mail := &countingHeaderMail{Mail: adapter, headers: adapter}
+				mail := &countingHeaderMail{Adapter: adapter}
 				session := connectTestClient(t, Options{Mail: mail})
 
 				searched := rawItems(t, rawObject(t, callTool(t, session, "search_mail", map[string]any{"mailbox": "INBOX", "subject": "Large planning"})), "results")
@@ -247,9 +233,7 @@ func TestThreadHeaderTransport(t *testing.T) {
 						}
 					}
 
-					mail.mu.Lock()
 					counts := [4]int{mail.headerCalls, mail.metaCalls, mail.bodyCalls, mail.searchCalls}
-					mail.mu.Unlock()
 					if counts != [4]int{3, 0, 0, 1} {
 						t.Fatalf("operations header/metadata/body/search = %v, want [3 0 0 1]", counts)
 					}
