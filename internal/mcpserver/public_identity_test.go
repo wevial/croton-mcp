@@ -999,8 +999,8 @@ func TestPublicReadIdentityThreadMCP(t *testing.T) {
 		})
 
 		t.Run("stale sibling", func(t *testing.T) {
-			// A sibling whose UID vanished is omitted without truncation; the
-			// target keeps only its own tuple.
+			// A sibling whose UID vanished is omitted as a reason-only record
+			// and marks truncation; the target keeps only its own tuple.
 			fake := &fakeMail{
 				metadataByID: map[string]bridge.MessageMetadata{
 					"opaque-target": withReadIdentity(bridge.MessageMetadata{ID: "opaque-target", Mailbox: "INBOX", Subject: "Re: Budget"}, 77, 500),
@@ -1018,8 +1018,8 @@ func TestPublicReadIdentityThreadMCP(t *testing.T) {
 			if len(nodes) != 1 || nodes[0]["key"] != "opaque-target" || flatTuple(t, nodes[0]) != (readTuple{Mailbox: "INBOX", UIDValidity: 77, UID: 500}) {
 				t.Fatalf("stale sibling handling changed: %v", thread)
 			}
-			if truncated, _ := thread["truncated"].(bool); truncated {
-				t.Fatalf("stale sibling omission now reports truncation: %v", thread)
+			if truncated, _ := thread["truncated"].(bool); !truncated {
+				t.Fatalf("stale sibling omission not reported truncated: %v", thread)
 			}
 			if len(fake.headerCalls) != 2 || len(fake.metaCalls)+len(fake.bodyCalls) != 0 {
 				t.Fatalf("stale sibling triggered extra reads: header=%v metadata=%v body=%v", fake.headerCalls, fake.metaCalls, fake.bodyCalls)

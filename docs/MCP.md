@@ -200,7 +200,8 @@ top-level `id` and `mailbox` are context and carry no UID. A target without a
 positive tuple fails with `unavailable` and a stale target fails with
 `stale_id`. A stale sibling is omitted as before, and a sibling without a
 positive tuple is omitted and the result is marked truncated. Each omitted
-sibling is reported only by a reason-only `unavailableMembers` record.
+sibling, stale or not, is reported only by a reason-only `unavailableMembers`
+record and marks the result truncated.
 
 Bounded output keeps every retained identity exact. Oversized search results,
 digest candidates and thread nodes are removed whole, so each retained item
@@ -423,7 +424,7 @@ The `get_thread` result keys are `id`, `mailbox`, `nodes`, `truncated` and `unav
 Each node carries `key`, `mailbox`, `uidvalidity`, `uid`, `messageId`, `parentKey`, `depth`, `subject`, `from`, `date` and `truncation`.
 A node's `truncation` object carries only the true reasons among `headers`, `headerCount` and `references`, and is empty when the node's headers are complete.
 The aggregate `truncated` is true when any node reports a header limit, when
-an attempted sibling is omitted for `invalid_identity` or `malformed_header`,
+an attempted sibling is omitted for `stale_id`, `invalid_identity` or `malformed_header`,
 or when eligible siblings were not attempted.
 
 The optional `unavailableMembers` list has one record per attempted sibling

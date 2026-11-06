@@ -535,8 +535,8 @@ func runGetThread(ctx context.Context, deps Options, arguments json.RawMessage) 
 // records each appended sibling's metadata and header truncation from the
 // same header read by opaque key, and returns one reason-only record per
 // attempted sibling omitted as stale, without a complete read identity, or
-// with a malformed encoded header. Only identity and header omissions mark
-// the result truncated; a stale sibling no longer exists.
+// with a malformed encoded header. Every such omission marks the result
+// truncated.
 func appendThreadSiblings(ctx context.Context, reader MessageHeaderReader, deps Options, members []bridge.ThreadMessage, identities map[string]bridge.MessageMetadata, truncations map[string]threadNodeTruncation, target bridge.MessageMetadata, limit int) ([]bridge.ThreadMessage, []threadUnavailableMember, bool, string) {
 	subject := baseSubject(target.Subject)
 	if subject == "" || target.Mailbox == "" {
@@ -587,6 +587,7 @@ func appendThreadSiblings(ctx context.Context, reader MessageHeaderReader, deps 
 			errCode := mapAdapterError(err)
 			if errCode == errStaleID {
 				unavailable = append(unavailable, threadUnavailableMember{Reason: threadUnavailableStaleID})
+				truncated = true
 				continue
 			}
 

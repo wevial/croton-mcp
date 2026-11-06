@@ -246,6 +246,25 @@ func TestThreadHeaderResults(t *testing.T) {
 			}
 		})
 
+		t.Run("stale omission alone marks truncated", func(t *testing.T) {
+			mail := threadSiblingFake()
+			mail.searched = append(mail.searched, bridge.MessageMetadata{ID: "id-gone", Mailbox: "INBOX", Subject: "Planning"})
+			thread := rawObject(t, callTool(t, connectTestClient(t, Options{Mail: mail}), "get_thread", map[string]any{"messageId": "id-reply"}))
+			nodes, reasons := requireThreadSchema(t, thread)
+
+			if !reflect.DeepEqual(reasons, []string{"stale_id"}) || len(nodes) != 3 {
+				t.Fatalf("stale-only thread = %v", thread)
+			}
+			if truncated, _ := thread["truncated"].(bool); !truncated {
+				t.Fatalf("stale omission not reported truncated: %v", thread)
+			}
+			for _, node := range nodes {
+				if truncation, _ := node["truncation"].(map[string]any); len(truncation) != 0 {
+					t.Fatalf("stale-only thread has header-limited node: %v", node)
+				}
+			}
+		})
+
 		t.Run("header limits alone mark truncated", func(t *testing.T) {
 			mail := &truncatingHeaderMail{fakeMail: threadSiblingFake(), truncation: map[string]bridge.Truncation{"id-other": {HeaderCount: true}}}
 			thread := rawObject(t, callTool(t, connectTestClient(t, Options{Mail: mail}), "get_thread", map[string]any{"messageId": "id-reply"}))
