@@ -528,12 +528,7 @@ func boundedSender(header mail.Header) (string, bool) {
 		return "", false
 	}
 
-	decoded, truncated := cutUTF8(strings.TrimSpace(decoded), maxSenderBytes)
-	if decoded == "" {
-		return "", false
-	}
-
-	return decoded, truncated
+	return cutUTF8(strings.TrimSpace(decoded), maxSenderBytes)
 }
 
 // validSenderEncodedWords requires every "=?" in the sender to open a
