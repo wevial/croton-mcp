@@ -315,7 +315,6 @@ func Start(options Options) (*Server, error) {
 
 	options.Messages = append([]string(nil), options.Messages...)
 	options.Seen = append([]bool(nil), options.Seen...)
-	options.BodyStructures = nil
 
 	certificate, caDER, err := generateCertificate()
 	if err != nil {

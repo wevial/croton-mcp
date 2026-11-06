@@ -83,7 +83,7 @@ func newBodyStructures(options Options) ([]string, error) {
 		return nil, fmt.Errorf("testkit: BodyStructures support at most %d messages", maxBodyStructureMessages)
 	}
 
-	if options.MetadataFlags != MetadataFlagsOrdinary || options.Scenario != (Scenario{}) || options.Stateful != nil || options.Labels != nil {
+	if options.MetadataFlags != MetadataFlagsOrdinary || options.Scenario != (Scenario{}) {
 		return nil, errors.New("testkit: BodyStructures cannot be combined with MetadataFlags, Scenario, Stateful or Labels")
 	}
 
@@ -169,10 +169,6 @@ func validateBodyPartFields(part *BodyPart) error {
 		if err := validateBodyValue(value, true); err != nil {
 			return err
 		}
-	}
-
-	if part.Disposition != nil && part.Disposition.Value == "" {
-		return errors.New("empty disposition value")
 	}
 
 	switch part.Kind {
