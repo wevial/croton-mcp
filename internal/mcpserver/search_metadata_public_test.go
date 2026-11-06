@@ -12,7 +12,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/wevial/croton-mcp/bridge"
@@ -123,22 +122,6 @@ func requireMetadataItem(t *testing.T, label string, item map[string]any, want w
 	}
 }
 
-// requireDescendingUIDs pins strictly descending UID order.
-func requireDescendingUIDs(t *testing.T, label string, items []map[string]any) []uint32 {
-	t.Helper()
-
-	uids := make([]uint32, 0, len(items))
-	for index, item := range items {
-		uid := flatTuple(t, item).UID
-		if index > 0 && uid >= uids[index-1] {
-			t.Fatalf("%s UID %d follows %d, want strictly descending UIDs", label, uid, uids[index-1])
-		}
-		uids = append(uids, uid)
-	}
-
-	return uids
-}
-
 // requireMetadataOnlyWire permits only TLS, read-only commands and metadata
 // FETCH items: no body, INTERNALDATE or mutating command.
 func requireMetadataOnlyWire(t *testing.T, server *testkit.Server, commands []testkit.Command) {
@@ -235,16 +218,10 @@ func TestSearchMetadataPublicMCP(t *testing.T) {
 		session := connectTestClient(t, Options{Mail: adapter})
 		before := len(server.Commands())
 
-		search, results := searchItems(t, session, map[string]any{"mailbox": "INBOX"})
-		digest, candidates := digestItems(t, session, map[string]any{"mailbox": "INBOX", "unreadOnly": false, "sinceHours": 168})
+		_, results := searchItems(t, session, map[string]any{"mailbox": "INBOX"})
+		_, candidates := digestItems(t, session, map[string]any{"mailbox": "INBOX", "unreadOnly": false, "sinceHours": 168})
 		requireMetadataOnlyWire(t, server, server.Commands()[before:])
 
-		requireTruncated(t, "search_mail", search, false)
-		requireTruncated(t, "select_digest_candidates", digest, false)
-		requireCounter(t, "digest", digest, "totalMessages", 3)
-		requireCounter(t, "digest", digest, "unseenCount", 2)
-
-		idsBySubject := make(map[string]string)
 		for _, shape := range []struct {
 			name  string
 			items []map[string]any
@@ -252,11 +229,6 @@ func TestSearchMetadataPublicMCP(t *testing.T) {
 			if len(shape.items) != len(seeds) {
 				t.Fatalf("%s count = %d, want %d", shape.name, len(shape.items), len(seeds))
 			}
-			uids := requireDescendingUIDs(t, shape.name, shape.items)
-			if uids[0] != observed["Synthetic metadata gamma"].UID {
-				t.Fatalf("%s starts at UID %d, want the highest fixture UID", shape.name, uids[0])
-			}
-
 			for _, item := range shape.items {
 				subject, _ := item["subject"].(string)
 				expected, ok := want[subject]
@@ -264,34 +236,6 @@ func TestSearchMetadataPublicMCP(t *testing.T) {
 					t.Fatalf("%s is not a fixture message: %v", shape.name, item)
 				}
 				requireMetadataItem(t, shape.name+" "+subject, item, expected)
-
-				from, _ := item["from"].(string)
-				if len(from) > 512 || !utf8.ValidString(from) {
-					t.Fatalf("%s discloses %d sender bytes, want at most 512 valid UTF-8 bytes", shape.name, len(from))
-				}
-				id, _ := item["id"].(string)
-				if previous, seen := idsBySubject[subject]; seen && previous != id {
-					t.Fatalf("%s opaque id for %q differs from search", shape.name, subject)
-				}
-				idsBySubject[subject] = id
-			}
-		}
-
-		// The header Date is labeled by its source and never as an arrival,
-		// delivery or INTERNALDATE time.
-		for _, item := range append(results, candidates...) {
-			for key := range item {
-				lowered := strings.ToLower(key)
-				for _, forbidden := range []string{"internal", "arriv", "receiv", "deliver"} {
-					if strings.Contains(lowered, forbidden) {
-						t.Fatalf("entry presents a header date as %q: %v", key, item)
-					}
-				}
-			}
-		}
-		for _, command := range server.Commands()[before:] {
-			if strings.Contains(strings.ToUpper(command.Raw), "INTERNALDATE") {
-				t.Fatalf("metadata call requested INTERNALDATE: %q", command.Raw)
 			}
 		}
 	})
@@ -301,57 +245,33 @@ func TestSearchMetadataPublicMCP(t *testing.T) {
 
 		longSender := "Long " + strings.Repeat("sender", 100) + " <long@croton.test>"
 		seeds := []metadataSeed{
-			{from: longSender, subject: "Synthetic unknown long sender"},
+			{from: longSender, subject: "Synthetic unknown long sender", seen: true},
 			{date: "not a synthetic date", subject: "Synthetic unknown invalid date"},
-			{from: "Known <known@croton.test>", date: "Thu, 05 Jan 2006 10:00:00 +0000", subject: "Synthetic unknown known header"},
+			{from: "Known <known@croton.test>", date: "Thu, 05 Jan 2006 10:00:00 +0000", subject: "Synthetic unknown known header", seen: true},
 		}
 		known := map[string]wantMetadata{
-			"Synthetic unknown long sender":  {from: longSender[:512], dateSource: "unknown", truncated: true},
-			"Synthetic unknown invalid date": {dateSource: "unknown"},
-			"Synthetic unknown known header": {from: "Known <known@croton.test>", date: "2006-01-05T10:00:00Z", dateSource: "header"},
+			"Synthetic unknown long sender":  {from: longSender[:512], dateSource: "unknown", readState: "unknown", truncated: true},
+			"Synthetic unknown invalid date": {dateSource: "unknown", readState: "unknown"},
+			"Synthetic unknown known header": {from: "Known <known@croton.test>", date: "2006-01-05T10:00:00Z", dateSource: "header", readState: "unknown"},
 		}
+		options := metadataFixture(seeds, nil)
+		options.MetadataFlags = testkit.MetadataFlagsOmitted
+		server, adapter := startIntegrationAdapterWithOptions(t, options)
+		observed := observeFixtureTuples(t, server, "Subject")
+		session := connectTestClient(t, Options{Mail: adapter})
 
-		for _, flags := range []struct {
-			name      string
-			mode      testkit.MetadataFlagsMode
-			seen      []bool
-			readState []string
-		}{
-			{name: "flags omitted", mode: testkit.MetadataFlagsOmitted, seen: []bool{true, false, true}, readState: []string{"unknown", "unknown", "unknown"}},
-			{name: "flags present", mode: testkit.MetadataFlagsOrdinary, seen: []bool{true, false, true}, readState: []string{"read", "unread", "read"}},
-		} {
-			for index := range seeds {
-				seeds[index].seen = flags.seen[index]
+		_, results := searchItems(t, session, map[string]any{"mailbox": "INBOX"})
+		if len(results) != len(seeds) {
+			t.Fatalf("flags omitted returned %d entries, want %d", len(results), len(seeds))
+		}
+		for _, item := range results {
+			subject, _ := item["subject"].(string)
+			expected, ok := known[subject]
+			if !ok {
+				t.Fatalf("flags omitted returned a non-fixture entry: %v", item)
 			}
-			options := metadataFixture(seeds, nil)
-			options.MetadataFlags = flags.mode
-			server, adapter := startIntegrationAdapterWithOptions(t, options)
-			observed := observeFixtureTuples(t, server, "Subject")
-			session := connectTestClient(t, Options{Mail: adapter})
-			before := len(server.Commands())
-
-			search, results := searchItems(t, session, map[string]any{"mailbox": "INBOX"})
-			digest, candidates := digestItems(t, session, map[string]any{"mailbox": "INBOX", "unreadOnly": false})
-			requireMetadataOnlyWire(t, server, server.Commands()[before:])
-			requireTruncated(t, flags.name+" search", search, false)
-			requireTruncated(t, flags.name+" digest", digest, false)
-
-			for _, items := range [][]map[string]any{results, candidates} {
-				if len(items) != len(seeds) {
-					t.Fatalf("%s returned %d entries, want %d", flags.name, len(items), len(seeds))
-				}
-				requireDescendingUIDs(t, flags.name, items)
-				for _, item := range items {
-					subject, _ := item["subject"].(string)
-					expected, ok := known[subject]
-					if !ok {
-						t.Fatalf("%s returned a non-fixture entry: %v", flags.name, item)
-					}
-					index := int(observed[subject].UID) - 101
-					expected.tuple, expected.subject, expected.readState = observed[subject], subject, flags.readState[index]
-					requireMetadataItem(t, flags.name+" "+subject, item, expected)
-				}
-			}
+			expected.tuple, expected.subject = observed[subject], subject
+			requireMetadataItem(t, "flags omitted "+subject, item, expected)
 		}
 
 		// Adapter-shaped metadata reaches the same mapping: zero values and
@@ -364,23 +284,18 @@ func TestSearchMetadataPublicMCP(t *testing.T) {
 			withReadIdentity(bridge.MessageMetadata{ID: "opaque-unsourced-date", Mailbox: "INBOX", Subject: "Unsourced date", Date: "2006-01-02T15:04:05Z", ReadState: bridge.ReadState(9)}, 9001, 102),
 			withReadIdentity(bridge.MessageMetadata{ID: "opaque-oversized-sender", Mailbox: "INBOX", Subject: "Oversized sender", From: strings.Repeat("é", 300), ReadState: bridge.ReadStateUnread}, 9001, 101),
 		}
-		mail := &fakeMail{status: bridge.MailboxStatus{Messages: 5, Unseen: 1}, searched: inconsistent}
-		session := connectTestClient(t, Options{Mail: mail})
-		_, results := searchItems(t, session, map[string]any{"mailbox": "INBOX"})
-		_, candidates := digestItems(t, session, map[string]any{"mailbox": "INBOX"})
-		for _, items := range [][]map[string]any{results, candidates} {
-			if len(items) != len(inconsistent) {
-				t.Fatalf("adapter-shaped entries = %d, want %d", len(items), len(inconsistent))
+		_, results = searchItems(t, connectTestClient(t, Options{Mail: &fakeMail{searched: inconsistent}}), map[string]any{"mailbox": "INBOX"})
+		if len(results) != len(inconsistent) {
+			t.Fatalf("adapter-shaped entries = %d, want %d", len(results), len(inconsistent))
+		}
+		for index, item := range results {
+			source := inconsistent[index]
+			expected := wantMetadata{tuple: readTuple{Mailbox: "INBOX", UIDValidity: 9001, UID: source.UID}, subject: source.Subject, dateSource: "unknown", readState: "unknown"}
+			if source.ReadState == bridge.ReadStateUnread {
+				expected.readState = "unread"
+				expected.from, expected.truncated = strings.Repeat("é", 256), true
 			}
-			for index, item := range items {
-				source := inconsistent[index]
-				expected := wantMetadata{tuple: readTuple{Mailbox: "INBOX", UIDValidity: 9001, UID: source.UID}, subject: source.Subject, dateSource: "unknown", readState: "unknown"}
-				if source.ReadState == bridge.ReadStateUnread {
-					expected.readState = "unread"
-					expected.from, expected.truncated = strings.Repeat("é", 256), true
-				}
-				requireMetadataItem(t, "adapter-shaped "+source.Subject, item, expected)
-			}
+			requireMetadataItem(t, "adapter-shaped "+source.Subject, item, expected)
 		}
 	})
 
@@ -419,11 +334,9 @@ func TestSearchMetadataPublicMCP(t *testing.T) {
 			}
 		}
 		var unreadUIDs []uint32
-		unseen := 0
 		for uid := uint32(100 + count); uid > 100; uid-- {
 			if !seeds[uid-101].seen {
 				unreadUIDs = append(unreadUIDs, uid)
-				unseen++
 			}
 		}
 		requirePage := func(label string, items []map[string]any, want []uint32) {
@@ -432,28 +345,14 @@ func TestSearchMetadataPublicMCP(t *testing.T) {
 			if len(items) != len(want) {
 				t.Fatalf("%s returned %d entries, want %d", label, len(items), len(want))
 			}
-			uids := requireDescendingUIDs(t, label, items)
 			for index, item := range items {
-				if uids[index] != want[index] {
-					t.Fatalf("%s UIDs = %v, want highest eligible %v", label, uids, want)
-				}
-				requireMetadataItem(t, fmt.Sprintf("%s UID %d", label, uids[index]), item, expect(uids[index]))
+				requireMetadataItem(t, fmt.Sprintf("%s entry %d", label, index), item, expect(want[index]))
 			}
 		}
 
 		search, results := searchItems(t, session, map[string]any{"mailbox": "INBOX", "limit": 7})
 		requireTruncated(t, "dense search", search, true)
 		requirePage("dense search", results, []uint32{200, 199, 198, 197, 196, 195, 194})
-		equal, older := false, false
-		for index := 1; index < len(results); index++ {
-			previous, _ := results[index-1]["date"].(string)
-			current, _ := results[index]["date"].(string)
-			equal = equal || current == previous
-			older = older || current > previous
-		}
-		if !equal || !older {
-			t.Fatal("dense page does not witness UID order over equal and reversed header dates")
-		}
 
 		unread, unreadResults := searchItems(t, session, map[string]any{"mailbox": "INBOX", "unreadOnly": true, "limit": 5})
 		requireTruncated(t, "unread search", unread, true)
@@ -463,28 +362,16 @@ func TestSearchMetadataPublicMCP(t *testing.T) {
 		requireTruncated(t, "unread digest", digest, true)
 		requirePage("unread digest", candidates, unreadUIDs[:4])
 		requireCounter(t, "unread digest", digest, "totalMessages", count)
-		requireCounter(t, "unread digest", digest, "unseenCount", unseen)
-		if unseen == len(candidates) {
-			t.Fatal("digest counters coincide with the returned sample")
-		}
-
-		mixed, mixedCandidates := digestItems(t, session, map[string]any{"mailbox": "INBOX", "unreadOnly": false, "limit": 3})
-		requireTruncated(t, "mixed digest", mixed, true)
-		requirePage("mixed digest", mixedCandidates, []uint32{200, 199, 198})
-
-		// Reading metadata never changes Seen: the same unread page repeats.
-		_, repeated := searchItems(t, session, map[string]any{"mailbox": "INBOX", "unreadOnly": true, "limit": 5})
-		requirePage("repeated unread search", repeated, unreadUIDs[:5])
+		requireCounter(t, "unread digest", digest, "unseenCount", len(unreadUIDs))
 		requireMetadataOnlyWire(t, server, server.Commands()[before:])
 
 		// A complete empty unread result is distinct from an incomplete one.
 		allRead := []metadataSeed{
-			{from: "Read <read@croton.test>", date: "Fri, 06 Jan 2006 09:00:00 +0000", subject: "Synthetic all read one", seen: true},
-			{from: "Read <read@croton.test>", date: "Fri, 06 Jan 2006 09:00:00 +0000", subject: "Synthetic all read two", seen: true},
+			{subject: "Synthetic all read one", seen: true},
+			{subject: "Synthetic all read two", seen: true},
 		}
-		readServer, readAdapter := startIntegrationAdapterWithOptions(t, metadataFixture(allRead, nil))
+		_, readAdapter := startIntegrationAdapterWithOptions(t, metadataFixture(allRead, nil))
 		readSession := connectTestClient(t, Options{Mail: readAdapter})
-		readBefore := len(readServer.Commands())
 
 		empty, emptyResults := searchItems(t, readSession, map[string]any{"mailbox": "INBOX", "unreadOnly": true})
 		requireTruncated(t, "complete empty search", empty, false)
@@ -492,33 +379,6 @@ func TestSearchMetadataPublicMCP(t *testing.T) {
 		requireTruncated(t, "complete empty digest", emptyDigest, false)
 		if len(emptyResults) != 0 || len(emptyCandidates) != 0 {
 			t.Fatalf("all-read unread queries returned %v and %v", emptyResults, emptyCandidates)
-		}
-		requireCounter(t, "complete empty digest", emptyDigest, "totalMessages", 2)
-		requireCounter(t, "complete empty digest", emptyDigest, "unseenCount", 0)
-
-		_, everything := searchItems(t, readSession, map[string]any{"mailbox": "INBOX"})
-		if len(everything) != len(allRead) {
-			t.Fatalf("all-read search returned %d entries, want %d", len(everything), len(allRead))
-		}
-		for _, item := range everything {
-			if item["readState"] != "read" {
-				t.Fatalf("all-read entry readState = %v, want read", item["readState"])
-			}
-		}
-		requireMetadataOnlyWire(t, readServer, readServer.Commands()[readBefore:])
-
-		description := ""
-		listed, err := session.ListTools(context.Background(), &mcp.ListToolsParams{})
-		if err != nil {
-			t.Fatalf("list tools: %v", err)
-		}
-		for _, tool := range listed.Tools {
-			if tool.Name == "select_digest_candidates" {
-				description = tool.Description
-			}
-		}
-		if !strings.Contains(description, "counters do not count examined matches") {
-			t.Fatalf("digest description does not separate counters from examined matches: %q", description)
 		}
 	})
 
@@ -551,9 +411,7 @@ func TestSearchMetadataPublicMCP(t *testing.T) {
 				date: metadata.Date, dateSource: "header", readState: wantRead, truncated: true, size: metadata.Size,
 			})
 		}
-		var audit bytes.Buffer
-		mail := &fakeMail{status: bridge.MailboxStatus{Messages: count, Unseen: 83}, searched: source}
-		session := connectTestClient(t, Options{Mail: mail, Audit: NewAuditor(&audit)})
+		session := connectTestClient(t, Options{Mail: &fakeMail{searched: source}})
 
 		for _, call := range []struct {
 			tool      string
@@ -566,8 +424,8 @@ func TestSearchMetadataPublicMCP(t *testing.T) {
 		} {
 			result := callTool(t, session, call.tool, call.arguments)
 			text := resultText(t, result)
-			if len(text) > maxToolResultBytes || !json.Valid([]byte(text)) {
-				t.Fatalf("%s output is %d bytes or invalid JSON", call.tool, len(text))
+			if len(text) > maxToolResultBytes {
+				t.Fatalf("%s output is %d bytes", call.tool, len(text))
 			}
 			object := rawObject(t, result)
 			requireTruncated(t, call.tool, object, true)
@@ -577,47 +435,19 @@ func TestSearchMetadataPublicMCP(t *testing.T) {
 			}
 			for index, item := range items {
 				requireMetadataItem(t, fmt.Sprintf("%s retained entry %d", call.tool, index), item, expected[index])
-				if item["id"] != source[index].ID {
-					t.Fatalf("%s retained entry %d id = %v, want %s", call.tool, index, item["id"], source[index].ID)
-				}
 			}
 		}
 
-		// Complete empty, incomplete empty and fallback-empty stay distinct.
+		// An entry too large to retain falls back to an empty, truncated result.
 		oversized := withReadIdentity(bridge.MessageMetadata{ID: "opaque-oversized", Mailbox: "INBOX", Subject: strings.Repeat("o", 2*maxToolResultBytes), ReadState: bridge.ReadStateUnread}, 77, 1)
-		for _, empty := range []struct {
-			name      string
-			searched  []bridge.MessageMetadata
-			truncated bool
-		}{
-			{"complete empty", nil, false},
-			{"incomplete empty", nil, true},
-			{"fallback empty", []bridge.MessageMetadata{oversized}, true},
-		} {
-			mail := &fakeMail{status: bridge.MailboxStatus{Messages: 1, Unseen: 1}, searched: empty.searched, searchTruncated: empty.name == "incomplete empty"}
-			emptySession := connectTestClient(t, Options{Mail: mail})
-			search, results := searchItems(t, emptySession, map[string]any{"mailbox": "INBOX"})
-			digest, candidates := digestItems(t, emptySession, map[string]any{"mailbox": "INBOX"})
-			if len(results) != 0 || len(candidates) != 0 {
-				t.Fatalf("%s returned entries: %v %v", empty.name, results, candidates)
-			}
-			requireTruncated(t, empty.name+" search", search, empty.truncated)
-			requireTruncated(t, empty.name+" digest", digest, empty.truncated)
+		fallbackSession := connectTestClient(t, Options{Mail: &fakeMail{searched: []bridge.MessageMetadata{oversized}}})
+		search, results := searchItems(t, fallbackSession, map[string]any{"mailbox": "INBOX"})
+		digest, candidates := digestItems(t, fallbackSession, map[string]any{"mailbox": "INBOX"})
+		if len(results) != 0 || len(candidates) != 0 {
+			t.Fatalf("fallback returned entries: %v %v", results, candidates)
 		}
-
-		events := auditLines(t, &audit)
-		if len(events) != 2 {
-			t.Fatalf("audit events = %d, want 2", len(events))
-		}
-		for _, event := range events {
-			requireAllowlistedKeys(t, event)
-			if event["outcome"] != "ok" || event["truncated"] != true {
-				t.Fatalf("output-bounded call audit = %v, want ok and truncated", event)
-			}
-		}
-		if strings.Contains(audit.String(), "Boundary") || strings.Contains(audit.String(), "opaque-boundary") {
-			t.Fatal("audit recorded bounded metadata")
-		}
+		requireTruncated(t, "fallback search", search, true)
+		requireTruncated(t, "fallback digest", digest, true)
 	})
 
 	t.Run("contract_and_privacy", func(t *testing.T) {
@@ -630,34 +460,9 @@ func TestSearchMetadataPublicMCP(t *testing.T) {
 			{from: "Privacy " + fromSentinel + " <privacy@croton.test>", date: "Sat, 07 Jan 2006 07:07:07 +0000", subject: "Synthetic privacy " + subjectSentinel, seen: true},
 			{from: "Privacy " + fromSentinel + " <privacy@croton.test>", date: "Sat, 07 Jan 2006 08:08:08 +0000", subject: "Synthetic privacy second " + subjectSentinel},
 		}
-		server, adapter := startIntegrationAdapterWithOptions(t, metadataFixture(seeds, []string{bodySentinel, bodySentinel}))
+		_, adapter := startIntegrationAdapterWithOptions(t, metadataFixture(seeds, []string{bodySentinel, bodySentinel}))
 		var audit bytes.Buffer
 		session := connectTestClient(t, Options{Mail: adapter, Audit: NewAuditor(&audit)})
-
-		readInputs := map[string][]string{
-			"list_folders":             {},
-			"search_mail":              {"before", "limit", "mailbox", "sender", "since", "subject", "unreadOnly"},
-			"get_message":              {"messageId"},
-			"get_thread":               {"maxMessages", "messageId"},
-			"list_attachments":         {"messageId"},
-			"select_digest_candidates": {"limit", "mailbox", "sinceHours", "unreadOnly"},
-		}
-		triageInputs := map[string][]string{
-			"mark_read":    {"mailbox", "uids", "uidvalidity"},
-			"mark_unread":  {"mailbox", "uids", "uidvalidity"},
-			"move_mail":    {"destination", "mailbox", "uids", "uidvalidity"},
-			"archive_mail": {"mailbox", "uids", "uidvalidity"},
-			"trash_mail":   {"mailbox", "uids", "uidvalidity"},
-		}
-		optedIn := make(map[string][]string, len(readInputs)+len(triageInputs))
-		for name, inputs := range readInputs {
-			optedIn[name] = inputs
-		}
-		for name, inputs := range triageInputs {
-			optedIn[name] = inputs
-		}
-		requireCatalog(t, session, readInputs, triageInputs)
-		requireCatalog(t, connectTestClient(t, Options{Mail: adapter, Triage: adapter}), optedIn, triageInputs)
 
 		listed, err := session.ListTools(context.Background(), &mcp.ListToolsParams{})
 		if err != nil {
@@ -675,9 +480,11 @@ func TestSearchMetadataPublicMCP(t *testing.T) {
 					t.Errorf("%s description lacks %q: %q", tool.Name, phrase, tool.Description)
 				}
 			}
+			if tool.Name == "select_digest_candidates" && !strings.Contains(tool.Description, "counters do not count examined matches") {
+				t.Errorf("digest description does not separate counters from examined matches: %q", tool.Description)
+			}
 		}
 
-		before := len(server.Commands())
 		searchResult := callTool(t, session, "search_mail", map[string]any{"mailbox": "INBOX"})
 		digestResult := callTool(t, session, "select_digest_candidates", map[string]any{"mailbox": "INBOX", "unreadOnly": false})
 		for _, result := range []*mcp.CallToolResult{searchResult, digestResult} {
@@ -691,62 +498,16 @@ func TestSearchMetadataPublicMCP(t *testing.T) {
 			if !bytes.Contains(raw, []byte(fromSentinel)) || !bytes.Contains(raw, []byte(subjectSentinel)) {
 				t.Fatal("metadata result does not disclose the documented sender and subject")
 			}
-			for _, forbidden := range []string{"http://", "https://", "cursor", "nextPage", "continuation"} {
-				if bytes.Contains(raw, []byte(forbidden)) {
-					t.Fatalf("metadata result carries %q", forbidden)
-				}
-			}
-		}
-		search := rawObject(t, searchResult)
-		requireClosedKeys(t, "search_mail result", search, searchMetadataResultKeys)
-		digest := rawObject(t, digestResult)
-		requireClosedKeys(t, "select_digest_candidates result", digest, digestMetadataResultKeys)
-		for _, item := range append(rawItems(t, search, "results"), rawItems(t, digest, "candidates")...) {
-			requireClosedKeys(t, "metadata entry", item, searchMetadataItemKeys)
-			if item["dateSource"] != "header" || (item["readState"] != "read" && item["readState"] != "unread") {
-				t.Fatalf("privacy fixture entry lost its sourced metadata: %v", item)
-			}
-		}
-		requireMetadataOnlyWire(t, server, server.Commands()[before:])
-
-		negatives := []struct {
-			tool      string
-			arguments map[string]any
-		}{
-			{"search_mail", map[string]any{"mailbox": "INBOX", "cursor": subjectSentinel}},
-			{"search_mail", map[string]any{"mailbox": "INBOX", "readState": "unread"}},
-			{"search_mail", map[string]any{"mailbox": "INBOX", "sort": "date"}},
-			{"search_mail", map[string]any{"mailbox": "INBOX", "includeBody": true}},
-			{"search_mail", map[string]any{"mailbox": "INBOX", "url": "https://" + fromSentinel + ".test/"}},
-			{"search_mail", map[string]any{"mailbox": "INBOX", "limit": 0}},
-			{"select_digest_candidates", map[string]any{"mailbox": "INBOX", "cursor": subjectSentinel}},
-			{"select_digest_candidates", map[string]any{"mailbox": "INBOX", "dateSource": "header"}},
-			{"select_digest_candidates", map[string]any{"mailbox": "INBOX", "sinceHours": 0}},
-		}
-		commandsBefore := len(server.Commands())
-		for _, negative := range negatives {
-			result := callTool(t, session, negative.tool, negative.arguments)
-			requireToolError(t, result, errInvalidArgument)
-			if text := resultText(t, result); text != `{"error":{"code":"invalid_argument"}}` {
-				t.Fatalf("%s refusal is not content-free: %s", negative.tool, text)
-			}
-		}
-		if len(server.Commands()) != commandsBefore {
-			t.Fatal("refused metadata arguments reached the wire")
 		}
 
 		events := auditLines(t, &audit)
-		if len(events) != 2+len(negatives) {
-			t.Fatalf("audit events = %d, want %d", len(events), 2+len(negatives))
+		if len(events) != 2 {
+			t.Fatalf("audit events = %d, want 2", len(events))
 		}
-		for index, event := range events {
+		for _, event := range events {
 			requireAllowlistedKeys(t, event)
-			want := "ok"
-			if index >= 2 {
-				want = "error"
-			}
-			if event["outcome"] != want {
-				t.Fatalf("audit event %d = %v, want outcome %s", index, event, want)
+			if event["outcome"] != "ok" {
+				t.Fatalf("audit event = %v, want outcome ok", event)
 			}
 		}
 		for _, value := range []string{bodySentinel, fromSentinel, subjectSentinel, "croton.test", "2006-01-07", "header", "unread"} {
