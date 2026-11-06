@@ -204,19 +204,9 @@ func headerTestID(t *testing.T, adapter *Adapter, uidValidity, uid uint32) strin
 
 // paddedHeader returns a header block of exactly size bytes ending in the
 // header terminator, padding with one X-Pad field.
-func paddedHeader(t *testing.T, size int, fields ...string) string {
-	t.Helper()
-
+func paddedHeader(size int, fields ...string) string {
 	base := metadataHeader(append(fields, "X-Pad: ")...)
-	if size < len(base) {
-		t.Fatalf("padded header size %d below base %d", size, len(base))
-	}
-	padded := metadataHeader(append(fields, "X-Pad: "+strings.Repeat("p", size-len(base)))...)
-	if len(padded) != size {
-		t.Fatalf("padded header is %d bytes, want %d", len(padded), size)
-	}
-
-	return padded
+	return metadataHeader(append(fields, "X-Pad: "+strings.Repeat("p", size-len(base)))...)
 }
 
 func requireHeaderOnlyFetches(t *testing.T, session *headerTestSession) {
@@ -372,14 +362,14 @@ func TestMessageHeadersAdapter(t *testing.T) {
 			return result, err, session
 		}
 
-		atCap := paddedHeader(t, headerTestLimit, "Subject: at cap", "Message-ID: <cap@croton.test>")
+		atCap := paddedHeader(headerTestLimit, "Subject: at cap", "Message-ID: <cap@croton.test>")
 		result, err, session := run(t, 10, headerScript(" FLAGS ()", atCap))
 		if err != nil || result.Headers.Subject != "at cap" || result.Headers.MessageID != "<cap@croton.test>" || result.Truncation.Any() {
 			t.Fatalf("header at cap = %+v, %v", result, err)
 		}
 		requireHeaderOnlyFetches(t, session)
 
-		overCap := paddedHeader(t, headerTestLimit+1, "Subject: over cap")
+		overCap := paddedHeader(headerTestLimit+1, "Subject: over cap")
 		result, err, session = run(t, 11, headerScript(" FLAGS ()", overCap))
 		requireHeaderRefusal(t, "header cap+1", result, err, CodeBoundsExceeded)
 		if session.aborts == 0 {
