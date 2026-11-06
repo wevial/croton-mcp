@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -528,7 +529,7 @@ func boundedSender(header mail.Header) (string, bool) {
 		return "", false
 	}
 
-	return cutUTF8(strings.TrimSpace(decoded), maxSenderBytes)
+	return truncateUTF8(strings.TrimSpace(decoded), maxSenderBytes)
 }
 
 // validSenderEncodedWords requires every "=?" in the sender to open a
@@ -574,30 +575,16 @@ func validQEscapes(text string) bool {
 		if text[index] != '=' {
 			continue
 		}
-		if index+2 >= len(text) || !isHexDigit(text[index+1]) || !isHexDigit(text[index+2]) {
+		if index+2 >= len(text) {
+			return false
+		}
+		if _, err := hex.DecodeString(text[index+1 : index+3]); err != nil {
 			return false
 		}
 		index += 2
 	}
 
 	return true
-}
-
-func isHexDigit(character byte) bool {
-	return '0' <= character && character <= '9' || 'a' <= character && character <= 'f' || 'A' <= character && character <= 'F'
-}
-
-func cutUTF8(value string, limit int) (string, bool) {
-	if len(value) <= limit {
-		return value, false
-	}
-
-	cut := limit
-	for cut > 0 && !utf8.RuneStart(value[cut]) {
-		cut--
-	}
-
-	return value[:cut], true
 }
 
 // headerDate parses the single Date header into RFC3339 UTC. It never falls
