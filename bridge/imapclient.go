@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
 	"mime"
@@ -516,13 +517,13 @@ func boundedSender(header mail.Header) (string, bool) {
 	// The raw value is already bounded by the header literal limit; it is
 	// decoded whole so the cap never splits an encoded word.
 	raw := values[0]
-	if !utf8.ValidString(raw) || !validEncodedWords(raw) || !validQEncodedWords(raw) {
+	if !utf8.ValidString(raw) || !validSenderEncodedWords(raw) {
 		return "", false
 	}
 
 	decoder := mime.WordDecoder{CharsetReader: charset.NewReaderLabel}
 	decoded, err := decoder.DecodeHeader(raw)
-	if err != nil || !utf8.ValidString(decoded) || strings.ContainsFunc(decoded, unicode.IsControl) {
+	if err != nil || !utf8.ValidString(decoded) || strings.ContainsFunc(decoded, unicode.IsControl) || strings.Contains(decoded, "=?") {
 		return "", false
 	}
 
@@ -534,9 +535,11 @@ func boundedSender(header mail.Header) (string, bool) {
 	return decoded, truncated
 }
 
-// validQEncodedWords rejects Q-encoded words whose escapes are not two hex
-// digits, which the standard decoder would otherwise pass through verbatim.
-func validQEncodedWords(value string) bool {
+// validSenderEncodedWords requires every "=?" in the sender to open a
+// complete RFC 2047 word with a charset, a B or Q encoding and a well-formed
+// payload. The standard decoder passes unterminated words, unknown encodings
+// and bad Q escapes through verbatim, so those shapes are refused here.
+func validSenderEncodedWords(value string) bool {
 	for {
 		start := strings.Index(value, "=?")
 		if start < 0 {
@@ -546,26 +549,42 @@ func validQEncodedWords(value string) bool {
 		value = value[start+2:]
 		end := strings.Index(value, "?=")
 		if end < 0 {
-			return true
+			return false
 		}
 
 		parts := strings.Split(value[:end], "?")
 		value = value[end+2:]
-		if len(parts) != 3 || !strings.EqualFold(parts[1], "q") {
-			continue
+		if len(parts) != 3 || parts[0] == "" || parts[2] == "" || strings.ContainsFunc(parts[2], unicode.IsSpace) {
+			return false
 		}
 
-		text := parts[2]
-		for index := 0; index < len(text); index++ {
-			if text[index] != '=' {
-				continue
-			}
-			if index+2 >= len(text) || !isHexDigit(text[index+1]) || !isHexDigit(text[index+2]) {
+		switch {
+		case strings.EqualFold(parts[1], "b"):
+			if _, err := base64.StdEncoding.DecodeString(parts[2]); err != nil {
 				return false
 			}
-			index += 2
+		case strings.EqualFold(parts[1], "q"):
+			if !validQEscapes(parts[2]) {
+				return false
+			}
+		default:
+			return false
 		}
 	}
+}
+
+func validQEscapes(text string) bool {
+	for index := 0; index < len(text); index++ {
+		if text[index] != '=' {
+			continue
+		}
+		if index+2 >= len(text) || !isHexDigit(text[index+1]) || !isHexDigit(text[index+2]) {
+			return false
+		}
+		index += 2
+	}
+
+	return true
 }
 
 func isHexDigit(character byte) bool {
