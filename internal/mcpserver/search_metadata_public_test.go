@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -193,8 +194,33 @@ func highEntropySentinel(t *testing.T, label string) string {
 	return label + hex.EncodeToString(random)
 }
 
+// isolateFixtureEnvironment points every home, config, cache and temporary
+// directory, and the identity and locale variables the credential helper
+// inherits, at one fixture-owned root. Setenv requires a sequential parent;
+// its subtests may still run in parallel and are restored together.
+func isolateFixtureEnvironment(t *testing.T) string {
+	t.Helper()
+
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve fixture root: %v", err)
+	}
+
+	for _, key := range []string{"HOME", "TMPDIR", "TMP", "TEMP", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"} {
+		t.Setenv(key, root)
+	}
+	for key, value := range map[string]string{"USER": "fixture", "LOGNAME": "fixture", "LANG": "C", "LC_ALL": "C"} {
+		t.Setenv(key, value)
+	}
+
+	if home, err := os.UserHomeDir(); err != nil || home != root || os.TempDir() != root {
+		t.Fatalf("fixture environment not isolated: home %q temp %q", home, os.TempDir())
+	}
+	return root
+}
+
 func TestSearchMetadataPublicMCP(t *testing.T) {
-	t.Parallel()
+	isolateFixtureEnvironment(t)
 
 	t.Run("search_and_digest", func(t *testing.T) {
 		t.Parallel()
@@ -385,9 +411,80 @@ func TestSearchMetadataPublicMCP(t *testing.T) {
 	t.Run("output_boundary", func(t *testing.T) {
 		t.Parallel()
 
-		// The adapter's 100000-byte aggregate cap measures a longer encoding
-		// of the same entries, so a real Bridge page cannot overflow the
-		// public ceiling; adapter-shaped metadata supplies the pressure.
+		// Over verified TLS: fully populated adapter and public entries encode
+		// to equal lengths, so a page the adapter accepts within its unchanged
+		// 100000-byte aggregate cap still overflows the public ceiling once the
+		// result wrapper is added. A probe measures one fixed-length page and
+		// the subjects are then padded until the adapter array lands in
+		// (100000-29, 100000], above the public cap for search and digest.
+		const pageSize, padding = 50, 1000
+		boundarySeeds := func(extra int) []metadataSeed {
+			seeds := make([]metadataSeed, 0, pageSize)
+			for index := range pageSize {
+				pad := padding + extra/pageSize
+				if index < extra%pageSize {
+					pad++
+				}
+				seeds = append(seeds, metadataSeed{
+					from:    fmt.Sprintf("Boundary %03d ", index) + strings.Repeat("f", 600) + " <boundary@croton.test>",
+					date:    time.Date(2026, time.March, 1, 0, 0, 0, 0, time.UTC).Add(-time.Duration(index) * time.Hour).Format(time.RFC1123Z),
+					subject: fmt.Sprintf("Synthetic boundary %03d ", index) + strings.Repeat("s", pad),
+					seen:    index%2 == 0,
+				})
+			}
+			return seeds
+		}
+		const searchWrapper = len(`{"results":,"truncated":true}`)
+
+		_, probe := startIntegrationAdapterWithOptions(t, metadataFixture(boundarySeeds(0), nil))
+		probeText := resultText(t, callTool(t, connectTestClient(t, Options{Mail: probe}), "search_mail", map[string]any{"mailbox": "INBOX"}))
+		if !strings.HasSuffix(probeText, `],"truncated":true}`) || strings.Count(probeText, `"metadataTruncated":true`) != pageSize {
+			t.Fatalf("boundary probe is not one budget-filling, fully populated page of %d", pageSize)
+		}
+		extra := maxToolResultBytes - 5 - (len(probeText) - searchWrapper)
+		if extra < 0 || extra >= pageSize*(10000-padding) {
+			t.Fatalf("boundary probe array is %d bytes; padding cannot reach the cap", len(probeText)-searchWrapper)
+		}
+
+		seeds := boundarySeeds(extra)
+		server, adapter := startIntegrationAdapterWithOptions(t, metadataFixture(seeds, nil))
+		observed := observeFixtureTuples(t, server, "Subject")
+		tlsSession := connectTestClient(t, Options{Mail: adapter})
+		before := len(server.Commands())
+		for _, call := range []struct {
+			tool      string
+			key       string
+			arguments map[string]any
+		}{
+			{"search_mail", "results", map[string]any{"mailbox": "INBOX"}},
+			{"select_digest_candidates", "candidates", map[string]any{"mailbox": "INBOX", "unreadOnly": false, "limit": pageSize}},
+		} {
+			result := callTool(t, tlsSession, call.tool, call.arguments)
+			if text := resultText(t, result); len(text) > maxToolResultBytes {
+				t.Fatalf("%s TLS output is %d bytes", call.tool, len(text))
+			}
+			object := rawObject(t, result)
+			requireTruncated(t, call.tool+" over TLS", object, true)
+			items := rawItems(t, object, call.key)
+			if len(items) == 0 || len(items) >= pageSize {
+				t.Fatalf("%s over TLS retained %d of %d entries, want a whole-entry shrink", call.tool, len(items), pageSize)
+			}
+			for position, item := range items {
+				index := pageSize - 1 - position
+				readState := "unread"
+				if seeds[index].seen {
+					readState = "read"
+				}
+				requireMetadataItem(t, fmt.Sprintf("%s TLS retained entry %d", call.tool, position), item, wantMetadata{
+					tuple: observed[seeds[index].subject], subject: seeds[index].subject, from: seeds[index].from[:512],
+					date:       time.Date(2026, time.March, 1, 0, 0, 0, 0, time.UTC).Add(-time.Duration(index) * time.Hour).Format(time.RFC3339),
+					dateSource: "header", readState: readState, truncated: true,
+				})
+			}
+		}
+		requireMetadataOnlyWire(t, server, server.Commands()[before:])
+
+		// Adapter-shaped metadata adds pressure beyond one adapter page.
 		const count = 250
 		source := make([]bridge.MessageMetadata, 0, count)
 		expected := make([]wantMetadata, 0, count)
