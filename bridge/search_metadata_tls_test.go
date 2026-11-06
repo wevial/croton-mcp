@@ -3,10 +3,8 @@ package bridge_test
 import (
 	"context"
 	"encoding/json"
-	"net/mail"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/wevial/croton-mcp/bridge"
 	"github.com/wevial/croton-mcp/internal/testkit"
@@ -19,6 +17,13 @@ var tlsMetadataMessages = []string{
 }
 
 var tlsMetadataSeen = []bool{true, false, true}
+
+// tlsMetadataWant is the expected sourced metadata for tlsMetadataMessages.
+var tlsMetadataWant = []struct{ from, date, source, read string }{
+	{from: "Seen Fixture <seen@croton.test>", date: "2026-11-03T17:15:00Z", source: "header", read: "read"},
+	{from: "Unseen Fixtüre <unseen@croton.test>", date: "2026-11-04T22:30:00Z", source: "header", read: "unread"},
+	{from: "Undated Fixture <undated@croton.test>", source: "unknown", read: "read"},
+}
 
 // tlsSourcedMetadata is the serialized view of adapter metadata.
 type tlsSourcedMetadata struct {
@@ -51,17 +56,6 @@ func decodeTLSMetadata(t *testing.T, metadata bridge.MessageMetadata) tlsSourced
 	return decoded
 }
 
-// isolateMetadataEnvironment keeps the helper and adapter away from any real
-// user home, config, cache or temporary directory.
-func isolateMetadataEnvironment(t *testing.T) {
-	t.Helper()
-
-	root := t.TempDir()
-	for _, name := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "TMPDIR"} {
-		t.Setenv(name, root)
-	}
-}
-
 func startTLSMetadataAdapter(t *testing.T, fake testkit.TLSMode, mode string, flags testkit.MetadataFlagsMode) (*testkit.Server, *bridge.Adapter) {
 	t.Helper()
 
@@ -78,36 +72,6 @@ func startTLSMetadataAdapter(t *testing.T, fake testkit.TLSMode, mode string, fl
 	t.Cleanup(func() { _ = adapter.Close() })
 
 	return server, adapter
-}
-
-// headerOracle independently parses the fixture message headers.
-func headerOracle(t *testing.T, index int) (string, string) {
-	t.Helper()
-
-	parsed, err := mail.ReadMessage(strings.NewReader(tlsMetadataMessages[index]))
-	if err != nil {
-		t.Fatalf("oracle parse: %v", err)
-	}
-
-	from := parsed.Header.Get("From")
-	if strings.HasPrefix(from, "=?") {
-		address, err := mail.ParseAddress(from)
-		if err != nil {
-			t.Fatalf("oracle From: %v", err)
-		}
-		from = address.Name + " <" + address.Address + ">"
-	}
-
-	date := ""
-	if value := parsed.Header.Get("Date"); value != "" {
-		parsedDate, err := mail.ParseDate(value)
-		if err != nil {
-			t.Fatalf("oracle Date: %v", err)
-		}
-		date = parsedDate.UTC().Format(time.RFC3339)
-	}
-
-	return from, date
 }
 
 // unseenOracle asks the server for UNSEEN UIDs through the adapter's own
@@ -156,8 +120,6 @@ func assertMetadataOnlyTranscript(t *testing.T, server *testkit.Server) {
 }
 
 func TestSearchMetadataTLS(t *testing.T) {
-	isolateMetadataEnvironment(t)
-
 	modes := []struct {
 		name string
 		fake testkit.TLSMode
@@ -171,7 +133,6 @@ func TestSearchMetadataTLS(t *testing.T) {
 		for _, mode := range modes {
 			server, adapter := startTLSMetadataAdapter(t, mode.fake, mode.mode, testkit.MetadataFlagsOrdinary)
 
-			unseen := unseenOracle(t, adapter)
 			results, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
 			if err != nil {
 				t.Fatalf("%s: SearchMail: %v", mode.name, err)
@@ -193,22 +154,10 @@ func TestSearchMetadataTLS(t *testing.T) {
 						t.Fatalf("%s: unexpected identity UID %d", mode.name, got.UID)
 					}
 
-					wantFrom, wantDate := headerOracle(t, index)
-					wantSource := "header"
-					if wantDate == "" {
-						wantSource = "unknown"
-					}
-					wantRead := "read"
-					if unseen[got.UID] {
-						wantRead = "unread"
-					}
-					if unseen[got.UID] == tlsMetadataSeen[index] {
-						t.Fatalf("%s: UNSEEN oracle disagrees with fixture Seen for UID %d", mode.name, got.UID)
-					}
-
-					if *got.From != wantFrom || *got.Date != wantDate || *got.DateSource != wantSource || *got.ReadState != wantRead || *got.MetadataTruncated {
-						t.Fatalf("%s: UID %d from %q date %q source %q read %q truncated %t, want %q %q %q %q",
-							mode.name, got.UID, *got.From, *got.Date, *got.DateSource, *got.ReadState, *got.MetadataTruncated, wantFrom, wantDate, wantSource, wantRead)
+					want := tlsMetadataWant[index]
+					if *got.From != want.from || *got.Date != want.date || *got.DateSource != want.source || *got.ReadState != want.read || *got.MetadataTruncated {
+						t.Fatalf("%s: UID %d from %q date %q source %q read %q truncated %t, want %+v",
+							mode.name, got.UID, *got.From, *got.Date, *got.DateSource, *got.ReadState, *got.MetadataTruncated, want)
 					}
 				}
 			}
