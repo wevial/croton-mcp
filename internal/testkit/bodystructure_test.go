@@ -204,7 +204,9 @@ func TestBodyStructureFixture(t *testing.T) {
 
 		// UID is mandatory even when omitted from the item list; duplicate
 		// structures and Seen-setting items are refused.
-		raw := metadataSession(t, server, ImplicitTLS)
+		raw := connectClient(t, server, ImplicitTLS)
+		t.Cleanup(func() { _ = raw.Close() })
+		raw.command(t, "s0 LOGIN fixture-user@client.test not-a-secret", "s0 OK LOGIN completed")
 		raw.command(t, "s1 UID FETCH 102 (BODYSTRUCTURE)", "* 2 FETCH (UID 102 BODYSTRUCTURE "+wantMixedWire+")")
 		if line := raw.readLine(t); line != "s1 OK FETCH completed" {
 			t.Fatalf("UID-less FETCH completion = %q", line)
@@ -293,6 +295,10 @@ func TestBodyStructureFixture(t *testing.T) {
 			{"empty descriptors with messages", Options{Messages: one, BodyStructures: []*BodyPart{}}, "0 BodyStructures for 1 Messages"},
 			{"nonordinary metadata flags", Options{Messages: one, BodyStructures: []*BodyPart{plainStructure()}, MetadataFlags: MetadataFlagsDuplicated}, "cannot be combined"},
 			{"nonzero scenario", Options{Messages: one, BodyStructures: []*BodyPart{plainStructure()}, Scenario: Scenario{OmitMetadataFetchResponse: true}}, "cannot be combined"},
+			{"stateful with messages", Options{Messages: one, BodyStructures: []*BodyPart{plainStructure()}, Stateful: &StatefulOptions{Mailboxes: []MailboxSeed{{Name: "INBOX"}}}}, "stateful mode cannot be combined"},
+			{"stateful without messages", Options{BodyStructures: []*BodyPart{plainStructure()}, Stateful: &StatefulOptions{Mailboxes: []MailboxSeed{{Name: "INBOX"}}}}, "require custom Messages"},
+			{"labels with messages", Options{Messages: one, BodyStructures: []*BodyPart{plainStructure()}, Labels: &LabelOptions{Views: []LabelViewSeed{{Name: "INBOX", Role: FolderRole}}}}, "label mode cannot be combined"},
+			{"labels without messages", Options{BodyStructures: []*BodyPart{plainStructure()}, Labels: &LabelOptions{Views: []LabelViewSeed{{Name: "INBOX", Role: FolderRole}}}}, "require custom Messages"},
 			{"nil root", structures(nil), "nil body part"},
 			{"zero kind", structures(&BodyPart{Type: "text", Subtype: "plain"}), "unsupported body part kind"},
 			{"unknown kind", structures(&BodyPart{Kind: BodyPartMultipart + 1, Type: "text", Subtype: "plain"}), "unsupported body part kind"},
@@ -352,8 +358,10 @@ func TestBodyStructureFixture(t *testing.T) {
 				continue
 			}
 
-			raw := metadataSession(t, server, ImplicitTLS)
+			raw := connectClient(t, server, ImplicitTLS)
+			raw.command(t, "c0 LOGIN fixture-user@client.test not-a-secret", "c0 OK LOGIN completed")
 			raw.command(t, fmt.Sprintf("c1 UID FETCH %d (BODYSTRUCTURE)", test.uid), fmt.Sprintf("* %d FETCH (UID %d BODYSTRUCTURE %s)", test.uid-100, test.uid, test.wire))
+			_ = raw.Close()
 		}
 		if len(sizedWire) != maxBodyStructureBytes {
 			t.Fatalf("serialized cap witness = %d bytes", len(sizedWire))
@@ -371,7 +379,9 @@ func TestBodyStructureFixture(t *testing.T) {
 		tree.Children = tree.Children[:1]
 		callerStructures[0] = plainStructure()
 
-		raw := metadataSession(t, server, ImplicitTLS)
+		raw := connectClient(t, server, ImplicitTLS)
+		t.Cleanup(func() { _ = raw.Close() })
+		raw.command(t, "c0 LOGIN fixture-user@client.test not-a-secret", "c0 OK LOGIN completed")
 		raw.command(t, "c1 UID FETCH 101 (UID BODYSTRUCTURE)", "* 1 FETCH (UID 101 BODYSTRUCTURE "+wantMixedWire+")")
 	})
 
