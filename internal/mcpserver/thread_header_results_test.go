@@ -446,7 +446,7 @@ func TestThreadHeaderResults(t *testing.T) {
 			"A node's `truncation` object carries only the true reasons among `headers`, `headerCount` and `references`, and is empty when the node's headers are complete.",
 			"Each `unavailableMembers` record is `{\"reason\": ...}` with one of `stale_id`, `invalid_identity` or `malformed_header`, at most 19 records.",
 			"Records are nonselectable failed-attempt records, not a mailbox inventory:",
-			"A target whose own header has a malformed encoded word now fails `get_thread` with `unavailable` instead of `internal`, without a sibling scan; `get_message` and the global error mapping are unchanged.",
+			"A target whose own header has a malformed encoded word fails `get_thread` with `unavailable`, without a sibling scan, while `get_message` still maps it to `internal`.",
 			"Malformed header syntax and over-bound header blocks still fail the whole call",
 		} {
 			if !strings.Contains(string(contents), statement) {
