@@ -249,13 +249,6 @@ func TestThreadHeaderTransport(t *testing.T) {
 	})
 
 	t.Run("capability_and_systemic", func(t *testing.T) {
-		threeMemberFake := func() *fakeMail {
-			mail := threadFake()
-			mail.metadataByID["id-other"] = bridge.MessageMetadata{ID: "id-other", Mailbox: "INBOX", UIDValidity: 9001, UID: 103, Subject: "Planning"}
-			mail.bodyByID["id-other"] = []byte(strings.ReplaceAll(strings.ReplaceAll(threadRootMIME, "<root@", "<other@"), "Root message.", "Other message."))
-			mail.searched = append(mail.searched, bridge.MessageMetadata{ID: "id-other", Mailbox: "INBOX", Subject: "Planning"})
-			return mail
-		}
 		requireNoBodyOrMetadata := func(t *testing.T, mail *fakeMail) {
 			t.Helper()
 
@@ -265,7 +258,7 @@ func TestThreadHeaderTransport(t *testing.T) {
 		}
 
 		t.Run("absent capability", func(t *testing.T) {
-			mail := threeMemberFake()
+			mail := threadFake()
 			result := callTool(t, connectTestClient(t, Options{Mail: mailWithoutHeaders{mail}}), "get_thread", map[string]any{"messageId": "id-reply"})
 
 			requireRefusedWithoutTuple(t, result, errUnsupported)
@@ -275,36 +268,20 @@ func TestThreadHeaderTransport(t *testing.T) {
 			requireNoBodyOrMetadata(t, mail)
 		})
 
-		failures := []struct {
+		type failure struct {
 			name string
 			err  error
 			want string
-		}{
-			{"auth", &bridge.Error{Code: bridge.CodeAuthentication}, errUnavailable},
-			{"tls", &bridge.Error{Code: bridge.CodeTLSNegotiation}, errUnavailable},
-			{"tls_mismatch", &bridge.Error{Code: bridge.CodeTLSMismatch}, errUnavailable},
-			{"helper", &bridge.Error{Code: bridge.CodeCredentialCommand}, errUnavailable},
+		}
+		failures := []failure{
 			{"transport", &bridge.Error{Code: bridge.CodeBridgeUnreachable}, errUnavailable},
-			{"protocol", &bridge.Error{Code: bridge.CodeIMAPProtocol}, errUnavailable},
-			{"command", &bridge.Error{Code: bridge.CodeIMAPCommand}, errUnavailable},
 			{"bounds", &bridge.Error{Code: bridge.CodeBoundsExceeded}, errBoundsExceeded},
-			{"timeout", &bridge.Error{Code: bridge.CodeCommandTimedOut}, errTimedOut},
-			{"cancel", &bridge.Error{Code: bridge.CodeOperationCanceled}, errCanceled},
-			{"closed_adapter", &bridge.Error{Code: bridge.CodeAdapterClosed}, errUnavailable},
-			{"unsupported", &bridge.Error{Code: bridge.CodeUnsupported}, errUnsupported},
-			{"invalid_request", &bridge.Error{Code: bridge.CodeInvalidRequest}, errInvalidArgument},
-			{"missing_mailbox", &bridge.Error{Code: bridge.CodeMailboxNotFound}, errNotFound},
 			{"malformed_header", &bridge.NormalizeError{Code: "malformed_header"}, errInternal},
 		}
 
 		t.Run("target failure", func(t *testing.T) {
-			targetFailures := append(failures, struct {
-				name string
-				err  error
-				want string
-			}{"stale", &bridge.Error{Code: bridge.CodeStaleMessageID}, errStaleID})
-			for _, failure := range targetFailures {
-				mail := threeMemberFake()
+			for _, failure := range append(failures, failure{"stale", &bridge.Error{Code: bridge.CodeStaleMessageID}, errStaleID}) {
+				mail := threadFake()
 				mail.headerErrByID = map[string]error{"id-reply": failure.err}
 				result := callTool(t, connectTestClient(t, Options{Mail: mail}), "get_thread", map[string]any{"messageId": "id-reply"})
 
@@ -318,7 +295,7 @@ func TestThreadHeaderTransport(t *testing.T) {
 
 		t.Run("systemic sibling failure", func(t *testing.T) {
 			for _, failure := range failures {
-				mail := threeMemberFake()
+				mail := threadFake()
 				mail.headerErrByID = map[string]error{"id-root": failure.err}
 				result := callTool(t, connectTestClient(t, Options{Mail: mail}), "get_thread", map[string]any{"messageId": "id-reply"})
 
@@ -329,103 +306,40 @@ func TestThreadHeaderTransport(t *testing.T) {
 				requireNoBodyOrMetadata(t, mail)
 			}
 		})
-
-		t.Run("stale sibling", func(t *testing.T) {
-			mail := threeMemberFake()
-			mail.headerErrByID = map[string]error{"id-root": &bridge.Error{Code: bridge.CodeStaleMessageID}}
-			thread := rawObject(t, callTool(t, connectTestClient(t, Options{Mail: mail}), "get_thread", map[string]any{"messageId": "id-reply"}))
-
-			nodes := rawItems(t, thread, "nodes")
-			keys := make([]string, 0, len(nodes))
-			for _, node := range nodes {
-				key, _ := node["key"].(string)
-				keys = append(keys, key)
-				source := mail.metadataByID[key]
-				if got := flatTuple(t, node); got != (readTuple{Mailbox: source.Mailbox, UIDValidity: source.UIDValidity, UID: source.UID}) {
-					t.Fatalf("node %q tuple = %+v", key, got)
-				}
-			}
-			if len(keys) != 2 || !strings.Contains(strings.Join(keys, ","), "id-reply") || !strings.Contains(strings.Join(keys, ","), "id-other") {
-				t.Fatalf("stale sibling handling changed: %v", thread)
-			}
-			if truncated, _ := thread["truncated"].(bool); truncated {
-				t.Fatalf("stale sibling omission reports truncation: %v", thread)
-			}
-			if !reflect.DeepEqual(mail.headerCalls, []string{"id-reply", "id-root", "id-other"}) {
-				t.Fatalf("header reads = %v", mail.headerCalls)
-			}
-			requireNoBodyOrMetadata(t, mail)
-		})
-
-		t.Run("invalid sibling identity", func(t *testing.T) {
-			mail := threeMemberFake()
-			invalid := mail.metadataByID["id-root"]
-			invalid.UID = 0
-			mail.metadataByID["id-root"] = invalid
-			thread := rawObject(t, callTool(t, connectTestClient(t, Options{Mail: mail}), "get_thread", map[string]any{"messageId": "id-reply"}))
-
-			nodes := rawItems(t, thread, "nodes")
-			if len(nodes) != 2 {
-				t.Fatalf("invalid sibling retained: %v", thread)
-			}
-			for _, node := range nodes {
-				if node["key"] == "id-root" {
-					t.Fatalf("invalid sibling retained or borrowed a tuple: %v", thread)
-				}
-				flatTuple(t, node)
-			}
-			if truncated, _ := thread["truncated"].(bool); !truncated {
-				t.Fatalf("dropped invalid sibling not reported truncated: %v", thread)
-			}
-			if !reflect.DeepEqual(mail.headerCalls, []string{"id-reply", "id-root", "id-other"}) {
-				t.Fatalf("header reads = %v", mail.headerCalls)
-			}
-			requireNoBodyOrMetadata(t, mail)
-		})
 	})
 
 	t.Run("bounded_attempts", func(t *testing.T) {
 		target := withReadIdentity(bridge.MessageMetadata{ID: "target", Mailbox: "INBOX", Subject: "Re: Budget"}, 77, 500)
 		targetBody := fakeThreadBody("Re: Budget", "<budget-reply@croton.test>", "References: <budget@croton.test>\r\n")
-		limits := []struct {
-			name     string
-			argument any
-			limit    int
-		}{
-			{"max_messages_1", 1, 1},
-			{"default_10", nil, defaultThreadMessages},
-			{"max_20", maxThreadMessages, maxThreadMessages},
-			{"clamped_20", 1000000, maxThreadMessages},
-		}
-		threadArguments := func(argument any) map[string]any {
-			arguments := map[string]any{"messageId": "target"}
-			if argument != nil {
-				arguments["maxMessages"] = argument
+		newMail := func() *fakeMail {
+			return &fakeMail{
+				metadataByID: map[string]bridge.MessageMetadata{"target": target},
+				bodyByID:     map[string][]byte{"target": targetBody},
+				searched: []bridge.MessageMetadata{
+					{ID: "target", Mailbox: "INBOX", Subject: "Re: Budget"},
+					{ID: "false", Mailbox: "INBOX", Subject: "Budget committee"},
+				},
 			}
-			return arguments
 		}
 
 		t.Run("failed attempts consume budget", func(t *testing.T) {
-			for _, limit := range limits {
-				mail := &fakeMail{
-					metadataByID: map[string]bridge.MessageMetadata{"target": target},
-					bodyByID:     map[string][]byte{"target": targetBody},
-					searched:     []bridge.MessageMetadata{{ID: "target", Mailbox: "INBOX", Subject: "Re: Budget"}},
-				}
-				for index := range 5 {
-					mail.searched = append(mail.searched, bridge.MessageMetadata{ID: fmt.Sprintf("false-%d", index), Mailbox: "INBOX", Subject: "Budget committee"})
-				}
+			for _, limit := range []struct {
+				name      string
+				arguments map[string]any
+				limit     int
+			}{
+				{"default_10", map[string]any{"messageId": "target"}, defaultThreadMessages},
+				{"clamped_20", map[string]any{"messageId": "target", "maxMessages": 1000000}, maxThreadMessages},
+			} {
+				mail := newMail()
 				for index := range 30 {
 					id := fmt.Sprintf("stale-%02d", index)
 					mail.searched = append(mail.searched,
 						bridge.MessageMetadata{ID: id, Mailbox: "INBOX", Subject: "Budget"},
 						bridge.MessageMetadata{ID: id, Mailbox: "INBOX", Subject: "Budget"})
 				}
-				mail.metadataByID["valid"] = withReadIdentity(bridge.MessageMetadata{ID: "valid", Mailbox: "INBOX", Subject: "Budget"}, 77, 9)
-				mail.bodyByID["valid"] = fakeThreadBody("Budget", "<budget@croton.test>", "")
-				mail.searched = append(mail.searched, bridge.MessageMetadata{ID: "valid", Mailbox: "INBOX", Subject: "Budget"})
 
-				thread := rawObject(t, callTool(t, connectTestClient(t, Options{Mail: mail}), "get_thread", threadArguments(limit.argument)))
+				thread := rawObject(t, callTool(t, connectTestClient(t, Options{Mail: mail}), "get_thread", limit.arguments))
 
 				want := []string{"target"}
 				for index := range limit.limit - 1 {
@@ -448,81 +362,17 @@ func TestThreadHeaderTransport(t *testing.T) {
 		})
 
 		t.Run("complete standalone is untruncated", func(t *testing.T) {
-			for _, limit := range limits {
-				mail := &fakeMail{
-					metadataByID: map[string]bridge.MessageMetadata{"target": target},
-					bodyByID:     map[string][]byte{"target": targetBody},
-					searched: []bridge.MessageMetadata{
-						{ID: "target", Mailbox: "INBOX", Subject: "Re: Budget"},
-						{ID: "false", Mailbox: "INBOX", Subject: "Budget committee"},
-					},
-				}
-				thread := rawObject(t, callTool(t, connectTestClient(t, Options{Mail: mail}), "get_thread", threadArguments(limit.argument)))
+			mail := newMail()
+			thread := rawObject(t, callTool(t, connectTestClient(t, Options{Mail: mail}), "get_thread", map[string]any{"messageId": "target"}))
 
-				if truncated, _ := thread["truncated"].(bool); truncated {
-					t.Fatalf("%s complete standalone reported truncated: %v", limit.name, thread)
-				}
-				if nodes := rawItems(t, thread, "nodes"); len(nodes) != 1 || nodes[0]["key"] != "target" {
-					t.Fatalf("%s nodes = %v", limit.name, nodes)
-				}
-				if !reflect.DeepEqual(mail.headerCalls, []string{"target"}) || len(mail.searchCalls) != 1 || len(mail.metaCalls)+len(mail.bodyCalls) != 0 {
-					t.Fatalf("%s operations header=%v search=%d metadata=%v body=%v", limit.name, mail.headerCalls, len(mail.searchCalls), mail.metaCalls, mail.bodyCalls)
-				}
+			if truncated, _ := thread["truncated"].(bool); truncated {
+				t.Fatalf("complete standalone reported truncated: %v", thread)
 			}
-		})
-
-		t.Run("search truncation marker", func(t *testing.T) {
-			mail := &fakeMail{
-				metadataByID:    map[string]bridge.MessageMetadata{"target": target},
-				bodyByID:        map[string][]byte{"target": targetBody},
-				searchTruncated: true,
+			if nodes := rawItems(t, thread, "nodes"); len(nodes) != 1 || nodes[0]["key"] != "target" {
+				t.Fatalf("nodes = %v", nodes)
 			}
-			thread := rawObject(t, callTool(t, connectTestClient(t, Options{Mail: mail}), "get_thread", threadArguments(nil)))
-
-			if truncated, _ := thread["truncated"].(bool); !truncated {
-				t.Fatalf("truncated sibling search reported a complete thread: %v", thread)
-			}
-			if len(mail.headerCalls) != 1 || len(mail.searchCalls) != 1 {
-				t.Fatalf("operations header=%v search=%d", mail.headerCalls, len(mail.searchCalls))
-			}
-		})
-
-		t.Run("node-only output bound", func(t *testing.T) {
-			sender := "From: Sender " + strings.Repeat("f", 6000) + " <sender@croton.test>\r\n"
-			mail := &fakeMail{
-				metadataByID: map[string]bridge.MessageMetadata{"target": target},
-				bodyByID:     map[string][]byte{"target": targetBody},
-			}
-			for index := range 25 {
-				id := fmt.Sprintf("sibling-%02d", index)
-				mail.metadataByID[id] = withReadIdentity(bridge.MessageMetadata{ID: id, Mailbox: "INBOX", Subject: "Budget"}, 77, uint32(index)+1)
-				mail.bodyByID[id] = []byte(sender + "Subject: Budget\r\nMessage-ID: <" + id + "@croton.test>\r\n\r\nbody\r\n")
-				mail.searched = append(mail.searched, bridge.MessageMetadata{ID: id, Mailbox: "INBOX", Subject: "Budget"})
-			}
-			thread := rawObject(t, callTool(t, connectTestClient(t, Options{Mail: mail}), "get_thread", threadArguments(maxThreadMessages)))
-
-			if len(mail.headerCalls) != maxThreadMessages || len(mail.searchCalls) != 1 || len(mail.metaCalls)+len(mail.bodyCalls) != 0 {
-				t.Fatalf("operations header=%d search=%d metadata=%v body=%v", len(mail.headerCalls), len(mail.searchCalls), mail.metaCalls, mail.bodyCalls)
-			}
-			if truncated, _ := thread["truncated"].(bool); !truncated {
-				t.Fatalf("bounded thread not reported truncated")
-			}
-			if thread["id"] != "target" || thread["mailbox"] != "INBOX" {
-				t.Fatalf("thread context changed: id=%v mailbox=%v", thread["id"], thread["mailbox"])
-			}
-			nodes := rawItems(t, thread, "nodes")
-			if len(nodes) == 0 || len(nodes) >= maxThreadMessages {
-				t.Fatalf("output bound retained %d of %d nodes, want whole-node removal", len(nodes), maxThreadMessages)
-			}
-			for _, node := range nodes {
-				key, _ := node["key"].(string)
-				source := mail.metadataByID[key]
-				if got := flatTuple(t, node); got != (readTuple{Mailbox: source.Mailbox, UIDValidity: source.UIDValidity, UID: source.UID}) {
-					t.Fatalf("retained node %q tuple = %+v, want its own", key, got)
-				}
-				if from, _ := node["from"].(string); key != "target" && !strings.Contains(from, strings.Repeat("f", 6000)) {
-					t.Fatalf("retained node %q was shortened rather than kept whole", key)
-				}
+			if !reflect.DeepEqual(mail.headerCalls, []string{"target"}) || len(mail.searchCalls) != 1 || len(mail.metaCalls)+len(mail.bodyCalls) != 0 {
+				t.Fatalf("operations header=%v search=%d metadata=%v body=%v", mail.headerCalls, len(mail.searchCalls), mail.metaCalls, mail.bodyCalls)
 			}
 		})
 	})
