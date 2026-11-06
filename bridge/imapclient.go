@@ -70,14 +70,7 @@ type moveSession interface {
 // existing sessions need not implement it. It returns one selected message's
 // metadata and bounded canonical headers from a single header-only FETCH.
 type headerSession interface {
-	UIDFetchHeaders(context.Context, uint32, int) (selectedHeaders, error)
-}
-
-// selectedHeaders is the record of one validated header-only FETCH.
-type selectedHeaders struct {
-	metadata   MessageMetadata
-	headers    CanonicalHeaders
-	truncation Truncation
+	UIDFetchHeaders(context.Context, uint32, int) (MessageHeaders, error)
 }
 
 // listedMailbox is one ordinary LIST entry with its protocol attributes.
@@ -820,9 +813,9 @@ func (session *imapSession) UIDFetchBody(ctx context.Context, uid uint32, limit 
 // and header section exactly once, and the header literal must fit the limit
 // and end at the header terminator; any other shape is refused, aborting the
 // transport when the response framing was left unconsumed.
-func (session *imapSession) UIDFetchHeaders(ctx context.Context, uid uint32, headerLimit int) (selectedHeaders, error) {
+func (session *imapSession) UIDFetchHeaders(ctx context.Context, uid uint32, headerLimit int) (MessageHeaders, error) {
 	if uid == 0 || headerLimit < 1 {
-		return selectedHeaders{}, errorCode(CodeBoundsExceeded)
+		return MessageHeaders{}, errorCode(CodeBoundsExceeded)
 	}
 
 	section := &imap.FetchItemBodySection{Specifier: imap.PartSpecifierHeader, Peek: true}
@@ -892,7 +885,7 @@ func (session *imapSession) UIDFetchHeaders(ctx context.Context, uid uint32, hea
 		return command.Close()
 	})
 	if err != nil {
-		return selectedHeaders{}, err
+		return MessageHeaders{}, err
 	}
 
 	item.uid = uid
@@ -902,14 +895,14 @@ func (session *imapSession) UIDFetchHeaders(ctx context.Context, uid uint32, hea
 // selectedHeaderRecord normalizes a complete header literal with the same
 // bounded canonical rules as message normalization. A literal that does not
 // end at the header terminator is incomplete and is never treated as whole.
-func selectedHeaderRecord(item MessageMetadata, header []byte, headerLimit int) (selectedHeaders, error) {
+func selectedHeaderRecord(item MessageMetadata, header []byte, headerLimit int) (MessageHeaders, error) {
 	if !bytes.HasSuffix(header, []byte("\n\n")) && !bytes.HasSuffix(header, []byte("\r\n\r\n")) && !bytes.Equal(header, []byte("\r\n")) {
-		return selectedHeaders{}, errorCode(CodeIMAPProtocol)
+		return MessageHeaders{}, errorCode(CodeIMAPProtocol)
 	}
 
 	parsed, err := mail.ReadMessage(bytes.NewReader(header))
 	if err != nil {
-		return selectedHeaders{}, errorCode(CodeIMAPProtocol)
+		return MessageHeaders{}, errorCode(CodeIMAPProtocol)
 	}
 	applyHeaderMetadata(&item, parsed.Header)
 
@@ -917,16 +910,16 @@ func selectedHeaderRecord(item MessageMetadata, header []byte, headerLimit int) 
 	bounded, countTruncated := boundedHeaderCount(header, limits.MaxHeaderCount)
 	counted, err := mail.ReadMessage(bytes.NewReader(bounded))
 	if err != nil {
-		return selectedHeaders{}, &NormalizeError{Code: errorCodeMalformedHeader}
+		return MessageHeaders{}, &NormalizeError{Code: errorCodeMalformedHeader}
 	}
 
 	headers, truncation, err := canonicalHeaders(counted.Header, bounded, limits)
 	if err != nil {
-		return selectedHeaders{}, err
+		return MessageHeaders{}, err
 	}
 	truncation.HeaderCount = countTruncated
 
-	return selectedHeaders{metadata: item, headers: headers, truncation: truncation}, nil
+	return MessageHeaders{Metadata: item, Headers: headers, Truncation: truncation}, nil
 }
 
 func (session *imapSession) abortFetch(command *imapclient.FetchCommand) {

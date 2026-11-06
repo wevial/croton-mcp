@@ -107,12 +107,11 @@ func (adapter *Adapter) GetMessageHeaders(ctx context.Context, identifier string
 			return err
 		}
 
-		metadata := record.metadata
-		metadata.ID = identifier
-		metadata.Mailbox = payload.Mailbox
-		metadata.UIDValidity = payload.UIDValidity
-		metadata.UID = payload.UID
-		result = MessageHeaders{Metadata: metadata, Headers: record.headers, Truncation: record.truncation}
+		result = record
+		result.Metadata.ID = identifier
+		result.Metadata.Mailbox = payload.Mailbox
+		result.Metadata.UIDValidity = payload.UIDValidity
+		result.Metadata.UID = payload.UID
 		return nil
 	})
 	if err != nil {

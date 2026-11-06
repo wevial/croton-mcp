@@ -202,20 +202,16 @@ func headerTestID(t *testing.T, adapter *Adapter, uidValidity, uid uint32) strin
 	return identifier
 }
 
-func headerBlock(fields ...string) string {
-	return strings.Join(fields, "\r\n") + "\r\n\r\n"
-}
-
 // paddedHeader returns a header block of exactly size bytes ending in the
 // header terminator, padding with one X-Pad field.
 func paddedHeader(t *testing.T, size int, fields ...string) string {
 	t.Helper()
 
-	base := headerBlock(append(fields, "X-Pad: ")...)
+	base := metadataHeader(append(fields, "X-Pad: ")...)
 	if size < len(base) {
 		t.Fatalf("padded header size %d below base %d", size, len(base))
 	}
-	padded := headerBlock(append(fields, "X-Pad: "+strings.Repeat("p", size-len(base)))...)
+	padded := metadataHeader(append(fields, "X-Pad: "+strings.Repeat("p", size-len(base)))...)
 	if len(padded) != size {
 		t.Fatalf("padded header is %d bytes, want %d", len(padded), size)
 	}
@@ -251,7 +247,7 @@ func requireHeaderRefusal(t *testing.T, name string, result MessageHeaders, err 
 }
 
 // replyHeader is the full readable header used for identity checks.
-var replyHeader = headerBlock(
+var replyHeader = metadataHeader(
 	"From: =?utf-8?q?R=C3=A9ply_Sender?= <reply@croton.test>",
 	"To: Reader <reader@croton.test>",
 	"Subject: Re: selected headers",
@@ -330,7 +326,7 @@ func TestMessageHeadersAdapter(t *testing.T) {
 			t.Fatalf("old ID opened %d sessions", *opened)
 		}
 
-		firstScript := headerScript(` FLAGS (\Seen)`, headerBlock("Subject: first attempt", "Message-ID: <first@croton.test>"))
+		firstScript := headerScript(` FLAGS (\Seen)`, metadataHeader("Subject: first attempt", "Message-ID: <first@croton.test>"))
 		firstScript.drop = true
 		first := startHeaderSession(t, firstScript)
 		second := startHeaderSession(t, headerScript(" FLAGS ()", replyHeader))
@@ -395,7 +391,7 @@ func TestMessageHeadersAdapter(t *testing.T) {
 			for len(lines) < count-1 {
 				lines = append(lines, fmt.Sprintf("X-Field-%03d: value", len(lines)))
 			}
-			return headerBlock(append(lines, last)...)
+			return metadataHeader(append(lines, last)...)
 		}
 		result, err, _ = run(t, 12, headerScript(" FLAGS ()", fields(100, "In-Reply-To: <parent@croton.test>")))
 		if err != nil || result.Headers.InReplyTo != "<parent@croton.test>" || result.Truncation.HeaderCount {
@@ -411,7 +407,7 @@ func TestMessageHeadersAdapter(t *testing.T) {
 			for index := range identifiers {
 				identifiers[index] = fmt.Sprintf("<ref-%02d@croton.test>", index)
 			}
-			return headerBlock("Message-ID: <refs@croton.test>", "References: "+strings.Join(identifiers, " ")), identifiers
+			return metadataHeader("Message-ID: <refs@croton.test>", "References: "+strings.Join(identifiers, " ")), identifiers
 		}
 		header, identifiers := references(50)
 		result, err, _ = run(t, 14, headerScript(" FLAGS ()", header))
