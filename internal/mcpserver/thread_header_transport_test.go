@@ -297,11 +297,14 @@ func TestThreadHeaderTransport(t *testing.T) {
 			{"unsupported", &bridge.Error{Code: bridge.CodeUnsupported}, errUnsupported},
 			{"invalid_request", &bridge.Error{Code: bridge.CodeInvalidRequest}, errInvalidArgument},
 			{"missing_mailbox", &bridge.Error{Code: bridge.CodeMailboxNotFound}, errNotFound},
-			{"malformed_header", &bridge.NormalizeError{Code: "malformed_header"}, errInternal},
+			{"malformed_mime", &bridge.NormalizeError{Code: "malformed_mime"}, errInternal},
 		}
 
 		t.Run("target failure", func(t *testing.T) {
-			for _, failure := range append(failures, failure{"stale", &bridge.Error{Code: bridge.CodeStaleMessageID}, errStaleID}) {
+			targetFailures := append(failures,
+				failure{"stale", &bridge.Error{Code: bridge.CodeStaleMessageID}, errStaleID},
+				failure{"malformed_header", &bridge.NormalizeError{Code: "malformed_header"}, errUnavailable})
+			for _, failure := range targetFailures {
 				mail := threadFake()
 				mail.headerErrByID = map[string]error{"id-reply": failure.err}
 				result := callTool(t, connectTestClient(t, Options{Mail: mail}), "get_thread", map[string]any{"messageId": "id-reply"})
