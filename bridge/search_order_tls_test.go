@@ -114,8 +114,9 @@ func TestSearchOrderTLS(t *testing.T) {
 // set behind a literal TAG, after an extension value carrying a nested ALL or
 // after an extension value the observer cannot walk or after a correlator
 // that directly follows the response name, and a duplicate SEARCH or ESEARCH
-// behind a status whose text ends in a literal marker or a lone LF, stays a
-// code-only refusal in both TLS modes.
+// behind a status whose text ends in a literal marker or a lone LF, including
+// a status name directly followed by its text, stays a code-only refusal in
+// both TLS modes.
 func runSearchOrderTLSRefusals(t *testing.T) {
 	for _, test := range []struct {
 		name     string
@@ -137,6 +138,8 @@ func runSearchOrderTLSRefusals(t *testing.T) {
 		{name: "implicit_tls_duplicate_search_behind_lone_lf_status", fake: testkit.ImplicitTLS, mode: bridge.TLSModeImplicit, response: "* OK notice\n* SEARCH 101 101\r\n* SEARCH"},
 		{name: "starttls_duplicate_esearch_behind_lone_lf_status", fake: testkit.StartTLS, mode: bridge.TLSModeStartTLS, response: "* OK notice\n* ESEARCH (TAG \"{TAG}\") UID ALL 101,101\r\n* SEARCH"},
 		{name: "implicit_tls_duplicate_esearch_behind_lone_lf_status", fake: testkit.ImplicitTLS, mode: bridge.TLSModeImplicit, response: "* OK notice\n* ESEARCH (TAG \"{TAG}\") UID ALL 101,101\r\n* SEARCH"},
+		{name: "starttls_duplicate_after_unspaced_status_literal_marker", fake: testkit.StartTLS, mode: bridge.TLSModeStartTLS, response: "* OK(notice) {18}\r\n* SEARCH 101 101"},
+		{name: "implicit_tls_duplicate_after_unspaced_status_literal_marker", fake: testkit.ImplicitTLS, mode: bridge.TLSModeImplicit, response: "* OK(notice) {18}\r\n* SEARCH 101 101"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()

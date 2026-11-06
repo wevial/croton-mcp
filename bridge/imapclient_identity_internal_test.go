@@ -172,3 +172,52 @@ func TestSearchObserverFailsClosedOnLinesItCannotWalk(t *testing.T) {
 		})
 	}
 }
+
+func TestSearchObserverClassifiesDivergenceProneFormsAsGoIMAPDoes(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		input      string
+		duplicate  bool
+		incomplete bool
+	}{
+		{name: "OK status name before parenthesis then literal marker", input: "* OK(notice) {18}\r\n* SEARCH 101 101\r\n", duplicate: true},
+		{name: "OK status name before parenthesis then distinct SEARCH", input: "* OK(notice) {18}\r\n* SEARCH 101 102\r\n"},
+		{name: "NO status name before parenthesis", input: "* NO(notice) {18}\r\n* SEARCH 101 101\r\n", duplicate: true},
+		{name: "numbered BAD status name before parenthesis", input: "* 3 BAD(notice) {18}\r\n* SEARCH 101 101\r\n", duplicate: true},
+		{name: "BYE status name before parenthesis", input: "* BYE(notice) {18}\r\n* SEARCH 101 101\r\n", duplicate: true},
+		{name: "PREAUTH status name before parenthesis", input: "* PREAUTH(notice) {18}\r\n* SEARCH 101 101\r\n", duplicate: true},
+		{name: "lowercase status name before parenthesis", input: "* ok(notice) {18}\r\n* SEARCH 101 101\r\n", duplicate: true},
+		{name: "status name joined to bracket", input: "* OK[ALERT] notice\r\n* SEARCH 101\r\n", incomplete: true},
+		{name: "status code closed before literal marker", input: "* OK [ALERT] notice {18}\r\n* SEARCH 101 101\r\n", duplicate: true},
+		{name: "status code not closed on its line", input: "* OK [X {5}\r\n* SEARCH 101\r\n]\r\n", incomplete: true},
+		{name: "status text literal marker", input: "* OK notice {18}\r\n* SEARCH 101 101\r\n", duplicate: true},
+		{name: "tagged status text literal marker", input: "T0 OK notice {18}\r\n* SEARCH 101 101\r\n", duplicate: true},
+		{name: "continuation text literal marker", input: "+ notice {18}\r\n* SEARCH 101 101\r\n", duplicate: true},
+		{name: "ESEARCH UID extension name before parenthesis", input: "* ESEARCH (TAG \"T1\") UID X(F ALL 101) ALL 101,101\r\n", incomplete: true},
+		{name: "ESEARCH extension name before parenthesis without UID", input: "* ESEARCH (TAG \"T1\") X(F ALL 101) ALL 101,101\r\n", incomplete: true},
+		{name: "adjacent distinct SEARCH lines", input: "* SEARCH 101\r\n* SEARCH 102\r\n"},
+		{name: "adjacent repeated SEARCH lines", input: "* SEARCH 101\r\n* SEARCH 101\r\n", duplicate: true},
+		{name: "repeated UID within SEARCH line", input: "* SEARCH 101 101\r\n", duplicate: true},
+		{name: "ESEARCH UID distinct ALL", input: "* ESEARCH (TAG \"T1\") UID ALL 101:102\r\n"},
+		{name: "ESEARCH UID repeated ALL", input: "* ESEARCH (TAG \"T1\") UID ALL 101,101\r\n", duplicate: true},
+		{name: "ESEARCH distinct ALL without UID", input: "* ESEARCH (TAG \"T1\") ALL 101:102\r\n"},
+		{name: "ESEARCH repeated ALL without UID", input: "* ESEARCH (TAG \"T1\") ALL 101,101\r\n", duplicate: true},
+		{name: "untagged marker without space", input: "*SEARCH 101\r\n", incomplete: true},
+		{name: "unknown untagged type", input: "* XSEARCH 101 101\r\n", incomplete: true},
+		{name: "message number beyond uint32", input: "* 4294967296 EXISTS\r\n", incomplete: true},
+		{name: "numbered data", input: "* 3 EXISTS\r\n* SEARCH 101\r\n"},
+		{name: "FETCH literal payload", input: "* 1 FETCH (BODY[] {18}\r\n* SEARCH 101 101\r\n)\r\n* SEARCH 101\r\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			connection := &readBudgetConn{}
+			connection.beginSearch(maxSearchResponseBytes)
+
+			connection.observeSearchResponseLocked(test.input)
+
+			observed := connection.endSearch()
+			if observed.duplicate != test.duplicate || observed.incomplete != test.incomplete {
+				t.Fatalf("duplicate, incomplete = %v, %v, want %v, %v", observed.duplicate, observed.incomplete, test.duplicate, test.incomplete)
+			}
+		})
+	}
+}

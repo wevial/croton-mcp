@@ -12,6 +12,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	imap "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
@@ -944,30 +945,39 @@ func (connection *readBudgetConn) observeSearchResponseLocked(input string) {
 		if end < 0 {
 			return
 		}
-		line := connection.searchPending + strings.TrimSuffix(connection.searchBuffer[:end], "\r")
+		pending := connection.searchPending
+		line := pending + strings.TrimSuffix(connection.searchBuffer[:end], "\r")
 		connection.searchBuffer = connection.searchBuffer[end+1:]
 		connection.searchPending = ""
 		if strings.IndexByte(line, '\r') >= 0 {
 			connection.searchIncomplete = true
 		}
 
-		// go-imap reads status and continuation text to CRLF, so a literal
-		// marker there is ordinary text, unless the line resumes a response
-		// after its literal. go-imap also tolerates one space before CRLF.
+		// A line that resumes a response after its literal belongs to that
+		// response, so only a new response, or an ESEARCH rejoined with its
+		// leading text, is classified. go-imap reads status and continuation
+		// text to CRLF, so a literal marker there is ordinary text. go-imap
+		// also tolerates one space before CRLF.
+		kind, rest := imapLineData, ""
+		if !connection.searchContinues || pending != "" {
+			kind, rest = classifyIMAPResponse(line)
+		}
 		literalBytes, hasLiteral := trailingIMAPLiteralSize(strings.TrimSuffix(line, " "))
-		if !connection.searchContinues && imapTextResponse(line) {
+		if kind == imapLineText {
 			hasLiteral = false
 		}
 		connection.searchContinues = hasLiteral
 		if hasLiteral {
 			connection.searchLiteralBytes = literalBytes
 		}
-		name, rest := imapResponseName(line)
-		switch name {
-		case "SEARCH":
+
+		switch kind {
+		case imapLineUnclassified:
+			connection.searchIncomplete = true
+		case imapLineSearch:
 			connection.searchResponseSeen = true
 			connection.observeSearchUIDsLocked(rest)
-		case "ESEARCH":
+		case imapLineESearch:
 			connection.eSearchResponseSeen = true
 			if hasLiteral {
 				// The response continues after the literal, so judge it once
@@ -987,22 +997,85 @@ func (connection *readBudgetConn) observeSearchResponseLocked(input string) {
 	}
 }
 
-// imapResponseName returns the uppercased type of an untagged response and
-// the text after it, read as go-imap reads them: an atom after "* ", behind
-// an optional message number. The type ends at the first non-atom character,
-// so "* ESEARCH(TAG ...)" names ESEARCH just as "* ESEARCH (TAG ...)" does.
-func imapResponseName(line string) (string, string) {
-	rest, untagged := strings.CutPrefix(line, "* ")
+// imapLineKind is how go-imap reads one response line.
+type imapLineKind int
+
+const (
+	// imapLineUnclassified is a line the observer cannot read exactly as
+	// go-imap does, so the command fails closed.
+	imapLineUnclassified imapLineKind = iota
+	// imapLineText is a continuation request or a status response, read as
+	// text up to CRLF.
+	imapLineText
+	// imapLineData is untagged data that may carry literals.
+	imapLineData
+	imapLineSearch
+	imapLineESearch
+)
+
+// classifyIMAPResponse classifies the first line of one response and returns
+// the text after an untagged SEARCH or ESEARCH name, read as go-imap reads
+// them: "+" starts a continuation request; otherwise a tag atom or "*", one
+// space and a type atom, behind an optional uint32 message number when
+// untagged. The type ends at the first non-atom character, so "* OK(notice)"
+// is an OK status and "* ESEARCH(TAG ...)" names ESEARCH. Any form go-imap
+// does not read this way, including an unknown type, is unclassified.
+func classifyIMAPResponse(line string) (imapLineKind, string) {
+	if strings.HasPrefix(line, "+") {
+		return imapLineText, ""
+	}
+
+	rest, untagged := strings.CutPrefix(line, "*")
 	if !untagged {
-		return "", line
+		var tag string
+		if tag, rest = eSearchAtom(line); tag == "" {
+			return imapLineUnclassified, ""
+		}
 	}
-
+	rest, spaced := strings.CutPrefix(rest, " ")
+	if !spaced {
+		return imapLineUnclassified, ""
+	}
 	name, rest := eSearchAtom(rest)
-	if name != "" && strings.Trim(name, "0123456789") == "" && strings.HasPrefix(rest, " ") {
-		name, rest = eSearchAtom(rest[1:])
+	if untagged && name != "" && name[0] >= '0' && name[0] <= '9' {
+		if _, err := strconv.ParseUint(name, 10, 32); err != nil {
+			return imapLineUnclassified, ""
+		}
+		if rest, spaced = strings.CutPrefix(rest, " "); !spaced {
+			return imapLineUnclassified, ""
+		}
+		name, rest = eSearchAtom(rest)
+	}
+	if name == "" {
+		return imapLineUnclassified, ""
 	}
 
-	return strings.ToUpper(name), rest
+	switch name = strings.ToUpper(name); {
+	case !untagged, name == "OK", name == "PREAUTH", name == "NO", name == "BAD", name == "BYE":
+		return imapStatusText(rest), ""
+	case name == "SEARCH":
+		return imapLineSearch, rest
+	case name == "ESEARCH":
+		return imapLineESearch, rest
+	}
+	switch name {
+	case "ID", "CAPABILITY", "ENABLED", "NAMESPACE", "FLAGS", "EXISTS", "RECENT", "LIST", "STATUS",
+		"FETCH", "EXPUNGE", "SORT", "THREAD", "METADATA", "QUOTA", "QUOTAROOT", "MYRIGHTS", "ACL":
+		return imapLineData, ""
+	}
+	return imapLineUnclassified, ""
+}
+
+// imapStatusText classifies the text after a status name. go-imap discards a
+// response code up to its closing bracket even across lines, so a code that
+// does not close on its own line is unclassified; any other status text is
+// read to CRLF.
+func imapStatusText(rest string) imapLineKind {
+	if strings.HasPrefix(rest, " [") && !strings.Contains(rest, "]") {
+		return imapLineUnclassified
+	}
+
+	return imapLineText
 }
 
 // observeSearchUIDsLocked records the numbers of one SEARCH line. go-imap
@@ -1150,7 +1223,7 @@ func isIMAPAtomChar(character byte) bool {
 	case '(', ')', '{', ' ', '%', '*', '"', '\\', ']':
 		return false
 	default:
-		return character > 0x1f && character != 0x7f
+		return !unicode.IsControl(rune(character))
 	}
 }
 
@@ -1203,28 +1276,6 @@ func correlatorEnd(rest string) int {
 		}
 	}
 	return -1
-}
-
-// imapTextResponse reports whether line starts a response go-imap reads as
-// text up to CRLF: a continuation request, a tagged status or an untagged,
-// optionally numbered, OK, PREAUTH, NO, BAD or BYE.
-func imapTextResponse(line string) bool {
-	fields := strings.SplitN(line, " ", 4)
-	if fields[0] != "*" {
-		return true
-	}
-
-	if len(fields) > 2 && fields[1] != "" && strings.Trim(fields[1], "0123456789") == "" {
-		fields = fields[1:]
-	}
-	if len(fields) < 2 {
-		return false
-	}
-	switch strings.ToUpper(fields[1]) {
-	case "OK", "PREAUTH", "NO", "BAD", "BYE":
-		return true
-	}
-	return false
 }
 
 func trailingIMAPLiteralSize(line string) (uint64, bool) {
