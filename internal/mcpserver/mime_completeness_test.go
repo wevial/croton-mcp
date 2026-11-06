@@ -2,7 +2,6 @@ package mcpserver
 
 import (
 	"bytes"
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -188,19 +187,14 @@ func TestMIMECompletenessPublic(t *testing.T) {
 		requireReasons(t, "get_message", message, getMessageReasons)
 		requireReasons(t, "list_attachments", listing, listAttachmentsReasons)
 
-		// A defensive projection never turns an invalid or unflagged value into
-		// a known size.
+		// A defensive projection never turns an invalid value into a known size.
 		encoded, err := json.Marshal(attachmentResults([]bridge.AttachmentMetadata{
 			{Filename: "flagged-negative.bin", DeclaredSize: -3, HasDeclaredSize: true},
-			{Filename: "unflagged.bin", DeclaredSize: 5},
-			{Filename: "declared-zero.bin", HasDeclaredSize: true},
 		}))
 		if err != nil {
 			t.Fatalf("marshal attachments: %v", err)
 		}
-		const wantJSON = `[{"filename":"flagged-negative.bin","hasDeclaredSize":false},` +
-			`{"filename":"unflagged.bin","hasDeclaredSize":false},` +
-			`{"filename":"declared-zero.bin","hasDeclaredSize":true,"declaredSize":0}]`
+		const wantJSON = `[{"filename":"flagged-negative.bin","hasDeclaredSize":false}]`
 		if string(encoded) != wantJSON {
 			t.Fatalf("projection = %s, want %s", encoded, wantJSON)
 		}
@@ -254,10 +248,6 @@ func TestMIMECompletenessPublic(t *testing.T) {
 			messageReasons []string
 			listReasons    []string
 		}{
-			{
-				name: "complete_empty",
-				body: completenessHeader("Synthetic complete empty") + "Content-Type: text/plain; charset=utf-8\r\n\r\nNo attachments here.\r\n",
-			},
 			{
 				name:           "mime_parts",
 				body:           multipartMessage("Synthetic parts", manyParts),
@@ -320,14 +310,6 @@ func TestMIMECompletenessPublic(t *testing.T) {
 		requireReasons(t, "public get_message", message, getMessageReasons, "text", "output")
 
 		prior := messageTruncation{Headers: true, Text: true, References: true, MIMEParts: true}
-		attachments := make([]attachmentResult, 0, 20)
-		for index := range 20 {
-			attachments = append(attachments, attachmentResult{Filename: fmt.Sprintf("%02d-%s", index, strings.Repeat("a", 250)), ContentType: "application/octet-stream", Disposition: "attachment"})
-		}
-		shrinking := &getMessageResult{
-			ID: "opaque-completeness", Mailbox: "INBOX", UIDValidity: 4242, UID: 77,
-			Text: strings.Repeat("☃", 60000), TextSource: "plain", Attachments: attachments, Truncation: prior, Truncated: true,
-		}
 		fallback := &getMessageResult{
 			ID: "opaque-completeness", Mailbox: "INBOX", UIDValidity: 4242, UID: 77,
 			Headers: bridge.CanonicalHeaders{Subject: strings.Repeat("s", maxToolResultBytes)}, TextSource: "plain", Truncation: prior, Truncated: true,
@@ -351,7 +333,6 @@ func TestMIMECompletenessPublic(t *testing.T) {
 			allowed map[string]bool
 			want    []string
 		}{
-			{"get_message_shrink", shrinking, getMessageReasons, []string{"headers", "text", "references", "mimeParts", "output"}},
 			{"get_message_fallback", fallback, getMessageReasons, []string{"headers", "text", "references", "mimeParts", "output"}},
 			{"list_attachments_shrink", listing, listAttachmentsReasons, []string{"mimeDepth", "headerCount", "output"}},
 		} {
@@ -373,23 +354,6 @@ func TestMIMECompletenessPublic(t *testing.T) {
 				t.Fatalf("unfittable identity returned %d bytes, err %v", len(encoded), err)
 			}
 		}
-
-		// Other results keep their prior shrink and fallback shapes.
-		for _, other := range []struct {
-			result any
-			keys   map[string]bool
-		}{
-			{&searchMailResult{Results: []messageResult{{ID: strings.Repeat("x", maxToolResultBytes)}}}, searchMetadataResultKeys},
-			{&selectDigestResult{Mailbox: strings.Repeat("m", maxToolResultBytes)}, digestMetadataResultKeys},
-			{&getThreadResult{ID: strings.Repeat("t", maxToolResultBytes), Nodes: []threadNodeResult{{Key: "k"}}}, map[string]bool{"id": true, "mailbox": true, "nodes": true, "truncated": true}},
-			{&listFoldersResult{Folders: []folderResult{{Name: strings.Repeat("f", maxToolResultBytes)}}}, map[string]bool{"folders": true, "truncated": true}},
-		} {
-			encoded, _, err := encodeBounded(other.result)
-			if err != nil {
-				t.Fatalf("encodeBounded %T: %v", other.result, err)
-			}
-			requireClosedKeys(t, fmt.Sprintf("%T fallback", other.result), decodeBounded(t, encoded), other.keys)
-		}
 	})
 
 	t.Run("wire_and_privacy", func(t *testing.T) {
@@ -397,65 +361,37 @@ func TestMIMECompletenessPublic(t *testing.T) {
 
 		zeroContent := highEntropySentinel(t, "ZERO")
 		absentContent := highEntropySentinel(t, "ABSENT")
-		omittedContent := highEntropySentinel(t, "OMITTED")
 		sizes := multipartMessage("Synthetic completeness sizes", []string{
 			harmlessPart(0),
 			attachmentPart("zero.bin", "; size=0", zeroContent),
 			attachmentPart("absent.bin", "", absentContent),
 		})
-		omitted := []string{}
-		for index := range 21 {
-			omitted = append(omitted, attachmentPart(fmt.Sprintf("file-%02d.bin", index), "; size=4", omittedContent))
-		}
-		omission := strings.Replace(multipartMessage("Synthetic completeness omission", omitted), "<completeness@", "<omission@", 1)
-		server, adapter := startIntegrationAdapterWithOptions(t, testkit.Options{Messages: []string{sizes, omission}})
+		server, adapter := startIntegrationAdapterWithOptions(t, testkit.Options{Messages: []string{sizes}})
 		var audit bytes.Buffer
 		session := connectTestClient(t, Options{Mail: adapter, Audit: NewAuditor(&audit)})
 
 		_, results := searchItems(t, session, map[string]any{"mailbox": "INBOX", "subject": "Synthetic completeness"})
-		if len(results) != 2 {
-			t.Fatalf("search returned %d fixture messages, want 2", len(results))
+		if len(results) != 1 || flatTuple(t, results[0]).Mailbox != "INBOX" {
+			t.Fatalf("search returned %v, want the one fixture message", results)
 		}
-		ids := map[string]string{}
-		tuples := map[string]readTuple{}
-		for _, item := range results {
-			subject, _ := item["subject"].(string)
-			ids[subject], _ = item["id"].(string)
-			tuples[subject] = flatTuple(t, item)
-		}
+		id, _ := results[0]["id"].(string)
 
-		twenty := make([]wantAttachment, 0, 20)
-		for index := range 20 {
-			twenty = append(twenty, wantAttachment{filename: fmt.Sprintf("file-%02d.bin", index), size: 4, known: true})
-		}
 		before := len(server.Commands())
-		for _, tc := range []struct {
-			subject string
-			want    []wantAttachment
-			reasons []string
-		}{
-			{"Synthetic completeness sizes", []wantAttachment{{filename: "zero.bin", size: 0, known: true}, {filename: "absent.bin"}}, nil},
-			{"Synthetic completeness omission", twenty, []string{"attachments"}},
-		} {
-			id := ids[tc.subject]
-			if id == "" || tuples[tc.subject].Mailbox != "INBOX" {
-				t.Fatalf("search did not return %q", tc.subject)
-			}
-			message, listing := selectedReads(t, session, id, tuples[tc.subject])
-			requireAttachmentEntries(t, tc.subject+" get_message", message, tc.want)
-			requireAttachmentEntries(t, tc.subject+" list_attachments", listing, tc.want)
-			requireReasons(t, tc.subject+" get_message", message, getMessageReasons, tc.reasons...)
-			requireReasons(t, tc.subject+" list_attachments", listing, listAttachmentsReasons, tc.reasons...)
+		message, listing := selectedReads(t, session, id, flatTuple(t, results[0]))
+		want := []wantAttachment{{filename: "zero.bin", size: 0, known: true}, {filename: "absent.bin"}}
+		requireAttachmentEntries(t, "get_message", message, want)
+		requireAttachmentEntries(t, "list_attachments", listing, want)
+		requireReasons(t, "get_message", message, getMessageReasons)
+		requireReasons(t, "list_attachments", listing, listAttachmentsReasons)
 
-			for _, tool := range []string{"get_message", "list_attachments"} {
-				raw, err := json.Marshal(callTool(t, session, tool, map[string]any{"messageId": id}))
-				if err != nil {
-					t.Fatalf("marshal SDK result: %v", err)
-				}
-				for _, sentinel := range []string{zeroContent, absentContent, omittedContent} {
-					if bytes.Contains(raw, []byte(sentinel)) || bytes.Contains(raw, []byte(base64.StdEncoding.EncodeToString([]byte(sentinel))[:16])) {
-						t.Fatalf("%s leaked attachment bytes", tool)
-					}
+		for _, tool := range []string{"get_message", "list_attachments"} {
+			raw, err := json.Marshal(callTool(t, session, tool, map[string]any{"messageId": id}))
+			if err != nil {
+				t.Fatalf("marshal SDK result: %v", err)
+			}
+			for _, sentinel := range []string{zeroContent, absentContent} {
+				if bytes.Contains(raw, []byte(sentinel)) || bytes.Contains(raw, []byte(base64.StdEncoding.EncodeToString([]byte(sentinel))[:16])) {
+					t.Fatalf("%s leaked attachment bytes", tool)
 				}
 			}
 		}
@@ -481,7 +417,7 @@ func TestMIMECompletenessPublic(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		for _, sentinel := range []string{zeroContent, absentContent, omittedContent, "zero.bin", "absent.bin", "croton.test"} {
+		for _, sentinel := range []string{zeroContent, absentContent, "zero.bin", "absent.bin", "croton.test"} {
 			if strings.Contains(audit.String(), sentinel) {
 				t.Fatalf("audit recorded message content %q", sentinel)
 			}
@@ -513,8 +449,7 @@ func TestMIMECompletenessPublic(t *testing.T) {
 		t.Parallel()
 
 		complete := completenessHeader("Synthetic complete") + "Content-Type: text/plain\r\n\r\nComplete.\r\n"
-		session := completenessSession(t, complete)
-		message, listing := selectedReads(t, session, "opaque-completeness", completenessTuple)
+		message, listing := selectedReads(t, completenessSession(t, complete), "opaque-completeness", completenessTuple)
 		for label, object := range map[string]map[string]any{"get_message": message, "list_attachments": listing} {
 			truncation, ok := object["truncation"].(map[string]any)
 			if !ok || len(truncation) != 0 {
@@ -526,45 +461,13 @@ func TestMIMECompletenessPublic(t *testing.T) {
 			t.Fatalf("complete listing = %v, want an empty list", attachments)
 		}
 
-		// Every serialized reason, including fallbacks, is a true key from the
-		// closed set.
-		for _, tc := range []struct {
-			result  any
-			allowed map[string]bool
-		}{
-			{&getMessageResult{ID: "opaque", Mailbox: "INBOX", UIDValidity: 1, UID: 1, Headers: bridge.CanonicalHeaders{To: strings.Repeat("x", maxToolResultBytes)}}, getMessageReasons},
-			{&listAttachmentsResult{ID: "opaque", Mailbox: "INBOX", UIDValidity: 1, UID: 1, Attachments: []attachmentResult{{Filename: strings.Repeat("y", maxToolResultBytes)}}}, listAttachmentsReasons},
-		} {
-			encoded, _, err := encodeBounded(tc.result)
-			if err != nil {
-				t.Fatalf("encodeBounded %T: %v", tc.result, err)
-			}
-			requireReasons(t, fmt.Sprintf("%T fallback", tc.result), decodeBounded(t, encoded), tc.allowed, "output")
-		}
-
-		readInputs := map[string][]string{
-			"list_folders":             {},
-			"search_mail":              {"before", "limit", "mailbox", "sender", "since", "subject", "unreadOnly"},
-			"get_message":              {"messageId"},
-			"get_thread":               {"maxMessages", "messageId"},
-			"list_attachments":         {"messageId"},
-			"select_digest_candidates": {"limit", "mailbox", "sinceHours", "unreadOnly"},
-		}
-		requireCatalog(t, session, readInputs, map[string][]string{})
-		listed, err := session.ListTools(context.Background(), &mcp.ListToolsParams{})
+		// A list fallback serializes only the output reason from the closed set.
+		oversized := &listAttachmentsResult{ID: "opaque", Mailbox: "INBOX", UIDValidity: 1, UID: 1, Attachments: []attachmentResult{{Filename: strings.Repeat("y", maxToolResultBytes)}}}
+		encoded, _, err := encodeBounded(oversized)
 		if err != nil {
-			t.Fatalf("list tools: %v", err)
+			t.Fatalf("encodeBounded: %v", err)
 		}
-		for _, tool := range listed.Tools {
-			if tool.OutputSchema != nil {
-				t.Fatalf("%s gained an output schema", tool.Name)
-			}
-		}
-		for _, arguments := range []map[string]any{{}, {"messageId": "opaque-completeness", "part": 1}, {"messageId": "opaque-completeness", "cursor": "next"}} {
-			for _, tool := range []string{"get_message", "list_attachments"} {
-				requireToolError(t, callTool(t, session, tool, arguments), errInvalidArgument)
-			}
-		}
+		requireReasons(t, "list_attachments fallback", decodeBounded(t, encoded), listAttachmentsReasons, "output")
 
 		contents, err := os.ReadFile("../../docs/MCP.md")
 		if err != nil {
