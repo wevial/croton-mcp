@@ -54,9 +54,6 @@ func threadFieldBlock(header []byte) []byte {
 	block := make([]byte, 0, len(header))
 	for _, slot := range slots {
 		block = append(block, slot...)
-		if len(slot) > 0 && slot[len(slot)-1] != '\n' {
-			block = append(block, "\r\n"...)
-		}
 	}
 
 	return append(block, "\r\n"...)
