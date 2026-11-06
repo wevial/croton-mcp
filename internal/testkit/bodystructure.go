@@ -310,7 +310,6 @@ func renderBodyString(builder *strings.Builder, value string) {
 	builder.WriteByte('"')
 }
 
-// structureFetchItem is one parsed, supported FETCH data item.
 type structureFetchItem struct {
 	name    string // UID, FLAGS, RFC822.SIZE, BODYSTRUCTURE, HEADER or BODY
 	partial bool
