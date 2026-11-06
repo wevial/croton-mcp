@@ -88,9 +88,8 @@ func (mail *fakeMail) GetMessageBody(ctx context.Context, identifier string) ([]
 	return mail.body, nil
 }
 
-// GetMessageHeaders is the deterministic selected header-only read. It
-// records only headerCalls, never body or metadata calls, and derives the
-// canonical headers of the same fixture message without returning its body.
+// GetMessageHeaders derives the fixture message's canonical headers without
+// recording a body or metadata call.
 func (mail *fakeMail) GetMessageHeaders(ctx context.Context, identifier string) (bridge.MessageHeaders, error) {
 	mail.headerCalls = append(mail.headerCalls, identifier)
 	if mail.err != nil {
