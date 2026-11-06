@@ -373,7 +373,6 @@ func (quarantine *structureQuarantine) completeLineLocked() error {
 func (quarantine *structureQuarantine) releaseLocked() {
 	quarantine.pending = append(quarantine.pending, quarantine.frame...)
 	quarantine.mode = quarantineBetween
-	quarantine.frame = quarantine.frame[:0]
 }
 
 func (quarantine *structureQuarantine) startFetchLocked() {
@@ -690,7 +689,6 @@ func (quarantine *structureQuarantine) completeFetchLocked() error {
 		quarantine.releaseLocked()
 	case quarantine.flags == 1:
 		quarantine.mode = quarantineBetween
-		quarantine.frame = quarantine.frame[:0]
 	default:
 		return errorCode(CodeIMAPProtocol)
 	}
@@ -728,7 +726,7 @@ func quarantineFlag(value string) bool {
 // quarantineNumber parses a canonical uint32. Zero is accepted only when
 // zero is allowed.
 func quarantineNumber(value string, zero bool) (uint32, bool) {
-	if value == "" || value[0] < '0' || value[0] > '9' || value[0] == '0' && (len(value) > 1 || !zero) {
+	if value == "" || value[0] == '0' && (len(value) > 1 || !zero) {
 		return 0, false
 	}
 	number, err := strconv.ParseUint(value, 10, 32)
