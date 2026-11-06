@@ -546,25 +546,34 @@ func validSenderEncodedWords(value string) bool {
 			return true
 		}
 
+		// The charset and encoding are located by position so a Q payload that
+		// opens with "=" is not mistaken for the closing "?=".
 		value = value[start+2:]
-		end := strings.Index(value, "?=")
-		if end < 0 {
+		charsetEnd := strings.IndexByte(value, '?')
+		if charsetEnd < 1 || len(value) < charsetEnd+3 || value[charsetEnd+2] != '?' {
 			return false
 		}
 
-		parts := strings.Split(value[:end], "?")
+		encoding := value[charsetEnd+1 : charsetEnd+2]
+		value = value[charsetEnd+3:]
+		end := strings.Index(value, "?=")
+		if end < 1 {
+			return false
+		}
+
+		payload := value[:end]
 		value = value[end+2:]
-		if len(parts) != 3 || parts[0] == "" || parts[2] == "" || strings.ContainsFunc(parts[2], unicode.IsSpace) {
+		if strings.Contains(payload, "?") || strings.ContainsFunc(payload, unicode.IsSpace) {
 			return false
 		}
 
 		switch {
-		case strings.EqualFold(parts[1], "b"):
-			if _, err := base64.StdEncoding.DecodeString(parts[2]); err != nil {
+		case strings.EqualFold(encoding, "b"):
+			if _, err := base64.StdEncoding.DecodeString(payload); err != nil {
 				return false
 			}
-		case strings.EqualFold(parts[1], "q"):
-			if !validQEscapes(parts[2]) {
+		case strings.EqualFold(encoding, "q"):
+			if !validQEscapes(payload) {
 				return false
 			}
 		default:

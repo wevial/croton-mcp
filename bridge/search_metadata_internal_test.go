@@ -262,6 +262,7 @@ func TestSearchMetadataAdapter(t *testing.T) {
 			{name: "rune crossing boundary", from: multibyte, want: strings.Repeat("a", senderByteBound-1), truncated: true},
 			{name: "decoded expansion", from: expanding, want: strings.Repeat("é", senderByteBound/2), truncated: true},
 			{name: "encoded words beyond raw cap", from: manyWords, want: strings.Repeat("a", 450) + " <a@croton.test>"},
+			{name: "Q payload opening with escape", from: "=?utf-8?q?=C3=89ric?= <a@croton.test>", want: "Éric <a@croton.test>"},
 			{name: "malformed Q escape", from: "=?utf-8?q?bad=GG?= <a@croton.test>"},
 			{name: "truncated Q escape", from: "=?utf-8?q?bad=4?= <a@croton.test>"},
 			{name: "unterminated encoded word", from: "=?utf-8?q?decoder-marker"},
