@@ -127,5 +127,16 @@ func TestSelectedThreadFields(t *testing.T) {
 		if block != "Subject: kept\r\nreferences: <a@example.test>\r\n\r\n" {
 			t.Fatalf("thread field block = %q", block)
 		}
+
+		lfOnly := "Subject: " + strings.Repeat("s", headerTestLimit-len("Subject: \n\n")) + "\n\n"
+		lfResult, err := selectedHeaderRecord(MessageMetadata{}, []byte(lfOnly), headerTestLimit)
+		if err != nil || len(lfOnly) != headerTestLimit || lfResult.Truncation.Headers || len(lfResult.Metadata.Subject) != headerTestLimit-len("Subject: \n\n") {
+			t.Fatalf("LF-only subject at byte limit: %d bytes, %+v, %v", len(lfOnly), lfResult.Truncation, err)
+		}
+
+		decoy, err := selectedHeaderRecord(MessageMetadata{}, []byte("\u017fubject: decoy\r\nSubject: actual\r\n\r\n"), limit)
+		if err != nil || decoy.Metadata.Subject != "actual" || decoy.Headers.Subject != "actual" {
+			t.Fatalf("non-ASCII folded field name took the Subject slot: %+v, %v", decoy, err)
+		}
 	})
 }
