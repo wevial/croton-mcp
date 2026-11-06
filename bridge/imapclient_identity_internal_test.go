@@ -207,6 +207,11 @@ func TestSearchObserverClassifiesDivergenceProneFormsAsGoIMAPDoes(t *testing.T) 
 		{name: "message number beyond uint32", input: "* 4294967296 EXISTS\r\n", incomplete: true},
 		{name: "numbered data", input: "* 3 EXISTS\r\n* SEARCH 101\r\n"},
 		{name: "FETCH literal payload", input: "* 1 FETCH (BODY[] {18}\r\n* SEARCH 101 101\r\n)\r\n* SEARCH 101\r\n"},
+		{name: "quoted literal marker spanning lines", input: "* LIST () \"/\" \"INBOX\" (\"X\" \"notice {18}\r\n\")\r\n* SEARCH 101 101\r\n", duplicate: true, incomplete: true},
+		{name: "quoted literal marker spanning lines then distinct SEARCH", input: "* LIST () \"/\" \"INBOX\" (\"X\" \"notice {18}\r\n\")\r\n* SEARCH 101 102\r\n", incomplete: true},
+		{name: "escaped quote before literal marker spanning lines", input: "* LIST () \"/\" \"a\\\" {3}\r\n\"\r\n* SEARCH 101\r\n", incomplete: true},
+		{name: "quoted literal marker closed on its line", input: "* LIST () \"/\" \"a {3}\"\r\n* SEARCH 101 101\r\n", duplicate: true},
+		{name: "literal after quoted string", input: "* LIST () \"/\" {18}\r\n* SEARCH 101 101\r\n\r\n* SEARCH 101\r\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			connection := &readBudgetConn{}

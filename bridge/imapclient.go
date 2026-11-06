@@ -1166,15 +1166,20 @@ func (connection *readBudgetConn) observeSearchResponseLocked(input string) {
 		// A line that resumes a response after its literal belongs to that
 		// response, so only a new response, or an ESEARCH rejoined with its
 		// leading text, is classified. go-imap reads status and continuation
-		// text to CRLF, so a literal marker there is ordinary text. go-imap
-		// also tolerates one space before CRLF.
+		// text to CRLF, so a literal marker there is ordinary text. Elsewhere
+		// go-imap reads a quoted string across line breaks, so a line that
+		// ends inside one fails closed.
 		kind, rest := imapLineData, ""
 		if !connection.searchContinues || pending != "" {
 			kind, rest = classifyIMAPResponse(line)
 		}
-		literalBytes, hasLiteral := trailingIMAPLiteralSize(strings.TrimSuffix(line, " "))
-		if kind == imapLineText {
-			hasLiteral = false
+		literalBytes, opening, hasLiteral := uint64(0), -1, false
+		if kind != imapLineText {
+			var unterminated bool
+			literalBytes, opening, hasLiteral, unterminated = trailingIMAPLiteral(line)
+			if unterminated {
+				connection.searchIncomplete = true
+			}
 		}
 		connection.searchContinues = hasLiteral
 		if hasLiteral {
@@ -1193,7 +1198,7 @@ func (connection *readBudgetConn) observeSearchResponseLocked(input string) {
 				// The response continues after the literal, so judge it once
 				// the whole logical line, with the literal as an empty
 				// string, has arrived.
-				connection.searchPending = line[:strings.LastIndexByte(line, '{')] + `""`
+				connection.searchPending = line[:opening] + `""`
 				continue
 			}
 			overlaps, complete := eSearchAllOverlaps(rest)
@@ -1488,29 +1493,45 @@ func correlatorEnd(rest string) int {
 	return -1
 }
 
-func trailingIMAPLiteralSize(line string) (uint64, bool) {
-	if !strings.HasSuffix(line, "}") {
-		return 0, false
+// trailingIMAPLiteral reports the literal that ends one data line, as its
+// size and the index of its opening brace, and whether the line ends inside a
+// quoted string. A brace inside a quoted string is text, not a literal, and
+// go-imap tolerates one space before CRLF.
+func trailingIMAPLiteral(line string) (size uint64, opening int, ok, unterminated bool) {
+	opening, quoted := -1, false
+	for index := 0; index < len(line); index++ {
+		switch character := line[index]; {
+		case quoted && character == '\\':
+			index++
+		case character == '"':
+			quoted = !quoted
+		case !quoted && character == '{':
+			opening = index
+		}
 	}
-	opening := strings.LastIndexByte(line, '{')
-	if opening < 0 {
-		return 0, false
+	if quoted {
+		return 0, -1, false, true
 	}
-	digits := line[opening+1 : len(line)-1]
-	digits = strings.TrimSuffix(digits, "+")
+
+	line = strings.TrimSuffix(line, " ")
+	if opening < 0 || !strings.HasSuffix(line, "}") {
+		return 0, -1, false, false
+	}
+	digits := strings.TrimSuffix(line[opening+1:len(line)-1], "+")
 	if digits == "" {
-		return 0, false
+		return 0, -1, false, false
 	}
 	for _, character := range digits {
 		if character < '0' || character > '9' {
-			return 0, false
+			return 0, -1, false, false
 		}
 	}
+
 	size, err := strconv.ParseUint(digits, 10, 64)
 	if err != nil {
-		return ^uint64(0), true
+		return ^uint64(0), opening, true, false
 	}
-	return size, true
+	return size, opening, true, false
 }
 
 var errDispatchRefused = errors.New("IMAP write outside the armed native MOVE")
