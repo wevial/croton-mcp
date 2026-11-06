@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net"
 	"net/mail"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -79,6 +80,15 @@ type mailboxSnapshot struct {
 type uidWindow struct {
 	Start uint32
 	End   uint32
+}
+
+// width is the number of UIDs a well-formed window spans, which also bounds
+// how many unique UIDs one SEARCH response for it may decode to.
+func (window uidWindow) width() int {
+	if window.Start == 0 || window.End < window.Start {
+		return 0
+	}
+	return int(uint64(window.End) - uint64(window.Start) + 1)
 }
 
 type imapSession struct {
@@ -341,8 +351,11 @@ func (session *imapSession) dispatchMove(ctx context.Context, uid uint32, destin
 	return err
 }
 
+// UIDSearchWindow decodes at most limit unique UIDs, which must not exceed the
+// window width. Callers pass the width so a dense window is decoded whole and
+// result selection happens after the response has been fully consumed.
 func (session *imapSession) UIDSearchWindow(ctx context.Context, query SearchQuery, window uidWindow, limit int) ([]uint32, error) {
-	if window.Start == 0 || window.End < window.Start || limit < 1 {
+	if limit < 1 || limit > window.width() {
 		return nil, errorCode(CodeBoundsExceeded)
 	}
 
@@ -362,23 +375,26 @@ func (session *imapSession) UIDSearchWindow(ctx context.Context, query SearchQue
 		}
 		var data *imap.SearchData
 		var searchErr error
-		exceeded := false
-		searchSeen := false
-		eSearchSeen := false
-		exceeded, searchSeen, eSearchSeen, searchErr = session.withSearchInputBudget(func() error {
+		observed, searchErr := session.withSearchInputBudget(window, func() error {
 			data, searchErr = session.client.UIDSearch(criteria, nil).Wait()
 			return searchErr
 		})
-		if exceeded {
+		if observed.exceeded {
 			return errorCode(CodeBoundsExceeded)
 		}
 		if searchErr != nil {
 			return searchErr
 		}
-		if !searchSeen && (!eSearchSeen || !eSearchAppliedToUIDSearch(data)) {
+		if observed.duplicate || observed.incomplete {
 			return errorCode(CodeIMAPProtocol)
 		}
-		if !searchSeen && data.All == nil {
+		if observed.outOfWindow {
+			return errorCode(CodeBoundsExceeded)
+		}
+		if !observed.searchSeen && (!observed.eSearchSeen || !eSearchAppliedToUIDSearch(data)) {
+			return errorCode(CodeIMAPProtocol)
+		}
+		if !observed.searchSeen && data.All == nil {
 			if data.Min != 0 || data.Max != 0 || data.Count != 0 {
 				return errorCode(CodeIMAPProtocol)
 			}
@@ -838,15 +854,15 @@ func (session *imapSession) withBoundedInput(ctx context.Context, limit int, ope
 	})
 }
 
-func (session *imapSession) withSearchInputBudget(operation func() error) (bool, bool, bool, error) {
+func (session *imapSession) withSearchInputBudget(window uidWindow, operation func() error) (searchObservation, error) {
 	if session.budget == nil {
-		return false, false, false, operation()
+		return searchObservation{}, operation()
 	}
 
 	session.budget.beginSearch(maxSearchResponseBytes)
+	session.budget.checkSearchWindow(window)
 	err := operation()
-	exceeded, searchSeen, eSearchSeen := session.budget.endSearch()
-	return exceeded, searchSeen, eSearchSeen, err
+	return session.budget.endSearch(), err
 }
 
 func (session *imapSession) withInputBudget(limit int, operation func() error) (bool, error) {
@@ -870,6 +886,7 @@ func boundedSearchUIDs(data *imap.SearchData, window uidWindow, limit int) ([]ui
 	}
 
 	results := make([]uint32, 0, limit)
+	seen := make(map[uint32]struct{}, limit)
 	for _, item := range uidSet {
 		if item.Start == 0 || item.Stop == 0 {
 			return nil, errorCode(CodeIMAPProtocol)
@@ -883,6 +900,10 @@ func boundedSearchUIDs(data *imap.SearchData, window uidWindow, limit int) ([]ui
 			return nil, errorCode(CodeBoundsExceeded)
 		}
 		for uid := item.Start; ; uid++ {
+			if _, duplicate := seen[uint32(uid)]; duplicate {
+				return nil, errorCode(CodeIMAPProtocol)
+			}
+			seen[uint32(uid)] = struct{}{}
 			results = append(results, uint32(uid))
 			if uid == item.Stop {
 				break
@@ -987,6 +1008,21 @@ func (connection *syntheticGreetingConn) Read(buffer []byte) (int, error) {
 	return connection.Conn.Read(buffer)
 }
 
+// searchObservation is what the wire observer saw while one SEARCH ran.
+// duplicate is decided on the raw response because go-imap merges a repeated
+// UID into its set before any caller can see it. outOfWindow is decided there
+// too because go-imap replaces earlier SEARCH data, and earlier ALL sets of
+// one ESEARCH, with a later ESEARCH ALL, erasing an invalid UID before the
+// final set is validated.
+type searchObservation struct {
+	exceeded    bool
+	searchSeen  bool
+	eSearchSeen bool
+	duplicate   bool
+	incomplete  bool
+	outOfWindow bool
+}
+
 type readBudgetConn struct {
 	net.Conn
 	mu                  sync.Mutex
@@ -999,6 +1035,13 @@ type readBudgetConn struct {
 	eSearchResponseSeen bool
 	searchBuffer        string
 	searchLiteralBytes  uint64
+	searchContinues     bool
+	searchPending       string
+	searchUIDs          map[uint32]struct{}
+	searchDuplicate     bool
+	searchIncomplete    bool
+	searchWindow        uidWindow
+	searchOutOfWindow   bool
 }
 
 func newReadBudgetConn(connection net.Conn, idleLimit int) *readBudgetConn {
@@ -1028,15 +1071,53 @@ func (connection *readBudgetConn) beginSearch(limit int) {
 	connection.eSearchResponseSeen = false
 	connection.searchBuffer = ""
 	connection.searchLiteralBytes = 0
+	connection.searchContinues = false
+	connection.searchPending = ""
+	connection.searchUIDs = nil
+	connection.searchDuplicate = false
+	connection.searchIncomplete = false
+	connection.searchWindow = uidWindow{}
+	connection.searchOutOfWindow = false
 }
 
-func (connection *readBudgetConn) endSearch() (bool, bool, bool) {
+// checkSearchWindow makes the running SEARCH observation refuse any raw UID
+// outside window, including one a later response would replace.
+func (connection *readBudgetConn) checkSearchWindow(window uidWindow) {
 	connection.mu.Lock()
 	defer connection.mu.Unlock()
 
-	exceeded := connection.exceeded
-	searchSeen := connection.searchResponseSeen
-	eSearchSeen := connection.eSearchResponseSeen
+	connection.searchWindow = window
+}
+
+// searchRangeLocked records a raw UID range of the running SEARCH that is
+// zero or lies outside its checked window. Without a window only zero is
+// refused.
+func (connection *readBudgetConn) searchRangeLocked(start, stop uint64) {
+	if start == 0 || stop == 0 {
+		connection.searchIncomplete = true
+		return
+	}
+	if connection.searchWindow.width() == 0 {
+		return
+	}
+
+	if start < uint64(connection.searchWindow.Start) || stop > uint64(connection.searchWindow.End) {
+		connection.searchOutOfWindow = true
+	}
+}
+
+func (connection *readBudgetConn) endSearch() searchObservation {
+	connection.mu.Lock()
+	defer connection.mu.Unlock()
+
+	observed := searchObservation{
+		exceeded:    connection.exceeded,
+		searchSeen:  connection.searchResponseSeen,
+		eSearchSeen: connection.eSearchResponseSeen,
+		duplicate:   connection.searchDuplicate,
+		incomplete:  connection.searchIncomplete,
+		outOfWindow: connection.searchOutOfWindow,
+	}
 	connection.active = true
 	connection.remaining = connection.idleLimit
 	connection.exceeded = false
@@ -1045,7 +1126,14 @@ func (connection *readBudgetConn) endSearch() (bool, bool, bool) {
 	connection.eSearchResponseSeen = false
 	connection.searchBuffer = ""
 	connection.searchLiteralBytes = 0
-	return exceeded, searchSeen, eSearchSeen
+	connection.searchContinues = false
+	connection.searchPending = ""
+	connection.searchUIDs = nil
+	connection.searchDuplicate = false
+	connection.searchIncomplete = false
+	connection.searchWindow = uidWindow{}
+	connection.searchOutOfWindow = false
+	return observed
 }
 
 func (connection *readBudgetConn) end() bool {
@@ -1101,48 +1189,397 @@ func (connection *readBudgetConn) observeSearchResponseLocked(input string) {
 			connection.searchLiteralBytes = 0
 		}
 
-		end := strings.Index(connection.searchBuffer, "\r\n")
+		// go-imap ends a line at LF with an optional CR before it, so a lone
+		// LF frames a response exactly as CRLF does. A CR anywhere else is
+		// not framing go-imap accepts, so the command fails closed.
+		end := strings.IndexByte(connection.searchBuffer, '\n')
 		if end < 0 {
 			return
 		}
-		line := connection.searchBuffer[:end]
-		connection.searchBuffer = connection.searchBuffer[end+2:]
-		upper := strings.ToUpper(line)
-		switch {
-		case upper == "* SEARCH" || strings.HasPrefix(upper, "* SEARCH "):
-			connection.searchResponseSeen = true
-		case upper == "* ESEARCH" || strings.HasPrefix(upper, "* ESEARCH "):
-			connection.eSearchResponseSeen = true
+		pending := connection.searchPending
+		line := pending + strings.TrimSuffix(connection.searchBuffer[:end], "\r")
+		connection.searchBuffer = connection.searchBuffer[end+1:]
+		connection.searchPending = ""
+		if strings.IndexByte(line, '\r') >= 0 {
+			connection.searchIncomplete = true
 		}
-		if literalBytes, ok := trailingIMAPLiteralSize(line); ok {
+
+		// A line that resumes a response after its literal belongs to that
+		// response, so only a new response, or an ESEARCH rejoined with its
+		// leading text, is classified. go-imap reads status and continuation
+		// text to CRLF, so a literal marker there is ordinary text. Elsewhere
+		// go-imap reads a quoted string across line breaks, so a line that
+		// ends inside one fails closed.
+		kind, rest := imapLineData, ""
+		if !connection.searchContinues || pending != "" {
+			kind, rest = classifyIMAPResponse(line)
+		}
+		literalBytes, opening, hasLiteral := uint64(0), -1, false
+		if kind != imapLineText {
+			var unterminated bool
+			literalBytes, opening, hasLiteral, unterminated = trailingIMAPLiteral(line)
+			if unterminated {
+				connection.searchIncomplete = true
+			}
+		}
+		connection.searchContinues = hasLiteral
+		if hasLiteral {
 			connection.searchLiteralBytes = literalBytes
+		}
+
+		switch kind {
+		case imapLineUnclassified:
+			connection.searchIncomplete = true
+		case imapLineSearch:
+			connection.searchResponseSeen = true
+			connection.observeSearchUIDsLocked(rest)
+		case imapLineESearch:
+			connection.eSearchResponseSeen = true
+			if hasLiteral {
+				// The response continues after the literal, so judge it once
+				// the whole logical line, with the literal as an empty
+				// string, has arrived.
+				connection.searchPending = line[:opening] + `""`
+				continue
+			}
+			overlaps, complete := eSearchAllOverlaps(rest, connection.searchRangeLocked)
+			if overlaps {
+				connection.searchDuplicate = true
+			}
+			if !complete {
+				connection.searchIncomplete = true
+			}
 		}
 	}
 }
 
-func trailingIMAPLiteralSize(line string) (uint64, bool) {
-	if !strings.HasSuffix(line, "}") {
-		return 0, false
+// imapLineKind is how go-imap reads one response line.
+type imapLineKind int
+
+const (
+	// imapLineUnclassified is a line the observer cannot read exactly as
+	// go-imap does, so the command fails closed.
+	imapLineUnclassified imapLineKind = iota
+	// imapLineText is a continuation request or a status response, read as
+	// text up to CRLF.
+	imapLineText
+	// imapLineData is untagged data that may carry literals.
+	imapLineData
+	imapLineSearch
+	imapLineESearch
+)
+
+// classifyIMAPResponse classifies the first line of one response and returns
+// the text after an untagged SEARCH or ESEARCH name, read as go-imap reads
+// them: "+" starts a continuation request; otherwise a tag atom or "*", one
+// space and a type atom, behind an optional uint32 message number when
+// untagged. The type ends at the first non-atom character, so "* OK(notice)"
+// is an OK status and "* ESEARCH(TAG ...)" names ESEARCH. Any form go-imap
+// does not read this way, including an unknown type, is unclassified.
+func classifyIMAPResponse(line string) (imapLineKind, string) {
+	if strings.HasPrefix(line, "+") {
+		return imapLineText, ""
 	}
-	opening := strings.LastIndexByte(line, '{')
-	if opening < 0 {
-		return 0, false
+
+	rest, untagged := strings.CutPrefix(line, "*")
+	if !untagged {
+		var tag string
+		if tag, rest = eSearchAtom(line); tag == "" {
+			return imapLineUnclassified, ""
+		}
 	}
-	digits := line[opening+1 : len(line)-1]
-	digits = strings.TrimSuffix(digits, "+")
+	rest, spaced := strings.CutPrefix(rest, " ")
+	if !spaced {
+		return imapLineUnclassified, ""
+	}
+	name, rest := eSearchAtom(rest)
+	if untagged && name != "" && name[0] >= '0' && name[0] <= '9' {
+		if _, err := strconv.ParseUint(name, 10, 32); err != nil {
+			return imapLineUnclassified, ""
+		}
+		if rest, spaced = strings.CutPrefix(rest, " "); !spaced {
+			return imapLineUnclassified, ""
+		}
+		name, rest = eSearchAtom(rest)
+	}
+	if name == "" {
+		return imapLineUnclassified, ""
+	}
+
+	switch name = strings.ToUpper(name); {
+	case !untagged, name == "OK", name == "PREAUTH", name == "NO", name == "BAD", name == "BYE":
+		return imapStatusText(rest), ""
+	case name == "SEARCH":
+		return imapLineSearch, rest
+	case name == "ESEARCH":
+		return imapLineESearch, rest
+	}
+	switch name {
+	case "ID", "CAPABILITY", "ENABLED", "NAMESPACE", "FLAGS", "EXISTS", "RECENT", "LIST", "STATUS",
+		"FETCH", "EXPUNGE", "SORT", "THREAD", "METADATA", "QUOTA", "QUOTAROOT", "MYRIGHTS", "ACL":
+		return imapLineData, ""
+	}
+	return imapLineUnclassified, ""
+}
+
+// imapStatusText classifies the text after a status name. go-imap discards a
+// response code up to its closing bracket even across lines, so a code that
+// does not close on its own line is unclassified; any other status text is
+// read to CRLF.
+func imapStatusText(rest string) imapLineKind {
+	if strings.HasPrefix(rest, " [") && !strings.Contains(rest, "]") {
+		return imapLineUnclassified
+	}
+
+	return imapLineText
+}
+
+// observeSearchUIDsLocked records the numbers of one SEARCH line. go-imap
+// accumulates every SEARCH line of a command into one set, so a UID repeated
+// within or across lines is a duplicate. Only a final MODSEQ group, which
+// go-imap accepts with or without a leading space, may follow the numbers;
+// any other field marks the line incomplete so the command fails closed.
+func (connection *readBudgetConn) observeSearchUIDsLocked(numbers string) {
+	if connection.searchUIDs == nil {
+		connection.searchUIDs = make(map[uint32]struct{})
+	}
+
+	if opening := strings.IndexByte(numbers, '('); opening >= 0 {
+		if !searchModSeqGroup(numbers[opening:]) {
+			connection.searchIncomplete = true
+		}
+		numbers = numbers[:opening]
+	}
+
+	for _, field := range strings.Fields(numbers) {
+		uid, err := strconv.ParseUint(field, 10, 32)
+		if err != nil {
+			connection.searchIncomplete = true
+			return
+		}
+		connection.searchRangeLocked(uid, uid)
+		if _, duplicate := connection.searchUIDs[uint32(uid)]; duplicate {
+			connection.searchDuplicate = true
+		}
+		connection.searchUIDs[uint32(uid)] = struct{}{}
+	}
+}
+
+// searchModSeqGroup reports whether group is exactly the trailing
+// "(MODSEQ n)" of a SEARCH line, allowing the one space go-imap tolerates
+// before CRLF.
+func searchModSeqGroup(group string) bool {
+	group = strings.TrimSuffix(group, " ")
+	name, value, ok := strings.Cut(strings.TrimSuffix(strings.TrimPrefix(group, "("), ")"), " ")
+	if !ok || !strings.HasPrefix(group, "(") || !strings.HasSuffix(group, ")") || !strings.EqualFold(name, "MODSEQ") {
+		return false
+	}
+
+	_, err := strconv.ParseUint(value, 10, 64)
+	return err == nil
+}
+
+// eSearchAllOverlaps reports whether any top-level ALL sequence set of one
+// ESEARCH line names a UID twice, and whether the walk consumed the whole
+// line. go-imap replaces the result with each matching ESEARCH, so overlap is
+// judged per line. The line is walked as go-imap reads it, name SP value
+// pairs after the correlator and UID marker, so an ALL nested inside an
+// extension value is skipped rather than mistaken for the result. Ranges are
+// compared as intervals and never expanded. A line the walk cannot consume,
+// including forms go-imap still accepts, is reported incomplete so the
+// caller fails closed. Every interval of each top-level ALL set, including
+// one a later ALL replaces, is passed to observe before overlap is judged.
+func eSearchAllOverlaps(rest string, observe func(start, stop uint64)) (overlaps, complete bool) {
+	rest = strings.TrimSpace(rest)
+	if strings.HasPrefix(rest, "(") {
+		closing := correlatorEnd(rest)
+		if closing < 0 {
+			return false, false
+		}
+		rest = strings.TrimPrefix(rest[closing+1:], " ")
+	}
+
+	name, rest := eSearchAtom(rest)
+	if name == "UID" {
+		name, rest = eSearchAtom(strings.TrimPrefix(rest, " "))
+	}
+
+	for name != "" {
+		if !strings.HasPrefix(rest, " ") {
+			return false, false
+		}
+		value, after := eSearchValue(rest[1:])
+		if value == "" {
+			return false, false
+		}
+		if strings.EqualFold(name, "ALL") {
+			overlap, parsed := sequenceSetOverlaps(value, observe)
+			if overlap {
+				return true, true
+			}
+			if !parsed {
+				return false, false
+			}
+		}
+		if after == "" {
+			return false, true
+		}
+		if !strings.HasPrefix(after, " ") {
+			return false, false
+		}
+		name, rest = eSearchAtom(after[1:])
+	}
+
+	return false, rest == ""
+}
+
+// eSearchAtom splits the leading IMAP atom from input.
+func eSearchAtom(input string) (string, string) {
+	index := 0
+	for index < len(input) && isIMAPAtomChar(input[index]) {
+		index++
+	}
+	return input[:index], input[index:]
+}
+
+// eSearchValue splits one ESEARCH return value, a quoted string, a
+// parenthesized list or an atom, from input. It returns an empty value when
+// none is well formed.
+func eSearchValue(input string) (string, string) {
+	if input == "" {
+		return "", input
+	}
+	if input[0] != '"' && input[0] != '(' {
+		return eSearchAtom(input)
+	}
+
+	depth, quoted := 0, false
+	for index := 0; index < len(input); index++ {
+		switch character := input[index]; {
+		case quoted && character == '\\':
+			index++
+		case character == '"':
+			quoted = !quoted
+			if !quoted && depth == 0 {
+				return input[:index+1], input[index+1:]
+			}
+		case quoted:
+		case character == '(':
+			depth++
+		case character == ')':
+			depth--
+			if depth == 0 {
+				return input[:index+1], input[index+1:]
+			}
+		}
+	}
+	return "", input
+}
+
+func isIMAPAtomChar(character byte) bool {
+	switch character {
+	case '(', ')', '{', ' ', '%', '*', '"', '\\', ']':
+		return false
+	default:
+		return !unicode.IsControl(rune(character))
+	}
+}
+
+// sequenceSetOverlaps reports whether the numeric sequence set names any
+// number twice, and whether the set parsed. Each parsed interval is passed to
+// observe in ascending order.
+func sequenceSetOverlaps(set string, observe func(start, stop uint64)) (overlaps, parsed bool) {
+	type interval struct{ start, stop uint64 }
+	var intervals []interval
+	for _, item := range strings.Split(set, ",") {
+		low, high, isRange := strings.Cut(item, ":")
+		start, err := strconv.ParseUint(low, 10, 32)
+		if err != nil {
+			return false, false
+		}
+		stop := start
+		if isRange {
+			if stop, err = strconv.ParseUint(high, 10, 32); err != nil {
+				return false, false
+			}
+		}
+		if stop < start {
+			start, stop = stop, start
+		}
+		intervals = append(intervals, interval{start: start, stop: stop})
+	}
+
+	for _, item := range intervals {
+		observe(item.start, item.stop)
+	}
+
+	sort.Slice(intervals, func(i, j int) bool { return intervals[i].start < intervals[j].start })
+	for index := 1; index < len(intervals); index++ {
+		if intervals[index].start <= intervals[index-1].stop {
+			return true, true
+		}
+	}
+
+	return false, true
+}
+
+// correlatorEnd returns the index of the parenthesis closing the ESEARCH
+// correlator at the start of rest, ignoring parentheses inside quoted
+// strings, or -1 when it is not closed.
+func correlatorEnd(rest string) int {
+	quoted := false
+	for index := 1; index < len(rest); index++ {
+		switch character := rest[index]; {
+		case quoted && character == '\\':
+			index++
+		case character == '"':
+			quoted = !quoted
+		case !quoted && character == ')':
+			return index
+		}
+	}
+	return -1
+}
+
+// trailingIMAPLiteral reports the literal that ends one data line, as its
+// size and the index of its opening brace, and whether the line ends inside a
+// quoted string. A brace inside a quoted string is text, not a literal, and
+// go-imap tolerates one space before CRLF.
+func trailingIMAPLiteral(line string) (size uint64, opening int, ok, unterminated bool) {
+	opening, quoted := -1, false
+	for index := 0; index < len(line); index++ {
+		switch character := line[index]; {
+		case quoted && character == '\\':
+			index++
+		case character == '"':
+			quoted = !quoted
+		case !quoted && character == '{':
+			opening = index
+		}
+	}
+	if quoted {
+		return 0, -1, false, true
+	}
+
+	line = strings.TrimSuffix(line, " ")
+	if opening < 0 || !strings.HasSuffix(line, "}") {
+		return 0, -1, false, false
+	}
+	digits := strings.TrimSuffix(line[opening+1:len(line)-1], "+")
 	if digits == "" {
-		return 0, false
+		return 0, -1, false, false
 	}
 	for _, character := range digits {
 		if character < '0' || character > '9' {
-			return 0, false
+			return 0, -1, false, false
 		}
 	}
+
 	size, err := strconv.ParseUint(digits, 10, 64)
 	if err != nil {
-		return ^uint64(0), true
+		return ^uint64(0), opening, true, false
 	}
-	return size, true
+	return size, opening, true, false
 }
 
 var errDispatchRefused = errors.New("IMAP write outside the armed native MOVE")

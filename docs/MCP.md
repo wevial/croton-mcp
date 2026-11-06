@@ -212,6 +212,29 @@ bounded context, not a selectable identity. A truncated or fallback result
 lists fewer items, but every item it retains is a complete selectable
 identity.
 
+### Search order and limits
+
+`search_mail` and the search behind `select_digest_candidates` return results
+in strictly descending UID order, whatever order the server sends SEARCH and
+FETCH replies in. UID order is not header `Date` or delivery-date order, so a
+page is not a chronological, latest-mail or complete-inventory guarantee.
+
+Each search examines at most 8 UID windows of 100 UIDs each, newest first. A
+dense window with more matches than the remaining result budget is not a
+failure: the bridge reads the whole bounded SEARCH response, keeps the highest
+UIDs that fit the budget, fetches metadata for only those, and reports
+`truncated: true`. `truncated` is also set when an older UID range is left
+unexamined. It stays false only when every window down to UID 1 was examined
+and no match was left out. The result budget defaults to 50 and is capped at
+250. The SEARCH response is still capped at 4096 bytes. An oversized response,
+or a UID that is zero, outside its window or repeated in the raw SEARCH reply
+or ESEARCH `ALL` set, fails the whole call with a code and returns no partial
+page.
+
+This release has no continuation cursor: a truncated search cannot be resumed
+from where it stopped. Ordering and truncation describe read results only and
+do not mean any write path is ready.
+
 ### Triage tools
 
 When `mutations.enabled` is true, five more tools are registered with
