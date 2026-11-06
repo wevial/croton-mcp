@@ -427,14 +427,13 @@ func runGetThread(ctx context.Context, deps Options, arguments json.RawMessage) 
 	if err != nil {
 		return nil, mapAdapterError(err)
 	}
-	targetMetadata := target.Metadata
-	if !validReadIdentity(targetMetadata) {
+	if !validReadIdentity(target.Metadata) {
 		return nil, errUnavailable
 	}
 
-	identities := map[string]bridge.MessageMetadata{input.MessageID: targetMetadata}
+	identities := map[string]bridge.MessageMetadata{input.MessageID: target.Metadata}
 	members := []bridge.ThreadMessage{{Key: input.MessageID, Headers: target.Headers}}
-	members, siblingsTruncated, errCode := appendThreadSiblings(ctx, reader, deps, members, identities, targetMetadata, limit)
+	members, siblingsTruncated, errCode := appendThreadSiblings(ctx, reader, deps, members, identities, target.Metadata, limit)
 	if errCode != "" {
 		return nil, errCode
 	}
@@ -443,7 +442,7 @@ func runGetThread(ctx context.Context, deps Options, arguments json.RawMessage) 
 
 	result := getThreadResult{
 		ID:        input.MessageID,
-		Mailbox:   targetMetadata.Mailbox,
+		Mailbox:   target.Metadata.Mailbox,
 		Nodes:     make([]threadNodeResult, 0, len(thread.Nodes)),
 		Truncated: siblingsTruncated || thread.Truncation.Any(),
 	}
