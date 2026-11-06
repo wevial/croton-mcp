@@ -51,14 +51,78 @@ func runListFolders(ctx context.Context, deps Options, arguments json.RawMessage
 	return &result, ""
 }
 
-// messageResult is bounded message metadata shared by search and digest results.
+// messageResult is bounded message metadata shared by search and digest
+// results. From, Date, DateSource and ReadState come from the same metadata
+// observation as the identity; unknown values are explicit, never guessed.
 type messageResult struct {
-	ID          string `json:"id"`
-	Mailbox     string `json:"mailbox"`
-	UIDValidity uint32 `json:"uidvalidity,omitempty"`
-	UID         uint32 `json:"uid,omitempty"`
-	Subject     string `json:"subject,omitempty"`
-	Size        int64  `json:"size,omitempty"`
+	ID                string            `json:"id"`
+	Mailbox           string            `json:"mailbox"`
+	UIDValidity       uint32            `json:"uidvalidity,omitempty"`
+	UID               uint32            `json:"uid,omitempty"`
+	Subject           string            `json:"subject,omitempty"`
+	Size              int64             `json:"size,omitempty"`
+	From              string            `json:"from,omitempty"`
+	Date              string            `json:"date,omitempty"`
+	DateSource        bridge.DateSource `json:"dateSource"`
+	ReadState         bridge.ReadState  `json:"readState"`
+	MetadataTruncated bool              `json:"metadataTruncated,omitempty"`
+}
+
+// maxSenderResultBytes mirrors the bridge's per-entry sender bound.
+const maxSenderResultBytes = 512
+
+// newMessageResult maps one adapter observation. A date is published only
+// when it is header-sourced RFC3339 UTC, and only an observed FLAGS item
+// yields read or unread.
+func newMessageResult(item bridge.MessageMetadata) messageResult {
+	sender, capped := boundedSenderResult(item.From)
+	result := messageResult{
+		ID:                item.ID,
+		Mailbox:           item.Mailbox,
+		UIDValidity:       item.UIDValidity,
+		UID:               item.UID,
+		Subject:           item.Subject,
+		Size:              item.Size,
+		From:              sender,
+		ReadState:         item.ReadState,
+		MetadataTruncated: sender != "" && (item.MetadataTruncated || capped),
+	}
+
+	if item.DateSource == bridge.DateSourceHeader && validHeaderDate(item.Date) {
+		result.Date = item.Date
+		result.DateSource = bridge.DateSourceHeader
+	}
+
+	return result
+}
+
+// boundedSenderResult omits invalid UTF-8 and cuts a longer sender to its
+// byte bound on a rune boundary, reporting the cut.
+func boundedSenderResult(sender string) (string, bool) {
+	if !utf8.ValidString(sender) {
+		return "", false
+	}
+	if len(sender) <= maxSenderResultBytes {
+		return sender, false
+	}
+
+	boundary := maxSenderResultBytes
+	for boundary > 0 && !utf8.RuneStart(sender[boundary]) {
+		boundary--
+	}
+
+	return sender[:boundary], true
+}
+
+// validHeaderDate accepts only the canonical RFC3339 UTC form the bridge
+// produces.
+func validHeaderDate(date string) bool {
+	parsed, err := time.Parse(time.RFC3339, date)
+	if err != nil {
+		return false
+	}
+
+	return parsed.Location() == time.UTC && parsed.Format(time.RFC3339) == date
 }
 
 // validReadIdentity reports whether the adapter supplied the positive
@@ -79,7 +143,7 @@ func flatMessageResults(messages []bridge.MessageMetadata, limit int) ([]message
 			return nil, false, errUnavailable
 		}
 
-		results = append(results, messageResult{ID: item.ID, Mailbox: item.Mailbox, UIDValidity: item.UIDValidity, UID: item.UID, Subject: item.Subject, Size: item.Size})
+		results = append(results, newMessageResult(item))
 	}
 
 	return results, false, ""

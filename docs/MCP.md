@@ -235,6 +235,46 @@ This release has no continuation cursor: a truncated search cannot be resumed
 from where it stopped. Ordering and truncation describe read results only and
 do not mean any write path is ready.
 
+### Search metadata
+
+Each `search_mail` result and each `select_digest_candidates` candidate also
+carries `from`, `date`, `dateSource`, `readState` and, when it applies,
+`metadataTruncated`. All of them come from the same read-only metadata FETCH
+that produced the entry's `id`, `mailbox`, `uidvalidity` and `uid`: the
+`BODY.PEEK[HEADER]` literal and the `FLAGS` item. No body, `INTERNALDATE` or
+write command is used, and no tool, input or configuration is added.
+
+- `from` is the decoded `From` header text, capped at 512 UTF-8 bytes. It is
+  omitted when the header is missing, repeated or invalid. It is untrusted,
+  sender-controlled text and proves no account, address or sender identity.
+- `metadataTruncated` is `true` only when `from` was cut to its 512-byte cap,
+  and is omitted otherwise.
+- `date` is the message's own header `Date`, normalized to RFC 3339 UTC. It is
+  sender-controlled and is not arrival, delivery or `INTERNALDATE` time.
+- `dateSource` is `header` when `date` is present and `unknown` when the header
+  `Date` is missing, repeated or invalid; `date` is then omitted. No other
+  clock is substituted.
+- `readState` is `read` when `FLAGS` includes `\Seen`, `unread` when `FLAGS`
+  lacks it, and `unknown` when no `FLAGS` item was observed. Unread is never
+  guessed.
+
+An unknown date or read state does not fail an otherwise valid call.
+
+Returning sender text and header dates is a deliberate disclosure of private
+mail metadata to the MCP client, beyond subjects and sizes. It is not
+permission to copy that metadata into shared notes or logs, and the audit
+stream never records it.
+
+Entries keep descending UID order. They are never sorted by `date`, so a
+higher UID can carry an older or equal header date. A result is a bounded
+sample, not a complete inventory: `truncated: true` means matches were left
+out or a UID range was not examined, while an empty list with `truncated`
+absent means no message matched in the examined range down to UID 1. The
+digest `totalMessages` and `unseenCount` are mailbox STATUS counters, not the
+number of matches examined or returned. When output is too large, whole
+entries are removed from the end and `truncated` is set; a retained entry keeps
+every field. There is no continuation cursor.
+
 ### Triage tools
 
 When `mutations.enabled` is true, five more tools are registered with

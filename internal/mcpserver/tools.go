@@ -61,7 +61,7 @@ func toolDefinitions() []toolDefinition {
 		},
 		{
 			name:        "search_mail",
-			description: "Search one mailbox with bounded structured criteria and return message metadata.",
+			description: "Search one mailbox with bounded structured criteria and return message metadata, including a bounded sender, the sender-supplied header Date with its source, and read state; unknown values are marked unknown. Results are in descending UID order, not chronological order, and may be an incomplete sample.",
 			schema: objectSchema(map[string]json.RawMessage{
 				"mailbox":    stringSchema(maxMailboxArgumentBytes),
 				"since":      stringSchema(maxTimestampArgumentBytes),
@@ -100,7 +100,7 @@ func toolDefinitions() []toolDefinition {
 		},
 		{
 			name:        "select_digest_candidates",
-			description: "Select bounded, metadata-first digest candidates from recent mail in one mailbox.",
+			description: "Select bounded, metadata-first digest candidates from recent mail in one mailbox, with a bounded sender, the sender-supplied header Date with its source, and read state; unknown values are marked unknown. Candidates are in descending UID order, not chronological order, and may be an incomplete sample; mailbox counters do not count examined matches.",
 			schema: objectSchema(map[string]json.RawMessage{
 				"mailbox":    stringSchema(maxMailboxArgumentBytes),
 				"sinceHours": integerSchema(1, maxDigestSinceHours),
