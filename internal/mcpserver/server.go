@@ -27,6 +27,13 @@ type Mail interface {
 	GetMessageBody(ctx context.Context, identifier string) ([]byte, error)
 }
 
+// MessageHeaderReader is the optional selected header-only read beside Mail.
+// get_thread requires it and refuses as unsupported without falling back to
+// body reads; *bridge.Adapter satisfies it.
+type MessageHeaderReader interface {
+	GetMessageHeaders(ctx context.Context, identifier string) (bridge.MessageHeaders, error)
+}
+
 // Options configures Croton's MCP server.
 type Options struct {
 	Mail Mail
