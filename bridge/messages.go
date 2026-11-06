@@ -86,7 +86,6 @@ func (adapter *Adapter) GetMessageHeaders(ctx context.Context, identifier string
 
 	var result MessageHeaders
 	err = adapter.execute(ctx, func(operationContext context.Context, session readSession) error {
-		result = MessageHeaders{}
 		reader, ok := session.(headerSession)
 		if !ok {
 			return errorCode(CodeUnsupported)
@@ -106,9 +105,6 @@ func (adapter *Adapter) GetMessageHeaders(ctx context.Context, identifier string
 		record, err := reader.UIDFetchHeaders(operationContext, payload.UID, adapter.config.Bounds.MaxHeaderBytes)
 		if err != nil {
 			return err
-		}
-		if record.metadata.uid != payload.UID {
-			return errorCode(CodeIMAPProtocol)
 		}
 
 		metadata := record.metadata

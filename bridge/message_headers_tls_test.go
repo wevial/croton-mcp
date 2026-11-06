@@ -164,7 +164,7 @@ func TestMessageHeadersTLS(t *testing.T) {
 			// Readable headers of a 300KiB message come from one header FETCH.
 			server, adapter := startTLSHeaderAdapter(t, mode.mode, testkit.Options{Messages: messages, Seen: []bool{true, false}})
 			identifier := searchTLSHeaderID(t, adapter, 101)
-			result, err := callGetMessageHeaders(t, adapter, identifier)
+			result, err := adapter.GetMessageHeaders(context.Background(), identifier)
 			if err != nil {
 				t.Fatalf("GetMessageHeaders: %v", err)
 			}
@@ -204,12 +204,12 @@ func TestMessageHeadersTLS(t *testing.T) {
 			if err != nil {
 				t.Fatalf("encodeMessageID: %v", err)
 			}
-			result, err = callGetMessageHeaders(t, adapter, missing)
+			result, err = adapter.GetMessageHeaders(context.Background(), missing)
 			assertNoHeaderSecrets(t, "missing UID", err)
-			if CodeOf(err) != CodeStaleMessageID || !reflect.DeepEqual(result, selectedHeaderResult{}) {
+			if CodeOf(err) != CodeStaleMessageID || !reflect.DeepEqual(result, MessageHeaders{}) {
 				t.Fatalf("missing UID = %+v, %v", result, err)
 			}
-			result, err = callGetMessageHeaders(t, adapter, identifier)
+			result, err = adapter.GetMessageHeaders(context.Background(), identifier)
 			if err != nil || result.Headers.MessageID != "<large-reply@croton.test>" {
 				t.Fatalf("follow-up after missing UID = %+v, %v", result.Headers, err)
 			}
@@ -219,13 +219,13 @@ func TestMessageHeadersTLS(t *testing.T) {
 			// new ID that reads on the same connection.
 			server, adapter = startTLSHeaderAdapter(t, mode.mode, testkit.Options{Messages: messages, Scenario: testkit.Scenario{UIDValidityAfterExamine: 9002}})
 			identifier = searchTLSHeaderID(t, adapter, 101)
-			result, err = callGetMessageHeaders(t, adapter, identifier)
+			result, err = adapter.GetMessageHeaders(context.Background(), identifier)
 			assertNoHeaderSecrets(t, "stale generation", err)
-			if CodeOf(err) != CodeStaleMessageID || !reflect.DeepEqual(result, selectedHeaderResult{}) {
+			if CodeOf(err) != CodeStaleMessageID || !reflect.DeepEqual(result, MessageHeaders{}) {
 				t.Fatalf("stale generation = %+v, %v", result, err)
 			}
 			fresh := searchTLSHeaderID(t, adapter, 101)
-			result, err = callGetMessageHeaders(t, adapter, fresh)
+			result, err = adapter.GetMessageHeaders(context.Background(), fresh)
 			if err != nil || result.Metadata.UIDValidity != 9002 || result.Headers.InReplyTo != "<large-root@croton.test>" {
 				t.Fatalf("follow-up after stale generation = %+v, %v", result, err)
 			}
@@ -238,9 +238,9 @@ func TestMessageHeadersTLS(t *testing.T) {
 			if err != nil {
 				t.Fatalf("encodeMessageID: %v", err)
 			}
-			result, err = callGetMessageHeaders(t, adapter, wrong)
+			result, err = adapter.GetMessageHeaders(context.Background(), wrong)
 			assertNoHeaderSecrets(t, "wrong section", err)
-			if CodeOf(err) != CodeIMAPProtocol || !reflect.DeepEqual(result, selectedHeaderResult{}) {
+			if CodeOf(err) != CodeIMAPProtocol || !reflect.DeepEqual(result, MessageHeaders{}) {
 				t.Fatalf("wrong section = %+v, %v", result, err)
 			}
 			status, err := adapter.Status(context.Background(), "INBOX")
