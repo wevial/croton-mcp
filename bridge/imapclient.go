@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"net"
@@ -612,12 +613,61 @@ func headerDate(header mail.Header) (string, DateSource) {
 		return "", DateSourceUnknown
 	}
 
-	parsed, err := mail.ParseDate(values[0])
+	value, ok := numericDateZone(values[0])
+	if !ok {
+		return "", DateSourceUnknown
+	}
+
+	parsed, err := mail.ParseDate(value)
 	if err != nil || parsed.UTC().Year() < 1 || parsed.UTC().Year() > 9999 {
 		return "", DateSourceUnknown
 	}
 
 	return parsed.UTC().Format(time.RFC3339), DateSourceHeader
+}
+
+// rfc5322NamedZones are the obsolete zone names RFC 5322 section 4.3 defines,
+// with their offsets in seconds. UTC is accepted as a common synonym of UT.
+var rfc5322NamedZones = map[string]int{
+	"UT": 0, "UTC": 0, "GMT": 0,
+	"EST": -5 * 3600, "EDT": -4 * 3600,
+	"CST": -6 * 3600, "CDT": -5 * 3600,
+	"MST": -7 * 3600, "MDT": -6 * 3600,
+	"PST": -8 * 3600, "PDT": -7 * 3600,
+}
+
+// numericDateZone rewrites a trailing RFC 5322 named zone as its numeric
+// offset. Go's date parser otherwise gives an unrecognised abbreviation a zero
+// offset, or the host's offset when it matches the local zone. Dates that
+// already carry a numeric offset pass through; any other named zone, including
+// military letters whose meaning RFC 5322 leaves unknown, is refused.
+func numericDateZone(value string) (string, bool) {
+	uncommented := value
+	if index := strings.IndexByte(uncommented, '('); index >= 0 {
+		uncommented = uncommented[:index]
+	}
+	if index := strings.IndexAny(uncommented, "+-"); index >= 0 && len(uncommented) >= index+5 {
+		return value, true
+	}
+
+	fields := strings.Fields(uncommented)
+	if len(fields) < 2 {
+		return "", false
+	}
+
+	offset, known := rfc5322NamedZones[strings.ToUpper(fields[len(fields)-1])]
+	if !known {
+		return "", false
+	}
+
+	sign := "+"
+	if offset < 0 {
+		sign = "-"
+		offset = -offset
+	}
+	fields[len(fields)-1] = fmt.Sprintf("%s%02d%02d", sign, offset/3600, offset%3600/60)
+
+	return strings.Join(fields, " "), true
 }
 
 func validateFetchedMetadataUIDs(requested []uint32, results []MessageMetadata) error {
