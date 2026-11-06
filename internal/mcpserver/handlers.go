@@ -75,19 +75,18 @@ const maxSenderResultBytes = 512
 // when it is header-sourced RFC3339 UTC, and only an observed FLAGS item
 // yields read or unread.
 func newMessageResult(item bridge.MessageMetadata) messageResult {
-	result := messageResult{
-		ID:          item.ID,
-		Mailbox:     item.Mailbox,
-		UIDValidity: item.UIDValidity,
-		UID:         item.UID,
-		Subject:     item.Subject,
-		Size:        item.Size,
-		ReadState:   item.ReadState,
-	}
-
 	sender, capped := boundedSenderResult(item.From)
-	result.From = sender
-	result.MetadataTruncated = sender != "" && (item.MetadataTruncated || capped)
+	result := messageResult{
+		ID:                item.ID,
+		Mailbox:           item.Mailbox,
+		UIDValidity:       item.UIDValidity,
+		UID:               item.UID,
+		Subject:           item.Subject,
+		Size:              item.Size,
+		From:              sender,
+		ReadState:         item.ReadState,
+		MetadataTruncated: sender != "" && (item.MetadataTruncated || capped),
+	}
 
 	if item.DateSource == bridge.DateSourceHeader && validHeaderDate(item.Date) {
 		result.Date = item.Date
