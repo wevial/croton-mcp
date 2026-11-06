@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"mime"
 	"net"
 	"net/mail"
 	"strconv"
@@ -11,9 +12,12 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	imap "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
+	"golang.org/x/net/html/charset"
 )
 
 const (
@@ -417,7 +421,7 @@ func (session *imapSession) UIDFetchMetadata(ctx context.Context, _ string, uids
 		set.AddNum(imap.UID(uid))
 	}
 	section := &imap.FetchItemBodySection{Specifier: imap.PartSpecifierHeader, Peek: true}
-	options := &imap.FetchOptions{UID: true, RFC822Size: true, BodySection: []*imap.FetchItemBodySection{section}}
+	options := &imap.FetchOptions{UID: true, Flags: true, RFC822Size: true, BodySection: []*imap.FetchItemBodySection{section}}
 	var results []MessageMetadata
 	err := session.withContext(ctx, func() (err error) {
 		if session.budget != nil {
@@ -440,6 +444,7 @@ func (session *imapSession) UIDFetchMetadata(ctx context.Context, _ string, uids
 			var item MessageMetadata
 			bodySections := 0
 			uidItems := 0
+			flagsItems := 0
 			for data := message.Next(); data != nil; data = message.Next() {
 				switch value := data.(type) {
 				case imapclient.FetchItemDataUID:
@@ -448,6 +453,12 @@ func (session *imapSession) UIDFetchMetadata(ctx context.Context, _ string, uids
 					}
 					uidItems++
 					item.uid = uint32(value.UID)
+				case imapclient.FetchItemDataFlags:
+					if flagsItems != 0 {
+						return errorCode(CodeIMAPProtocol)
+					}
+					flagsItems++
+					item.ReadState = metadataReadState(value.Flags)
 				case imapclient.FetchItemDataRFC822Size:
 					item.Size = value.Size
 				case imapclient.FetchItemDataBodySection:
@@ -464,6 +475,8 @@ func (session *imapSession) UIDFetchMetadata(ctx context.Context, _ string, uids
 						return errorCode(CodeIMAPProtocol)
 					}
 					item.Subject = parsed.Header.Get("Subject")
+					item.From, item.MetadataTruncated = boundedSender(parsed.Header)
+					item.Date, item.DateSource = headerDate(parsed.Header)
 				}
 			}
 			if uidItems != 1 || item.uid == 0 || bodySections != 1 {
@@ -477,6 +490,82 @@ func (session *imapSession) UIDFetchMetadata(ctx context.Context, _ string, uids
 		return validateFetchedMetadataUIDs(uids, results)
 	})
 	return results, err
+}
+
+// metadataReadState maps a present FLAGS item to read or unread. A missing
+// FLAGS item never reaches this function and stays ReadStateUnknown.
+func metadataReadState(flags []imap.Flag) ReadState {
+	for _, flag := range flags {
+		if strings.EqualFold(string(flag), string(imap.FlagSeen)) {
+			return ReadStateRead
+		}
+	}
+
+	return ReadStateUnread
+}
+
+// boundedSender decodes the single From header into at most maxSenderBytes of
+// valid UTF-8. Missing, repeated, malformed or control-bearing values are
+// omitted rather than reported, so decoder text and errors never escape.
+func boundedSender(header mail.Header) (string, bool) {
+	values := header["From"]
+	if len(values) != 1 {
+		return "", false
+	}
+
+	raw, truncated := cutUTF8(values[0], maxSenderBytes)
+	if !utf8.ValidString(raw) || !validEncodedWords(raw) {
+		return "", false
+	}
+
+	decoder := mime.WordDecoder{CharsetReader: charset.NewReaderLabel}
+	decoded, err := decoder.DecodeHeader(raw)
+	if err != nil || !utf8.ValidString(decoded) {
+		return "", false
+	}
+
+	decoded, decodedTruncated := cutUTF8(decoded, maxSenderBytes)
+	if strings.ContainsFunc(decoded, unicode.IsControl) {
+		return "", false
+	}
+
+	decoded = strings.TrimSpace(decoded)
+	if decoded == "" {
+		return "", false
+	}
+
+	return decoded, truncated || decodedTruncated
+}
+
+// cutUTF8 keeps at most limit bytes without splitting the rune that crosses
+// the boundary.
+func cutUTF8(value string, limit int) (string, bool) {
+	if len(value) <= limit {
+		return value, false
+	}
+
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(value[cut]) {
+		cut--
+	}
+
+	return value[:cut], true
+}
+
+// headerDate parses the single Date header into RFC3339 UTC. It never falls
+// back to another clock: an absent, repeated or invalid Date is unknown.
+func headerDate(header mail.Header) (string, DateSource) {
+	values := header["Date"]
+	if len(values) != 1 {
+		return "", DateSourceUnknown
+	}
+
+	parsed, err := mail.ParseDate(values[0])
+	if err != nil || parsed.UTC().Year() < 1 || parsed.UTC().Year() > 9999 {
+		return "", DateSourceUnknown
+	}
+
+	return parsed.UTC().Format(time.RFC3339), DateSourceHeader
 }
 
 func validateFetchedMetadataUIDs(requested []uint32, results []MessageMetadata) error {
