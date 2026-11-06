@@ -379,24 +379,24 @@ func TestMessageHeadersAdapter(t *testing.T) {
 	})
 
 	t.Run("bounds_and_response", func(t *testing.T) {
-		run := func(t *testing.T, key byte, script headerFetchScript) (selectedHeaderResult, error, *headerTestSession) {
+		run := func(t *testing.T, key byte, script headerFetchScript) (selectedHeaderResult, *headerTestSession, error) {
 			t.Helper()
 
 			session := startHeaderSession(t, script)
 			adapter, _ := newHeaderAdapter(key, headerTestLimit, session)
 			result, err := callGetMessageHeaders(t, adapter, headerTestID(t, adapter, headerTestUIDValidity, headerTestUID))
-			return result, err, session
+			return result, session, err
 		}
 
 		atCap := paddedHeader(headerTestLimit, "Subject: at cap", "Message-ID: <cap@croton.test>")
-		result, err, session := run(t, 10, headerScript(" FLAGS ()", atCap))
+		result, session, err := run(t, 10, headerScript(" FLAGS ()", atCap))
 		if err != nil || result.Headers.Subject != "at cap" || result.Headers.MessageID != "<cap@croton.test>" || result.Truncation.Any() {
 			t.Fatalf("header at cap = %+v, %v", result, err)
 		}
 		requireHeaderOnlyFetches(t, session)
 
 		overCap := paddedHeader(headerTestLimit+1, "Subject: over cap")
-		result, err, session = run(t, 11, headerScript(" FLAGS ()", overCap))
+		result, session, err = run(t, 11, headerScript(" FLAGS ()", overCap))
 		requireHeaderRefusal(t, "header cap+1", result, err, CodeBoundsExceeded)
 		if session.aborts == 0 {
 			t.Fatal("header cap+1 did not abort the session")
@@ -409,16 +409,16 @@ func TestMessageHeadersAdapter(t *testing.T) {
 			}
 			return append(lines, "In-Reply-To: <parent@croton.test>")
 		}
-		result, err, _ = run(t, 12, headerScript(" FLAGS ()", metadataHeader(fields(100)...)))
+		result, _, err = run(t, 12, headerScript(" FLAGS ()", metadataHeader(fields(100)...)))
 		if err != nil || result.Headers.InReplyTo != "<parent@croton.test>" || result.Truncation.HeaderCount {
 			t.Fatalf("100 header fields = %+v, %v", result, err)
 		}
-		result, err, _ = run(t, 13, headerScript(" FLAGS ()", metadataHeader(fields(101)...)))
+		result, _, err = run(t, 13, headerScript(" FLAGS ()", metadataHeader(fields(101)...)))
 		if err != nil || result.Headers.InReplyTo != "" || result.Headers.Subject != "counted" || !result.Truncation.HeaderCount {
 			t.Fatalf("101 header fields = %+v, %v", result, err)
 		}
 		malformed := append(fields(101)[:100], "not-a-header")
-		result, err, _ = run(t, 16, headerScript(" FLAGS ()", metadataHeader(malformed...)))
+		result, _, err = run(t, 16, headerScript(" FLAGS ()", metadataHeader(malformed...)))
 		if err != nil || result.Headers.Subject != "counted" || result.Headers.MessageID != "<count@croton.test>" || !result.Truncation.HeaderCount {
 			t.Fatalf("malformed omitted field = %+v, %v", result, err)
 		}
@@ -427,11 +427,11 @@ func TestMessageHeadersAdapter(t *testing.T) {
 		for index := range references {
 			references[index] = fmt.Sprintf("<ref-%02d@croton.test>", index)
 		}
-		result, err, _ = run(t, 14, headerScript(" FLAGS ()", metadataHeader("Message-ID: <refs@croton.test>", "References: "+strings.Join(references[:50], " "))))
+		result, _, err = run(t, 14, headerScript(" FLAGS ()", metadataHeader("Message-ID: <refs@croton.test>", "References: "+strings.Join(references[:50], " "))))
 		if err != nil || !reflect.DeepEqual(result.Headers.References, references[:50]) || result.Truncation.References {
 			t.Fatalf("50 references = %d %+v, %v", len(result.Headers.References), result.Truncation, err)
 		}
-		result, err, _ = run(t, 15, headerScript(" FLAGS ()", metadataHeader("Message-ID: <refs@croton.test>", "References: "+strings.Join(references, " "))))
+		result, _, err = run(t, 15, headerScript(" FLAGS ()", metadataHeader("Message-ID: <refs@croton.test>", "References: "+strings.Join(references, " "))))
 		if err != nil || !reflect.DeepEqual(result.Headers.References, references[1:]) || !result.Truncation.References {
 			t.Fatalf("51 references = %d %+v, %v", len(result.Headers.References), result.Truncation, err)
 		}
@@ -462,7 +462,7 @@ func TestMessageHeadersAdapter(t *testing.T) {
 		for index, test := range structural {
 			script := headerScript(" FLAGS ()", replyHeader)
 			test.edit(&script)
-			result, err, session := run(t, byte(20+index), script)
+			result, session, err := run(t, byte(20+index), script)
 			requireHeaderRefusal(t, test.name, result, err, CodeIMAPProtocol)
 			if session.aborts == 0 || session.bodies != 0 {
 				t.Fatalf("%s: aborts %d bodies %d, want safe abort without body read", test.name, session.aborts, session.bodies)
