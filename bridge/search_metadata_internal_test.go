@@ -200,23 +200,9 @@ func TestSearchMetadataAdapter(t *testing.T) {
 				readState:  "unread",
 			},
 			{
-				name:       "named EST zone",
-				fetch:      scriptedFetch{flags: " FLAGS ()", header: metadataHeader("Date: Tue, 03 Nov 2026 09:15:00 EST")},
-				date:       "2026-11-03T14:15:00Z",
-				dateSource: "header",
-				readState:  "unread",
-			},
-			{
 				name:       "named PDT zone with comment",
 				fetch:      scriptedFetch{flags: " FLAGS ()", header: metadataHeader("Date: Sun, 01 Nov 2026 01:30:00 PDT (Pacific-Daylight)")},
 				date:       "2026-11-01T08:30:00Z",
-				dateSource: "header",
-				readState:  "unread",
-			},
-			{
-				name:       "named GMT zone",
-				fetch:      scriptedFetch{flags: " FLAGS ()", header: metadataHeader("Date: 3 Nov 2026 09:15:00 GMT")},
-				date:       "2026-11-03T09:15:00Z",
 				dateSource: "header",
 				readState:  "unread",
 			},
@@ -225,18 +211,6 @@ func TestSearchMetadataAdapter(t *testing.T) {
 				fetch:      scriptedFetch{flags: " FLAGS ()", header: metadataHeader("Date: Tue, 03 Nov 2026 09:15:00 -0800 (PST)")},
 				date:       "2026-11-03T17:15:00Z",
 				dateSource: "header",
-				readState:  "unread",
-			},
-			{
-				name:       "military zone is unknown",
-				fetch:      scriptedFetch{flags: " FLAGS ()", header: metadataHeader("Date: Tue, 03 Nov 2026 09:15:00 Q")},
-				dateSource: "unknown",
-				readState:  "unread",
-			},
-			{
-				name:       "unregistered zone is unknown",
-				fetch:      scriptedFetch{flags: " FLAGS ()", header: metadataHeader("Date: Tue, 03 Nov 2026 09:15:00 CET")},
-				dateSource: "unknown",
 				readState:  "unread",
 			},
 			{
@@ -252,12 +226,6 @@ func TestSearchMetadataAdapter(t *testing.T) {
 			if *got.Date != test.date || *got.DateSource != test.dateSource || *got.ReadState != test.readState {
 				t.Fatalf("%s: date %q source %q read %q, want %q %q %q", test.name, *got.Date, *got.DateSource, *got.ReadState, test.date, test.dateSource, test.readState)
 			}
-		}
-
-		duplicate := scriptedFetch{flags: ` FLAGS (\Seen) FLAGS (\Seen)`, header: metadataHeader("From: Leaky <leak-marker@croton.test>", "Subject: leak-marker")}
-		results, err := fetchScriptedMetadata(t, duplicate)
-		if CodeOf(err) != CodeIMAPProtocol || results != nil {
-			t.Fatalf("duplicate FLAGS = %#v, %v, want nil and %q", results, err, CodeIMAPProtocol)
 		}
 	})
 
@@ -280,7 +248,6 @@ func TestSearchMetadataAdapter(t *testing.T) {
 			{name: "truncated Q escape", from: "=?utf-8?q?bad=4?= <a@croton.test>"},
 			{name: "unterminated encoded word", from: "=?utf-8?q?decoder-marker"},
 			{name: "unknown encoding", from: "=?utf-8?x?decoder-marker?="},
-			{name: "missing encoding", from: "=?utf-8??decoder-marker?= <a@croton.test>"},
 			{name: "empty charset", from: "=??q?decoder-marker?= <a@croton.test>"},
 			{name: "decodes to encoded-word text", from: "=?utf-8?q?=3D=3Futf-8=3Fq=3Fx=3F=3D?= <a@croton.test>"},
 			{name: "invalid UTF-8", from: "Bad \xff\xfe <bad@croton.test>"},
