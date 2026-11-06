@@ -986,10 +986,13 @@ func (connection *readBudgetConn) observeSearchUIDsLocked(numbers string) {
 	}
 }
 
-// eSearchAllOverlaps reports whether the ALL sequence set of one ESEARCH line
-// names any UID twice. go-imap replaces the result with each matching ESEARCH,
-// so overlap is judged per line. Ranges are compared as intervals and never
-// expanded; an unparseable set is left for go-imap to reject.
+// eSearchAllOverlaps reports whether any top-level ALL sequence set of one
+// ESEARCH line names a UID twice. go-imap replaces the result with each
+// matching ESEARCH, so overlap is judged per line. The line is walked as
+// go-imap reads it, name SP value pairs after the correlator and UID marker,
+// so an ALL nested inside an extension value is skipped rather than mistaken
+// for the result. Ranges are compared as intervals and never expanded; an
+// unparseable line is left for go-imap to reject.
 func eSearchAllOverlaps(rest string) bool {
 	rest = strings.TrimSpace(rest)
 	if strings.HasPrefix(rest, "(") {
@@ -997,21 +1000,89 @@ func eSearchAllOverlaps(rest string) bool {
 		if closing < 0 {
 			return false
 		}
-		rest = rest[closing+1:]
+		rest = strings.TrimPrefix(rest[closing+1:], " ")
 	}
 
-	fields := strings.Fields(rest)
-	var set string
-	for index := 0; index+1 < len(fields); index++ {
-		if strings.EqualFold(fields[index], "ALL") {
-			set = fields[index+1]
-			break
+	name, rest := eSearchAtom(rest)
+	if name == "UID" {
+		name, rest = eSearchAtom(strings.TrimPrefix(rest, " "))
+	}
+
+	for name != "" {
+		if !strings.HasPrefix(rest, " ") {
+			return false
+		}
+		value, after := eSearchValue(rest[1:])
+		if value == "" {
+			return false
+		}
+		if strings.EqualFold(name, "ALL") && sequenceSetOverlaps(value) {
+			return true
+		}
+		if !strings.HasPrefix(after, " ") {
+			return false
+		}
+		name, rest = eSearchAtom(after[1:])
+	}
+
+	return false
+}
+
+// eSearchAtom splits the leading IMAP atom from input.
+func eSearchAtom(input string) (string, string) {
+	index := 0
+	for index < len(input) && isIMAPAtomChar(input[index]) {
+		index++
+	}
+	return input[:index], input[index:]
+}
+
+// eSearchValue splits one ESEARCH return value, a quoted string, a
+// parenthesized list or an atom, from input. It returns an empty value when
+// none is well formed.
+func eSearchValue(input string) (string, string) {
+	if input == "" {
+		return "", input
+	}
+	if input[0] != '"' && input[0] != '(' {
+		return eSearchAtom(input)
+	}
+
+	depth, quoted := 0, false
+	for index := 0; index < len(input); index++ {
+		switch character := input[index]; {
+		case quoted && character == '\\':
+			index++
+		case character == '"':
+			quoted = !quoted
+			if !quoted && depth == 0 {
+				return input[:index+1], input[index+1:]
+			}
+		case quoted:
+		case character == '(':
+			depth++
+		case character == ')':
+			depth--
+			if depth == 0 {
+				return input[:index+1], input[index+1:]
+			}
 		}
 	}
-	if set == "" {
-		return false
-	}
+	return "", input
+}
 
+func isIMAPAtomChar(character byte) bool {
+	switch character {
+	case '(', ')', '{', ' ', '%', '*', '"', '\\', ']':
+		return false
+	default:
+		return character > 0x1f && character != 0x7f
+	}
+}
+
+// sequenceSetOverlaps reports whether the numeric sequence set names any
+// number twice; an unparseable set reports false.
+func sequenceSetOverlaps(set string) bool {
 	type interval struct{ start, stop uint64 }
 	var intervals []interval
 	for _, item := range strings.Split(set, ",") {

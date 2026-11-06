@@ -405,6 +405,8 @@ func TestAdapterRejectsDuplicateSearchUIDsOnTheWire(t *testing.T) {
 		{name: "ESEARCH ALL repeated UID", response: `* ESEARCH (TAG "{TAG}") UID ALL 101,101`},
 		{name: "ESEARCH ALL overlapping range", response: `* ESEARCH (TAG "{TAG}") UID ALL 100:101,101`},
 		{name: "ESEARCH ALL repeated UID after literal TAG", response: "* ESEARCH (TAG {2}\r\n{TAG}) UID ALL 101,101"},
+		{name: "ESEARCH ALL repeated UID after nested extension ALL", response: `* ESEARCH (TAG "{TAG}") UID X (F ALL 101) ALL 101,101`},
+		{name: "ESEARCH ALL repeated UID after quoted extension value", response: `* ESEARCH (TAG "{TAG}") UID X "ALL 101" ALL 101,101`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server, err := testkit.Start(testkit.Options{

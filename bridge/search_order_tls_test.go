@@ -111,22 +111,26 @@ func TestSearchOrderTLS(t *testing.T) {
 }
 
 // runSearchOrderTLSRefusals witnesses that an invalid duplicate ESEARCH ALL
-// set behind a literal TAG stays a code-only refusal in both TLS modes.
+// set behind a literal TAG or after an extension value carrying a nested ALL
+// stays a code-only refusal in both TLS modes.
 func runSearchOrderTLSRefusals(t *testing.T) {
 	for _, test := range []struct {
-		name string
-		fake testkit.TLSMode
-		mode string
+		name     string
+		fake     testkit.TLSMode
+		mode     string
+		response string
 	}{
-		{name: "starttls_duplicate_literal_tag", fake: testkit.StartTLS, mode: bridge.TLSModeStartTLS},
-		{name: "implicit_tls_duplicate_literal_tag", fake: testkit.ImplicitTLS, mode: bridge.TLSModeImplicit},
+		{name: "starttls_duplicate_literal_tag", fake: testkit.StartTLS, mode: bridge.TLSModeStartTLS, response: "* ESEARCH (TAG {2}\r\n{TAG}) UID ALL 101,101"},
+		{name: "implicit_tls_duplicate_literal_tag", fake: testkit.ImplicitTLS, mode: bridge.TLSModeImplicit, response: "* ESEARCH (TAG {2}\r\n{TAG}) UID ALL 101,101"},
+		{name: "starttls_duplicate_after_nested_all", fake: testkit.StartTLS, mode: bridge.TLSModeStartTLS, response: `* ESEARCH (TAG "{TAG}") UID X (F ALL 101) ALL 101,101`},
+		{name: "implicit_tls_duplicate_after_nested_all", fake: testkit.ImplicitTLS, mode: bridge.TLSModeImplicit, response: `* ESEARCH (TAG "{TAG}") UID X (F ALL 101) ALL 101,101`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
 			server, err := testkit.Start(testkit.Options{
 				Mode:     test.fake,
-				Scenario: testkit.Scenario{SearchResponse: "* ESEARCH (TAG {2}\r\n{TAG}) UID ALL 101,101"},
+				Scenario: testkit.Scenario{SearchResponse: test.response},
 			})
 			if err != nil {
 				t.Fatalf("start fake server: %v", err)
@@ -144,7 +148,7 @@ func runSearchOrderTLSRefusals(t *testing.T) {
 			page, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
 
 			if bridge.CodeOf(err) != bridge.CodeIMAPProtocol || page.Messages != nil || page.Truncated {
-				t.Fatalf("SearchMailPage duplicate literal-TAG ESEARCH = %#v, %v, want %q and no partial page", page, err, bridge.CodeIMAPProtocol)
+				t.Fatalf("SearchMailPage duplicate ESEARCH = %#v, %v, want %q and no partial page", page, err, bridge.CodeIMAPProtocol)
 			}
 			if err := server.AssertReadOnlyCommands(); err != nil {
 				t.Fatalf("read-only transcript: %v", err)
