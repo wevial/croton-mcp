@@ -550,9 +550,6 @@ func appendThreadSiblings(ctx context.Context, reader MessageHeaderReader, deps 
 
 	truncated := page.Truncated
 	var unavailable []threadUnavailableMember
-	omit := func(reason string) {
-		unavailable = append(unavailable, threadUnavailableMember{Reason: reason})
-	}
 
 	attempts := 0
 	maximumAttempts := limit - len(members)
@@ -582,14 +579,14 @@ func appendThreadSiblings(ctx context.Context, reader MessageHeaderReader, deps 
 		sibling, err := reader.GetMessageHeaders(ctx, candidate.ID)
 		if err != nil {
 			if threadHeaderLocalFailure(err) {
-				omit(threadUnavailableMalformedHeader)
+				unavailable = append(unavailable, threadUnavailableMember{Reason: threadUnavailableMalformedHeader})
 				truncated = true
 				continue
 			}
 
 			errCode := mapAdapterError(err)
 			if errCode == errStaleID {
-				omit(threadUnavailableStaleID)
+				unavailable = append(unavailable, threadUnavailableMember{Reason: threadUnavailableStaleID})
 				continue
 			}
 
@@ -599,7 +596,7 @@ func appendThreadSiblings(ctx context.Context, reader MessageHeaderReader, deps 
 			continue
 		}
 		if !validReadIdentity(sibling.Metadata) {
-			omit(threadUnavailableInvalidIdentity)
+			unavailable = append(unavailable, threadUnavailableMember{Reason: threadUnavailableInvalidIdentity})
 			truncated = true
 			continue
 		}
