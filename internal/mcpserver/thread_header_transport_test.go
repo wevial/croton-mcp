@@ -240,9 +240,7 @@ func TestThreadHeaderTransport(t *testing.T) {
 					requireHeaderOnlyThreadTranscript(t, server.Commands()[before:], []uint32{101, 102, 103})
 				}
 
-				if err := server.AssertReadOnlyCommands(); err != nil {
-					t.Fatalf("read-only transcript: %v", err)
-				}
+				requireReadOnlyTranscript(t, server)
 				if err := server.AssertNoInsecureAuthentication(); err != nil {
 					t.Fatalf("authentication transcript: %v", err)
 				}
