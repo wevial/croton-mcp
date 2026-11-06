@@ -124,9 +124,6 @@ func (result *getThreadResult) shrinkForOutput() bool {
 	switch {
 	case len(result.UnavailableMembers) > 0:
 		result.UnavailableMembers = result.UnavailableMembers[:len(result.UnavailableMembers)/2]
-		if len(result.UnavailableMembers) == 0 {
-			result.UnavailableMembers = nil
-		}
 	case len(result.Nodes) > 1:
 		result.Nodes = result.Nodes[:(len(result.Nodes)+1)/2]
 	default:

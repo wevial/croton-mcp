@@ -428,10 +428,6 @@ const (
 	threadUnavailableMalformedHeader = "malformed_header"
 )
 
-// maxThreadUnavailableMembers bounds the omission records to the sibling
-// header-read budget of the largest thread.
-const maxThreadUnavailableMembers = maxThreadMessages - 1
-
 // threadUnavailableMember records one attempted sibling that was omitted. It
 // carries only a closed reason: no id, tuple or error text, so it is never a
 // selectable message.
@@ -555,11 +551,6 @@ func appendThreadSiblings(ctx context.Context, reader MessageHeaderReader, deps 
 	truncated := page.Truncated
 	var unavailable []threadUnavailableMember
 	omit := func(reason string) {
-		if len(unavailable) == maxThreadUnavailableMembers {
-			truncated = true
-			return
-		}
-
 		unavailable = append(unavailable, threadUnavailableMember{Reason: reason})
 	}
 
