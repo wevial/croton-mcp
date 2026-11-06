@@ -185,18 +185,16 @@ func controlOfSize(size int) string {
 	return "* OK " + strings.Repeat("c", size-7) + "\r\n"
 }
 
+// structureWithQuoted and structureWithLiteral are structure FETCH frames of
+// exactly size bytes whose last value fills everything but the closing of
+// its lists, the largest value a frame of that size can carry. The literal's
+// head is everything through its declaration.
 func structureWithQuoted(size int) string {
 	head, tail := "* 1 FETCH (UID 7 BODYSTRUCTURE (\"TEXT\" \"PLAIN\" NIL NIL \"", "\"))\r\n"
 
 	return head + strings.Repeat("d", size-len(head)-len(tail)) + tail
 }
 
-// structureWithQuoted and structureWithLiteral are structure FETCH frames of
-// exactly size bytes whose last value fills everything but the closing of
-// its lists, the largest value a frame of that size can carry.
-//
-// structureWithLiteral is a structure FETCH of exactly size bytes whose
-// description is one literal; head is everything through its declaration.
 func structureWithLiteral(size int) (frame, head string, payload int) {
 	prefix, tail := "* 1 FETCH (UID 7 BODYSTRUCTURE (\"TEXT\" \"PLAIN\" NIL NIL ", "))\r\n"
 	for payload = size - len(prefix) - len(tail) - 4; ; payload-- {
