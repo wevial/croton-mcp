@@ -55,30 +55,21 @@ func runListFolders(ctx context.Context, deps Options, arguments json.RawMessage
 // results. From, Date, DateSource and ReadState come from the same metadata
 // observation as the identity; unknown values are explicit, never guessed.
 type messageResult struct {
-	ID                string `json:"id"`
-	Mailbox           string `json:"mailbox"`
-	UIDValidity       uint32 `json:"uidvalidity,omitempty"`
-	UID               uint32 `json:"uid,omitempty"`
-	Subject           string `json:"subject,omitempty"`
-	Size              int64  `json:"size,omitempty"`
-	From              string `json:"from,omitempty"`
-	Date              string `json:"date,omitempty"`
-	DateSource        string `json:"dateSource"`
-	ReadState         string `json:"readState"`
-	MetadataTruncated bool   `json:"metadataTruncated,omitempty"`
+	ID                string            `json:"id"`
+	Mailbox           string            `json:"mailbox"`
+	UIDValidity       uint32            `json:"uidvalidity,omitempty"`
+	UID               uint32            `json:"uid,omitempty"`
+	Subject           string            `json:"subject,omitempty"`
+	Size              int64             `json:"size,omitempty"`
+	From              string            `json:"from,omitempty"`
+	Date              string            `json:"date,omitempty"`
+	DateSource        bridge.DateSource `json:"dateSource"`
+	ReadState         bridge.ReadState  `json:"readState"`
+	MetadataTruncated bool              `json:"metadataTruncated,omitempty"`
 }
 
 // maxSenderResultBytes mirrors the bridge's per-entry sender bound.
 const maxSenderResultBytes = 512
-
-// Closed vocabularies for date provenance and read state.
-const (
-	dateSourceHeader  = "header"
-	dateSourceUnknown = "unknown"
-	readStateRead     = "read"
-	readStateUnread   = "unread"
-	readStateUnknown  = "unknown"
-)
 
 // newMessageResult maps one adapter observation. A date is published only
 // when it is header-sourced RFC3339 UTC, and only an observed FLAGS item
@@ -91,8 +82,7 @@ func newMessageResult(item bridge.MessageMetadata) messageResult {
 		UID:         item.UID,
 		Subject:     item.Subject,
 		Size:        item.Size,
-		DateSource:  dateSourceUnknown,
-		ReadState:   readStateUnknown,
+		ReadState:   item.ReadState,
 	}
 
 	sender, capped := boundedSenderResult(item.From)
@@ -101,14 +91,7 @@ func newMessageResult(item bridge.MessageMetadata) messageResult {
 
 	if item.DateSource == bridge.DateSourceHeader && validHeaderDate(item.Date) {
 		result.Date = item.Date
-		result.DateSource = dateSourceHeader
-	}
-
-	switch item.ReadState {
-	case bridge.ReadStateRead:
-		result.ReadState = readStateRead
-	case bridge.ReadStateUnread:
-		result.ReadState = readStateUnread
+		result.DateSource = bridge.DateSourceHeader
 	}
 
 	return result
