@@ -623,14 +623,15 @@ var rfc5322NamedZones = map[string]int{
 // offset, or the host's offset when it matches the local zone. Dates that
 // already carry a numeric offset pass through; any other named zone, including
 // military letters whose meaning RFC 5322 leaves unknown, is refused. Only the
-// zone token is replaced, so the parser still validates the complete value.
+// zone token is replaced, and anything after the zone must be whitespace or
+// comments, because the parser ignores unconsumed trailing text.
 func numericDateZone(value string) (string, bool) {
 	uncommented := value
 	if index := strings.IndexByte(uncommented, '('); index >= 0 {
 		uncommented = uncommented[:index]
 	}
 	if index := strings.IndexAny(uncommented, "+-"); index >= 0 && len(uncommented) >= index+5 {
-		return value, true
+		return value, onlyCFWS(value[index+5:])
 	}
 
 	zoneEnd := len(strings.TrimRight(uncommented, " \t\r\n"))
@@ -640,7 +641,7 @@ func numericDateZone(value string) (string, bool) {
 	}
 
 	offset, known := rfc5322NamedZones[strings.ToUpper(uncommented[zoneStart:zoneEnd])]
-	if !known {
+	if !known || !onlyCFWS(value[zoneEnd:]) {
 		return "", false
 	}
 
@@ -651,6 +652,30 @@ func numericDateZone(value string) (string, bool) {
 	}
 
 	return value[:zoneStart] + fmt.Sprintf("%s%02d%02d", sign, offset/3600, offset%3600/60) + value[zoneEnd:], true
+}
+
+// onlyCFWS reports whether s holds nothing but folding whitespace and
+// balanced, possibly nested RFC 5322 comments.
+func onlyCFWS(s string) bool {
+	depth := 0
+	for index := 0; index < len(s); index++ {
+		switch char := s[index]; {
+		case depth > 0 && char == '\\':
+			index++
+		case char == '(':
+			depth++
+		case char == ')':
+			if depth == 0 {
+				return false
+			}
+			depth--
+		case depth > 0, char == ' ', char == '\t', char == '\r', char == '\n':
+		default:
+			return false
+		}
+	}
+
+	return depth == 0
 }
 
 func validateFetchedMetadataUIDs(requested []uint32, results []MessageMetadata) error {
