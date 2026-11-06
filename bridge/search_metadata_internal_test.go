@@ -205,6 +205,7 @@ func TestSearchMetadataAdapter(t *testing.T) {
 
 	t.Run("sender_bounds", func(t *testing.T) {
 		multibyte := strings.Repeat("a", senderByteBound-1) + "é"
+		manyWords := strings.TrimSuffix(strings.Repeat("=?utf-8?q?"+strings.Repeat("a", 50)+"?= ", 9), " ") + " <a@croton.test>"
 		expanding := "=?iso-8859-1?b?" + base64.StdEncoding.EncodeToString([]byte(strings.Repeat("\xe9", 360))) + "?="
 		cases := []struct {
 			name      string
@@ -216,6 +217,9 @@ func TestSearchMetadataAdapter(t *testing.T) {
 			{name: "513 bytes", from: strings.Repeat("a", senderByteBound+1), want: strings.Repeat("a", senderByteBound), truncated: true},
 			{name: "rune crossing boundary", from: multibyte, want: strings.Repeat("a", senderByteBound-1), truncated: true},
 			{name: "decoded expansion", from: expanding, want: strings.Repeat("é", senderByteBound/2), truncated: true},
+			{name: "encoded words beyond raw cap", from: manyWords, want: strings.Repeat("a", 450) + " <a@croton.test>"},
+			{name: "malformed Q escape", from: "=?utf-8?q?bad=GG?= <a@croton.test>"},
+			{name: "truncated Q escape", from: "=?utf-8?q?bad=4?= <a@croton.test>"},
 			{name: "invalid UTF-8", from: "Bad \xff\xfe <bad@croton.test>"},
 			{name: "malformed encoded word", from: "=?utf-8?b?!!not-base64!!?= <bad@croton.test>"},
 			{name: "unknown charset", from: "=?x-croton-unknown?q?decoder-marker?= <bad@croton.test>"},

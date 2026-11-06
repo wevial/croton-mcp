@@ -119,7 +119,20 @@ func assertMetadataOnlyTranscript(t *testing.T, server *testkit.Server) {
 	}
 }
 
+// isolateMetadataEnvironment keeps the credential helper and adapter away
+// from any real user home, config, cache or temporary directory.
+func isolateMetadataEnvironment(t *testing.T) {
+	t.Helper()
+
+	root := t.TempDir()
+	for _, name := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "TMPDIR"} {
+		t.Setenv(name, root)
+	}
+}
+
 func TestSearchMetadataTLS(t *testing.T) {
+	isolateMetadataEnvironment(t)
+
 	modes := []struct {
 		name string
 		fake testkit.TLSMode

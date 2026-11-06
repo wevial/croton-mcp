@@ -513,28 +513,63 @@ func boundedSender(header mail.Header) (string, bool) {
 		return "", false
 	}
 
-	raw, truncated := cutUTF8(values[0], maxSenderBytes)
-	if !utf8.ValidString(raw) || !validEncodedWords(raw) {
+	// The raw value is already bounded by the header literal limit; it is
+	// decoded whole so the cap never splits an encoded word.
+	raw := values[0]
+	if !utf8.ValidString(raw) || !validEncodedWords(raw) || !validQEncodedWords(raw) {
 		return "", false
 	}
 
 	decoder := mime.WordDecoder{CharsetReader: charset.NewReaderLabel}
 	decoded, err := decoder.DecodeHeader(raw)
-	if err != nil || !utf8.ValidString(decoded) {
+	if err != nil || !utf8.ValidString(decoded) || strings.ContainsFunc(decoded, unicode.IsControl) {
 		return "", false
 	}
 
-	decoded, decodedTruncated := cutUTF8(decoded, maxSenderBytes)
-	if strings.ContainsFunc(decoded, unicode.IsControl) {
-		return "", false
-	}
-
-	decoded = strings.TrimSpace(decoded)
+	decoded, truncated := cutUTF8(strings.TrimSpace(decoded), maxSenderBytes)
 	if decoded == "" {
 		return "", false
 	}
 
-	return decoded, truncated || decodedTruncated
+	return decoded, truncated
+}
+
+// validQEncodedWords rejects Q-encoded words whose escapes are not two hex
+// digits, which the standard decoder would otherwise pass through verbatim.
+func validQEncodedWords(value string) bool {
+	for {
+		start := strings.Index(value, "=?")
+		if start < 0 {
+			return true
+		}
+
+		value = value[start+2:]
+		end := strings.Index(value, "?=")
+		if end < 0 {
+			return true
+		}
+
+		parts := strings.Split(value[:end], "?")
+		value = value[end+2:]
+		if len(parts) != 3 || !strings.EqualFold(parts[1], "q") {
+			continue
+		}
+
+		text := parts[2]
+		for index := 0; index < len(text); index++ {
+			if text[index] != '=' {
+				continue
+			}
+			if index+2 >= len(text) || !isHexDigit(text[index+1]) || !isHexDigit(text[index+2]) {
+				return false
+			}
+			index += 2
+		}
+	}
+}
+
+func isHexDigit(character byte) bool {
+	return '0' <= character && character <= '9' || 'a' <= character && character <= 'f' || 'A' <= character && character <= 'F'
 }
 
 func cutUTF8(value string, limit int) (string, bool) {
