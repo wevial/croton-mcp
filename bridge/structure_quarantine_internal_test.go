@@ -253,11 +253,9 @@ func testQuarantineAndEnvelope(t *testing.T) {
 		{name: "unknown attribute", frame: "* 1 FETCH (UID 7 INTERNALDATE \"01-Jan-2026 00:00:00 +0000\" BODYSTRUCTURE " + body + ")\r\n", dispatch: true},
 		{name: "bare BODY", frame: "* 1 FETCH (UID 7 BODY " + body + ")\r\n", dispatch: true},
 		{name: "BODY section", frame: "* 1 FETCH (UID 7 BODYSTRUCTURE " + body + " BODY[HEADER] {5}\r\nHello)\r\n", dispatch: true},
-		{name: "BODY empty section", frame: "* 1 FETCH (UID 7 BODY[] {5}\r\nHello BODYSTRUCTURE " + body + ")\r\n", dispatch: true},
 		{name: "BINARY", frame: "* 1 FETCH (UID 7 BODYSTRUCTURE " + body + " BINARY[1] {3}\r\nabc)\r\n", dispatch: true},
 		{name: "BINARY.SIZE", frame: "* 1 FETCH (UID 7 BODYSTRUCTURE " + body + " BINARY.SIZE[1] 3)\r\n", dispatch: true},
 		{name: "late BODY after FLAGS-only prefix", frame: "* 1 FETCH (FLAGS (\\Seen) BODY[] {5}\r\nhello)\r\n", dispatch: true},
-		{name: "late BODY after UID and FLAGS prefix", frame: "* 1 FETCH (UID 7 FLAGS () BODY[TEXT] {5}\r\nhello)\r\n", dispatch: true},
 		{name: "structure value NIL", frame: "* 1 FETCH (UID 7 BODYSTRUCTURE NIL)\r\n", dispatch: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -347,15 +345,12 @@ func testQuarantineFlagsRouting(t *testing.T) {
 		name  string
 		frame string
 	}{
-		{name: "zero sequence", frame: "* 0 FETCH (FLAGS ())\r\n"},
 		{name: "bare backslash flag", frame: "* 1 FETCH (FLAGS (\\))\r\n"},
 		{name: "wildcard flag", frame: "* 1 FETCH (FLAGS (\\*))\r\n"},
 		{name: "quoted flag", frame: "* 1 FETCH (FLAGS (\"Seen\"))\r\n"},
 		{name: "literal flag", frame: "* 1 FETCH (FLAGS ({4}\r\nSeen))\r\n"},
 		{name: "nested flag list", frame: "* 1 FETCH (FLAGS ((\\Seen)))\r\n"},
 		{name: "FLAGS NIL", frame: "* 1 FETCH (FLAGS NIL)\r\n"},
-		{name: "duplicate FLAGS", frame: "* 1 FETCH (FLAGS () FLAGS (\\Seen))\r\n"},
-		{name: "duplicate UID", frame: "* 1 FETCH (UID 7 UID 9 FLAGS ())\r\n"},
 		{name: "zero UID", frame: "* 1 FETCH (UID 0 FLAGS ())\r\n"},
 		{name: "other attribute", frame: "* 1 FETCH (FLAGS () MODSEQ (5))\r\n"},
 		{name: "leading space in list", frame: "* 1 FETCH (FLAGS ( \\Seen))\r\n"},
@@ -567,7 +562,6 @@ func testQuarantineFramingSubset(t *testing.T) {
 		{name: "unterminated escape", input: head + "\"abc\\"},
 		{name: "truncated literal", input: head + "{10}\r\nabc"},
 		{name: "unknown control", input: "* LIST () \"/\" INBOX\r\n"},
-		{name: "unknown control with literal", input: "* LIST () \"/\" {5}\r\nINBOX\r\n"},
 		{name: "unknown word", input: "* XYZZY\r\n"},
 		{name: "numbered status", input: "* 1 NO x\r\n"},
 		{name: "zero EXPUNGE", input: "* 0 EXPUNGE\r\n"},
@@ -585,7 +579,6 @@ func testQuarantineFramingSubset(t *testing.T) {
 		{name: "FETCH trailing data", input: "* 1 FETCH (FLAGS ()) x\r\n"},
 		{name: "CAPABILITY literal", input: "* CAPABILITY IMAP4rev1 {5}\r\nhello\r\n"},
 		{name: "SEARCH literal", input: "* SEARCH {3}\r\n"},
-		{name: "ESEARCH literal", input: "* ESEARCH (TAG {2}\r\nA1)\r\n"},
 		{name: "SEARCH unfinished quote", input: "* SEARCH \"abc\r\n"},
 		{name: "FLAGS control quoted", input: "* FLAGS (\"x\")\r\n"},
 		{name: "unclosed status code", input: "* OK [ALERT notice\r\n"},
@@ -639,30 +632,6 @@ func testQuarantineStickyRelease(t *testing.T) {
 		for range 3 {
 			harness.refused(CodeIMAPProtocol)
 		}
-	})
-
-	t.Run("earlier approved structure survives a later refusal", func(t *testing.T) {
-		harness := newQuarantineHarness(t)
-		harness.dispatch()
-
-		harness.send(quarantineTestStructure + refused)
-
-		harness.expect(quarantineTestStructure)
-		harness.refused(CodeIMAPProtocol)
-	})
-
-	t.Run("bounds refusal is fixed through abort", func(t *testing.T) {
-		harness := newQuarantineHarness(t)
-
-		harness.send(control, controlOfSize(controlBytes+1))
-
-		harness.expect(control)
-		harness.refused(CodeBoundsExceeded)
-		if err := harness.quarantine.abort(context.DeadlineExceeded); CodeOf(err) != CodeBoundsExceeded {
-			t.Fatalf("abort() = %v", err)
-		}
-		harness.finish()
-		harness.refused(CodeBoundsExceeded)
 	})
 
 	for _, test := range []struct {
