@@ -34,29 +34,20 @@ func threadFieldBlock(header []byte) []byte {
 			break
 		}
 
-		if line[0] == ' ' || line[0] == '\t' {
-			if current >= 0 {
-				slots[current] = append(slots[current], raw...)
-			}
-		} else {
+		if line[0] != ' ' && line[0] != '\t' {
 			current = threadFieldSlot(line)
 			if current >= 0 && slots[current] != nil {
 				current = -1
 			}
-			if current >= 0 {
-				slots[current] = append(make([]byte, 0, len(raw)), raw...)
-			}
+		}
+		if current >= 0 {
+			slots[current] = append(slots[current], raw...)
 		}
 
 		lineStart = nextLineStart
 	}
 
-	block := make([]byte, 0, len(header))
-	for _, slot := range slots {
-		block = append(block, slot...)
-	}
-
-	return append(block, "\r\n"...)
+	return append(bytes.Join(slots[:], nil), "\r\n"...)
 }
 
 // threadFieldSlot returns the slot of a field line whose name matches a

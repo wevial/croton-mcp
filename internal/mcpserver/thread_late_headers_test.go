@@ -15,22 +15,15 @@ import (
 
 const threadLateBodySentinel = "croton-thread-late-body-sentinel"
 
-// threadLateFiller returns 100 ordinary fields, filling the default generic
-// header count so any field after them is beyond the count bound.
-func threadLateFiller() string {
-	var filler strings.Builder
-	for index := range 100 {
-		fmt.Fprintf(&filler, "X-Filler-%03d: %d\r\n", index, index)
-	}
-
-	return filler.String()
-}
-
 // threadLateMessages holds a root and reply whose threading fields follow 100
 // generic fields, an early-field equivalent pair whose threading fields lead,
 // and a message with no Subject at all. UIDs run 101 to 105.
 func threadLateMessages() []string {
-	filler := threadLateFiller()
+	var fields strings.Builder
+	for index := range 100 {
+		fmt.Fprintf(&fields, "X-Filler-%03d: %d\r\n", index, index)
+	}
+	filler := fields.String()
 	body := "\r\n" + threadLateBodySentinel + "\r\n"
 
 	return []string{
