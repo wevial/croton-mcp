@@ -112,6 +112,7 @@ func (result *getMessageResult) shrinkForOutput() bool {
 		return false
 	}
 
+	result.Truncation.Output = true
 	result.Truncated = true
 	return true
 }
@@ -133,6 +134,7 @@ func (result *listAttachmentsResult) shrinkForOutput() bool {
 	}
 
 	result.Attachments = result.Attachments[:len(result.Attachments)/2]
+	result.Truncation.Output = true
 	result.Truncated = true
 	return true
 }
@@ -172,9 +174,13 @@ func (*getMessageResult) selectableIdentity() {}
 
 func (*listAttachmentsResult) selectableIdentity() {}
 
-// The message fallbacks keep the exact identity; encodeBounded refuses them
-// when even that does not fit.
+// The message fallbacks keep the exact identity and every prior truncation
+// reason, adding the output reason; encodeBounded refuses them when even that
+// does not fit.
 func (result *getMessageResult) fallbackForOutput() any {
+	truncation := result.Truncation
+	truncation.Output = true
+
 	return &getMessageResult{
 		ID:          result.ID,
 		Mailbox:     result.Mailbox,
@@ -183,6 +189,7 @@ func (result *getMessageResult) fallbackForOutput() any {
 		Headers:     bridge.CanonicalHeaders{},
 		TextSource:  fallbackString(result.TextSource),
 		Attachments: []attachmentResult{},
+		Truncation:  truncation,
 		Truncated:   true,
 	}
 }
@@ -197,12 +204,16 @@ func (result *getThreadResult) fallbackForOutput() any {
 }
 
 func (result *listAttachmentsResult) fallbackForOutput() any {
+	truncation := result.Truncation
+	truncation.Output = true
+
 	return &listAttachmentsResult{
 		ID:          result.ID,
 		Mailbox:     result.Mailbox,
 		UIDValidity: result.UIDValidity,
 		UID:         result.UID,
 		Attachments: []attachmentResult{},
+		Truncation:  truncation,
 		Truncated:   true,
 	}
 }
