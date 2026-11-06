@@ -183,6 +183,11 @@ type Options struct {
 	// Labels opts into the linked folder and label-view model; see STATEFUL.md.
 	// It cannot be combined with Stateful, Messages, Seen or Scenario.
 	Labels *LabelOptions
+
+	// BodyStructures optionally gives each custom Message, by index, a typed
+	// BODYSTRUCTURE tree and makes custom UID FETCH request-driven; see
+	// STATEFUL.md. Seen may accompany it. Nil keeps legacy custom FETCH.
+	BodyStructures []*BodyPart
 }
 
 // Command is one client command observed by a Server.
@@ -205,6 +210,9 @@ type Server struct {
 	stateful  *mailboxStore
 	labels    *labelStore
 	done      chan struct{}
+
+	// bodyStructures holds each custom message's rendered BODYSTRUCTURE.
+	bodyStructures []string
 
 	mu               sync.Mutex
 	closed           bool
@@ -300,8 +308,14 @@ func Start(options Options) (*Server, error) {
 		}
 	}
 
+	bodyStructures, err := newBodyStructures(options)
+	if err != nil {
+		return nil, err
+	}
+
 	options.Messages = append([]string(nil), options.Messages...)
 	options.Seen = append([]bool(nil), options.Seen...)
+	options.BodyStructures = nil
 
 	certificate, caDER, err := generateCertificate()
 	if err != nil {
@@ -324,14 +338,15 @@ func Start(options Options) (*Server, error) {
 			Certificates: []tls.Certificate{certificate},
 			MinVersion:   tls.VersionTLS12,
 		},
-		caDER:       caDER,
-		leafDER:     certificate.Certificate[0],
-		spkiPin:     sha256.Sum256(leaf.RawSubjectPublicKeyInfo),
-		options:     options,
-		stateful:    stateful,
-		labels:      labels,
-		done:        make(chan struct{}),
-		connections: make(map[net.Conn]struct{}),
+		caDER:          caDER,
+		leafDER:        certificate.Certificate[0],
+		spkiPin:        sha256.Sum256(leaf.RawSubjectPublicKeyInfo),
+		options:        options,
+		stateful:       stateful,
+		labels:         labels,
+		done:           make(chan struct{}),
+		bodyStructures: bodyStructures,
+		connections:    make(map[net.Conn]struct{}),
 	}
 
 	server.wg.Add(1)
@@ -1275,6 +1290,10 @@ func isUnsafeBodyFetch(command Command) bool {
 
 // writeFixtureFetch handles both single-message reads and batched metadata reads.
 func (server *Server) writeFixtureFetch(writer *bufio.Writer, tag, raw string) bool {
+	if server.bodyStructures != nil {
+		return server.writeStructureFetch(writer, tag, raw)
+	}
+
 	fields := strings.Fields(raw)
 	if len(fields) < 4 {
 		return server.writeLines(writer, tagged(tag, "BAD missing UID set"))
