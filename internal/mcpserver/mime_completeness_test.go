@@ -366,32 +366,62 @@ func TestMIMECompletenessPublic(t *testing.T) {
 			attachmentPart("zero.bin", "; size=0", zeroContent),
 			attachmentPart("absent.bin", "", absentContent),
 		})
-		server, adapter := startIntegrationAdapterWithOptions(t, testkit.Options{Messages: []string{sizes}})
+		// Twenty-one attachments exceed the 20-entry bound, so the second
+		// message is a bounded omission served over the same verified TLS.
+		omittedContent := highEntropySentinel(t, "OMITTED")
+		omitted := []string{}
+		for index := range 21 {
+			omitted = append(omitted, attachmentPart(fmt.Sprintf("file-%02d.bin", index), "; size=4", omittedContent))
+		}
+		omission := multipartMessage("Synthetic completeness omission", omitted)
+		server, adapter := startIntegrationAdapterWithOptions(t, testkit.Options{Messages: []string{sizes, omission}})
 		var audit bytes.Buffer
 		session := connectTestClient(t, Options{Mail: adapter, Audit: NewAuditor(&audit)})
 
 		_, results := searchItems(t, session, map[string]any{"mailbox": "INBOX", "subject": "Synthetic completeness"})
-		if len(results) != 1 || flatTuple(t, results[0]).Mailbox != "INBOX" {
-			t.Fatalf("search returned %v, want the one fixture message", results)
+		if len(results) != 2 {
+			t.Fatalf("search returned %d fixture messages, want 2", len(results))
 		}
-		id, _ := results[0]["id"].(string)
+		ids := map[string]string{}
+		tuples := map[string]readTuple{}
+		for _, item := range results {
+			subject, _ := item["subject"].(string)
+			ids[subject], _ = item["id"].(string)
+			tuples[subject] = flatTuple(t, item)
+		}
 
+		twenty := make([]wantAttachment, 0, 20)
+		for index := range 20 {
+			twenty = append(twenty, wantAttachment{filename: fmt.Sprintf("file-%02d.bin", index), size: 4, known: true})
+		}
 		before := len(server.Commands())
-		message, listing := selectedReads(t, session, id, flatTuple(t, results[0]))
-		want := []wantAttachment{{filename: "zero.bin", size: 0, known: true}, {filename: "absent.bin"}}
-		requireAttachmentEntries(t, "get_message", message, want)
-		requireAttachmentEntries(t, "list_attachments", listing, want)
-		requireReasons(t, "get_message", message, getMessageReasons)
-		requireReasons(t, "list_attachments", listing, listAttachmentsReasons)
-
-		for _, tool := range []string{"get_message", "list_attachments"} {
-			raw, err := json.Marshal(callTool(t, session, tool, map[string]any{"messageId": id}))
-			if err != nil {
-				t.Fatalf("marshal SDK result: %v", err)
+		for _, tc := range []struct {
+			subject string
+			want    []wantAttachment
+			reasons []string
+		}{
+			{"Synthetic completeness sizes", []wantAttachment{{filename: "zero.bin", size: 0, known: true}, {filename: "absent.bin"}}, nil},
+			{"Synthetic completeness omission", twenty, []string{"attachments"}},
+		} {
+			id := ids[tc.subject]
+			if id == "" || tuples[tc.subject].Mailbox != "INBOX" {
+				t.Fatalf("search did not return %q", tc.subject)
 			}
-			for _, sentinel := range []string{zeroContent, absentContent} {
-				if bytes.Contains(raw, []byte(sentinel)) || bytes.Contains(raw, []byte(base64.StdEncoding.EncodeToString([]byte(sentinel))[:16])) {
-					t.Fatalf("%s leaked attachment bytes", tool)
+			message, listing := selectedReads(t, session, id, tuples[tc.subject])
+			requireAttachmentEntries(t, tc.subject+" get_message", message, tc.want)
+			requireAttachmentEntries(t, tc.subject+" list_attachments", listing, tc.want)
+			requireReasons(t, tc.subject+" get_message", message, getMessageReasons, tc.reasons...)
+			requireReasons(t, tc.subject+" list_attachments", listing, listAttachmentsReasons, tc.reasons...)
+
+			for _, tool := range []string{"get_message", "list_attachments"} {
+				raw, err := json.Marshal(callTool(t, session, tool, map[string]any{"messageId": id}))
+				if err != nil {
+					t.Fatalf("marshal SDK result: %v", err)
+				}
+				for _, sentinel := range []string{zeroContent, absentContent, omittedContent} {
+					if bytes.Contains(raw, []byte(sentinel)) || bytes.Contains(raw, []byte(base64.StdEncoding.EncodeToString([]byte(sentinel))[:16])) {
+						t.Fatalf("%s leaked attachment bytes", tool)
+					}
 				}
 			}
 		}
@@ -417,7 +447,7 @@ func TestMIMECompletenessPublic(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		for _, sentinel := range []string{zeroContent, absentContent, "zero.bin", "absent.bin", "croton.test"} {
+		for _, sentinel := range []string{zeroContent, absentContent, omittedContent, "zero.bin", "absent.bin", "croton.test"} {
 			if strings.Contains(audit.String(), sentinel) {
 				t.Fatalf("audit recorded message content %q", sentinel)
 			}
