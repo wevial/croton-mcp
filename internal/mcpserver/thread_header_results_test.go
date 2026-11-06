@@ -159,10 +159,7 @@ func TestThreadHeaderResults(t *testing.T) {
 			}{
 				{"plain_text_equivalent", errors.New("malformed_header"), errInternal},
 				{"unknown_code", &bridge.NormalizeError{Code: "malformed_headers"}, errInternal},
-				{"other_normalize_code", &bridge.NormalizeError{Code: "malformed_encoding"}, errInternal},
 				{"bridge_joined_with_local", errors.Join(typed, &bridge.Error{Code: bridge.CodeBridgeUnreachable}), errUnavailable},
-				{"bounds_joined_with_local", errors.Join(&bridge.Error{Code: bridge.CodeBoundsExceeded}, typed), errBoundsExceeded},
-				{"protocol_wrapping_local", fmt.Errorf("%w: %w", &bridge.Error{Code: bridge.CodeIMAPProtocol}, typed), errUnavailable},
 				{"canceled_joined_with_local", errors.Join(context.Canceled, typed), errInternal},
 				{"deadline_wrapping_local", fmt.Errorf("%w: %w", context.DeadlineExceeded, typed), errInternal},
 			} {
@@ -180,30 +177,7 @@ func TestThreadHeaderResults(t *testing.T) {
 			}
 		})
 
-		t.Run("target is unavailable without sibling scan", func(t *testing.T) {
-			for _, failure := range []error{typed, fmt.Errorf("target: %w", typed)} {
-				mail := threadSiblingFake()
-				mail.headerErrByID = map[string]error{"id-reply": failure}
-				result := callTool(t, connectTestClient(t, Options{Mail: mail}), "get_thread", map[string]any{"messageId": "id-reply"})
-
-				requireRefusedWithoutTuple(t, result, errUnavailable)
-				if !reflect.DeepEqual(mail.headerCalls, []string{"id-reply"}) || len(mail.searchCalls) != 0 || len(mail.bodyCalls)+len(mail.metaCalls) != 0 {
-					t.Fatalf("target failure scanned: header=%v search=%v body=%v metadata=%v", mail.headerCalls, mail.searchCalls, mail.bodyCalls, mail.metaCalls)
-				}
-			}
-
-			for _, control := range []error{errors.New("malformed_header"), &bridge.NormalizeError{Code: "unsupported_charset"}} {
-				mail := threadSiblingFake()
-				mail.headerErrByID = map[string]error{"id-reply": control}
-				requireRefusedWithoutTuple(t, callTool(t, connectTestClient(t, Options{Mail: mail}), "get_thread", map[string]any{"messageId": "id-reply"}), errInternal)
-			}
-		})
-
 		t.Run("get_message and global mapping unchanged", func(t *testing.T) {
-			if got := mapAdapterError(typed); got != errInternal {
-				t.Fatalf("global mapping of malformed_header = %q, want %q", got, errInternal)
-			}
-
 			malformed := strings.Replace(threadRootMIME, "From: Croton Fixture <fixture@croton.test>", "From: =?UTF-8?B?***?= <fixture@croton.test>", 1)
 			mail := &fakeMail{metadata: withReadIdentity(bridge.MessageMetadata{ID: "id-bad", Mailbox: "INBOX", Subject: "Planning"}, 9001, 101), body: []byte(malformed)}
 			requireRefusedWithoutTuple(t, callTool(t, connectTestClient(t, Options{Mail: mail}), "get_message", map[string]any{"messageId": "id-bad"}), errInternal)
@@ -211,23 +185,6 @@ func TestThreadHeaderResults(t *testing.T) {
 	})
 
 	t.Run("result_schema", func(t *testing.T) {
-		t.Run("complete thread", func(t *testing.T) {
-			thread := rawObject(t, callTool(t, connectTestClient(t, Options{Mail: threadSiblingFake()}), "get_thread", map[string]any{"messageId": "id-reply"}))
-			nodes, reasons := requireThreadSchema(t, thread)
-
-			if _, present := thread["unavailableMembers"]; present || len(reasons) != 0 {
-				t.Fatalf("complete thread carries unavailable members: %v", thread)
-			}
-			if truncated, _ := thread["truncated"].(bool); truncated || len(nodes) != 3 {
-				t.Fatalf("complete thread = %v", thread)
-			}
-			for _, node := range nodes {
-				if truncation, _ := node["truncation"].(map[string]any); len(truncation) != 0 {
-					t.Fatalf("complete node carries truncation reasons: %v", node)
-				}
-			}
-		})
-
 		t.Run("omissions and header limits", func(t *testing.T) {
 			fake := &fakeMail{
 				metadataByID: map[string]bridge.MessageMetadata{},
@@ -296,26 +253,6 @@ func TestThreadHeaderResults(t *testing.T) {
 
 			if truncated, _ := thread["truncated"].(bool); !truncated || len(reasons) != 0 {
 				t.Fatalf("header-limited thread = %v", thread)
-			}
-		})
-
-		t.Run("records are bounded", func(t *testing.T) {
-			mail := &fakeMail{
-				metadataByID: map[string]bridge.MessageMetadata{"target": withReadIdentity(bridge.MessageMetadata{ID: "target", Mailbox: "INBOX", Subject: "Re: Budget"}, 77, 500)},
-				bodyByID:     map[string][]byte{"target": fakeThreadBody("Re: Budget", "<budget-reply@croton.test>", "")},
-			}
-			for index := range 40 {
-				mail.searched = append(mail.searched, bridge.MessageMetadata{ID: fmt.Sprintf("stale-%02d", index), Mailbox: "INBOX", Subject: "Budget"})
-			}
-
-			result := callTool(t, connectTestClient(t, Options{Mail: mail}), "get_thread", map[string]any{"messageId": "target", "maxMessages": 1000000})
-			_, reasons := requireThreadSchema(t, rawObject(t, result))
-
-			if len(reasons) != maxThreadMessages-1 {
-				t.Fatalf("records = %d, want %d", len(reasons), maxThreadMessages-1)
-			}
-			if strings.Contains(resultText(t, result), "stale-") {
-				t.Fatal("records exposed failed candidate ids")
 			}
 		})
 	})

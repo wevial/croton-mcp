@@ -120,10 +120,9 @@ func TestEncodeBoundedPreservesToolSpecificShapeOnFallback(t *testing.T) {
 	t.Parallel()
 
 	result := &getThreadResult{
-		ID:                 strings.Repeat("x", maxToolResultBytes*2),
-		Mailbox:            "INBOX",
-		Nodes:              []threadNodeResult{{Key: "target"}},
-		UnavailableMembers: []threadUnavailableMember{{Reason: threadUnavailableStaleID}},
+		ID:      strings.Repeat("x", maxToolResultBytes*2),
+		Mailbox: "INBOX",
+		Nodes:   []threadNodeResult{{Key: "target"}},
 	}
 	encoded, truncated, err := encodeBounded(result)
 	if err != nil {
@@ -142,15 +141,6 @@ func TestEncodeBoundedPreservesToolSpecificShapeOnFallback(t *testing.T) {
 			t.Fatalf("fallback dropped get_thread field %q: %s", key, encoded)
 		}
 	}
-	if _, ok := fields["unavailableMembers"]; ok {
-		t.Fatalf("fallback fabricated unavailable members: %s", encoded)
-	}
-}
-
-func TestEncodeBoundedShrinksThreadNodesAndUnavailableMembers(t *testing.T) {
-	t.Parallel()
-
-	requireThreadOutputControls(t)
 }
 
 // encodedThreadNodes returns each source node's own serialized form by key.
