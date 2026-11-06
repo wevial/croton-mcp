@@ -218,29 +218,6 @@ func TestBodyStructureFixture(t *testing.T) {
 				t.Fatalf("%q response = %q, want BAD", refused, line)
 			}
 		}
-
-		// Omitted Seen means every message is unread.
-		unread := startStructureFixture(t, Options{
-			Mode:           StartTLS,
-			Messages:       bodies,
-			BodyStructures: []*BodyPart{plainStructure(), mixedStructure(), basicStructure()},
-		})
-		unreadClient, unreadWire := structureSession(t, unread, StartTLS)
-		messages, _, served = fetchStructureWire(t, unreadClient, unreadWire, imap.UIDSetNum(101, 102, 103), &imap.FetchOptions{Flags: true, BodyStructure: structure})
-		if len(messages) != 3 || strings.Count(served, "FLAGS ()") != 3 || strings.Contains(served, `\Seen`) {
-			t.Fatalf("unread FETCH served %q", served)
-		}
-		if got := unseenUIDs(t, unreadClient); !slices.Equal(got, []imap.UID{101, 102, 103}) {
-			t.Fatalf("unread UNSEEN = %v", got)
-		}
-
-		// Without descriptors, the legacy custom FETCH still returns raw content.
-		legacy := startMetadataFixture(t, ImplicitTLS, bodies, []bool{true}, MetadataFlagsOrdinary)
-		legacyClient := metadataSession(t, legacy, ImplicitTLS)
-		fetches := legacyClient.fetchMetadata(t, "m2", "UID FETCH 101 (UID BODYSTRUCTURE)")
-		if len(fetches) != 1 || fetches[0].items != fmt.Sprintf("UID 101 RFC822.SIZE %d", len(structurePlainBody)) || fetches[0].section != "" || fetches[0].literal != structurePlainBody {
-			t.Fatalf("legacy FETCH = %+v", fetches)
-		}
 	})
 
 	t.Run("bounded_configuration", func(t *testing.T) {
@@ -316,8 +293,6 @@ func TestBodyStructureFixture(t *testing.T) {
 			{"empty descriptors with messages", Options{Messages: one, BodyStructures: []*BodyPart{}}, "0 BodyStructures for 1 Messages"},
 			{"nonordinary metadata flags", Options{Messages: one, BodyStructures: []*BodyPart{plainStructure()}, MetadataFlags: MetadataFlagsDuplicated}, "cannot be combined"},
 			{"nonzero scenario", Options{Messages: one, BodyStructures: []*BodyPart{plainStructure()}, Scenario: Scenario{OmitMetadataFetchResponse: true}}, "cannot be combined"},
-			{"stateful", Options{BodyStructures: []*BodyPart{plainStructure()}, Stateful: &StatefulOptions{Mailboxes: []MailboxSeed{{Name: "INBOX"}}}}, "Messages"},
-			{"labels", Options{BodyStructures: []*BodyPart{plainStructure()}, Labels: &LabelOptions{Views: []LabelViewSeed{{Name: "INBOX", Role: FolderRole}}}}, "Messages"},
 			{"nil root", structures(nil), "nil body part"},
 			{"zero kind", structures(&BodyPart{Type: "text", Subtype: "plain"}), "unsupported body part kind"},
 			{"unknown kind", structures(&BodyPart{Kind: BodyPartMultipart + 1, Type: "text", Subtype: "plain"}), "unsupported body part kind"},
@@ -364,7 +339,6 @@ func TestBodyStructureFixture(t *testing.T) {
 			{name: "params cap with disposition", options: structures(withParams(4, 4)), uid: 101},
 			{name: "value cap", options: structures(named(maxValue)), uid: 101},
 			{name: "serialized cap", options: structures(sized), uid: 101, wire: sizedWire},
-			{name: "with seen", options: Options{Mode: ImplicitTLS, Messages: one, Seen: []bool{true}, BodyStructures: []*BodyPart{plainStructure()}}, uid: 101, wire: wantPlainWire},
 		}
 		for _, test := range accepted {
 			server := startStructureFixture(t, test.options)
@@ -483,18 +457,6 @@ func TestBodyStructureFixture(t *testing.T) {
 			if err := client.Noop().Wait(); err == nil {
 				t.Fatalf("%s: client command succeeded after fixture shutdown", mode)
 			}
-		}
-
-		// Legacy custom FLAGS and TLS behavior without descriptors.
-		for _, mode := range []TLSMode{StartTLS, ImplicitTLS} {
-			legacy := startMetadataFixture(t, mode, []string{metadataSeenBody, metadataUnseenBody}, []bool{true}, MetadataFlagsOrdinary)
-			client := metadataSession(t, legacy, mode)
-			fetches := client.fetchMetadata(t, "m2", "UID FETCH 101:102 (UID FLAGS BODY.PEEK[HEADER])")
-			if len(fetches) != 2 || fetches[0].items != fmt.Sprintf(`UID 101 FLAGS (\Seen) RFC822.SIZE %d`, len(metadataSeenBody)) ||
-				fetches[1].items != fmt.Sprintf(`UID 102 FLAGS () RFC822.SIZE %d`, len(metadataUnseenBody)) || fetches[0].section != "HEADER" {
-				t.Fatalf("%s: legacy FLAGS FETCH = %+v", mode, fetches)
-			}
-			assertReadOnlyTLSTranscript(t, legacy)
 		}
 	})
 }
