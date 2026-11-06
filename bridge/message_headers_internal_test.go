@@ -414,7 +414,7 @@ func TestMessageHeadersAdapter(t *testing.T) {
 			t.Fatalf("100 header fields = %+v, %v", result, err)
 		}
 		result, _, err = run(t, 13, headerScript(" FLAGS ()", metadataHeader(fields(101)...)))
-		if err != nil || result.Headers.InReplyTo != "" || result.Headers.Subject != "counted" || !result.Truncation.HeaderCount {
+		if err != nil || result.Headers.InReplyTo != "<parent@croton.test>" || result.Headers.Subject != "counted" || !result.Truncation.HeaderCount {
 			t.Fatalf("101 header fields = %+v, %v", result, err)
 		}
 		malformed := append(fields(101)[:100], "not-a-header")
