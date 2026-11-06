@@ -212,6 +212,40 @@ bounded context, not a selectable identity. A truncated or fallback result
 lists fewer items, but every item it retains is a complete selectable
 identity.
 
+### Attachment size and MIME completeness
+
+Each attachment entry of `get_message` and `list_attachments` carries
+`hasDeclaredSize`. When it is `true`, `declaredSize` is present and is the
+nonnegative `size` parameter the sender declared in `Content-Disposition`,
+including a declared `0`. When it is `false` the size is unknown and
+`declaredSize` is omitted; a missing or invalid declaration is never reported
+as zero. The value is a sender-controlled declaration, not a count of decoded
+bytes or of the transferred part.
+
+Both results also carry a `truncation` object that names every limit that
+shaped them. It is always present and holds only `true` keys, so a complete
+result has an empty `truncation` object and no `truncated` marker.
+`get_message` reasons are `headers`, `headerCount`, `text`, `mimeParts`,
+`mimeDepth`, `attachments`, `references` and `output`. `list_attachments`
+reasons are `headers`, `headerCount`, `mimeParts`, `mimeDepth`, `attachments`
+and `output`; text and reference limits do not mark an attachment list
+incomplete. `mimeParts`, `mimeDepth` and `headerCount` mean MIME parts, nested
+entities or header fields beyond the parser's bounds were not examined, so
+attachments may be missing; `attachments` means entries beyond the 20-entry
+cap were omitted or their metadata was shortened. `output` means the
+100 000-byte result cap removed text or whole attachment entries, or replaced
+the result with its identity-only fallback; earlier reasons are kept.
+`truncated` is `true` whenever any listed reason is.
+
+An empty `attachments` list with an empty `truncation` object means the
+parsed message declared no attachments. An empty list with any reason is
+incomplete, not proof that the message has no attachments.
+
+Listing attachments still fetches and parses the bounded raw MIME message with
+`BODY.PEEK[]`; it is not a metadata-only transfer and never returns attachment
+bytes. A message whose raw MIME or header block exceeds the parser's bounds
+may be refused with an error code instead of a result.
+
 ### Search order and limits
 
 `search_mail` and the search behind `select_digest_candidates` return results
