@@ -126,30 +126,24 @@ func (harness *quarantineHarness) refused(code string) {
 	}
 }
 
-// release reads everything up to the terminal error.
-func (harness *quarantineHarness) release() (string, error) {
+// releaseExactly reads everything up to the terminal error and requires
+// exactly want followed by code.
+func (harness *quarantineHarness) releaseExactly(want, code string) {
+	harness.t.Helper()
+
 	var got []byte
+	var err error
 	buffer := make([]byte, 4096)
-	for {
-		count, err := harness.quarantine.Read(buffer)
+	for err == nil {
+		var count int
+		count, err = harness.quarantine.Read(buffer)
 		got = append(got, buffer[:count]...)
 		if count > 0 && err != nil {
 			harness.t.Fatalf("Read() returned %d bytes with error %v", count, err)
 		}
-		if err != nil {
-			return string(got), err
-		}
 	}
-}
-
-// releaseExactly sends input, closes the peer and requires exactly want
-// followed by code.
-func (harness *quarantineHarness) releaseExactly(want, code string) {
-	harness.t.Helper()
-
-	got, err := harness.release()
-	if got != want {
-		harness.t.Fatalf("released bytes:\n got %q\nwant %q", clip(got), clip(want))
+	if string(got) != want {
+		harness.t.Fatalf("released bytes:\n got %q\nwant %q", clip(string(got)), clip(want))
 	}
 	if CodeOf(err) != code || err.Error() != code {
 		harness.t.Fatalf("terminal error = %v, want %q", err, code)

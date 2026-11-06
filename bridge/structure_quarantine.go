@@ -225,18 +225,14 @@ func (quarantine *structureQuarantine) Read(buffer []byte) (int, error) {
 		if quarantine.terminal != nil {
 			continue
 		}
-		quarantine.acceptLocked(quarantine.scratch[:count])
+		for _, value := range quarantine.scratch[:count] {
+			if feedErr := quarantine.feedLocked(value); feedErr != nil {
+				quarantine.refuseLocked(feedErr)
+				break
+			}
+		}
 		if quarantine.terminal == nil && err != nil {
 			quarantine.sourceFailedLocked()
-		}
-	}
-}
-
-func (quarantine *structureQuarantine) acceptLocked(input []byte) {
-	for _, value := range input {
-		if err := quarantine.feedLocked(value); err != nil {
-			quarantine.refuseLocked(err)
-			return
 		}
 	}
 }
