@@ -307,7 +307,7 @@ func validMessageIdentifier(identifier string) bool {
 }
 
 // fetchNormalizedMessage composes the two read-only adapter operations shared
-// by get_message, get_thread, and list_attachments.
+// by get_message and list_attachments.
 func fetchNormalizedMessage(ctx context.Context, deps Options, identifier string) (bridge.MessageMetadata, bridge.NormalizedMessage, string) {
 	metadata, err := deps.Mail.GetMessageMetadata(ctx, identifier)
 	if err != nil {
@@ -418,17 +418,22 @@ func runGetThread(ctx context.Context, deps Options, arguments json.RawMessage) 
 		return nil, errInvalidArgument
 	}
 
-	targetMetadata, targetNormalized, errCode := fetchNormalizedMessage(ctx, deps, input.MessageID)
-	if errCode != "" {
-		return nil, errCode
+	reader, ok := deps.Mail.(MessageHeaderReader)
+	if !ok {
+		return nil, errUnsupported
 	}
-	if !validReadIdentity(targetMetadata) {
+
+	target, err := reader.GetMessageHeaders(ctx, input.MessageID)
+	if err != nil {
+		return nil, mapAdapterError(err)
+	}
+	if !validReadIdentity(target.Metadata) {
 		return nil, errUnavailable
 	}
 
-	identities := map[string]bridge.MessageMetadata{input.MessageID: targetMetadata}
-	members := []bridge.ThreadMessage{{Key: input.MessageID, Headers: targetNormalized.Headers}}
-	members, siblingsTruncated, errCode := appendThreadSiblings(ctx, deps, members, identities, targetMetadata, limit)
+	identities := map[string]bridge.MessageMetadata{input.MessageID: target.Metadata}
+	members := []bridge.ThreadMessage{{Key: input.MessageID, Headers: target.Headers}}
+	members, siblingsTruncated, errCode := appendThreadSiblings(ctx, reader, deps, members, identities, target.Metadata, limit)
 	if errCode != "" {
 		return nil, errCode
 	}
@@ -437,7 +442,7 @@ func runGetThread(ctx context.Context, deps Options, arguments json.RawMessage) 
 
 	result := getThreadResult{
 		ID:        input.MessageID,
-		Mailbox:   targetMetadata.Mailbox,
+		Mailbox:   target.Metadata.Mailbox,
 		Nodes:     make([]threadNodeResult, 0, len(thread.Nodes)),
 		Truncated: siblingsTruncated || thread.Truncation.Any(),
 	}
@@ -465,10 +470,11 @@ func runGetThread(ctx context.Context, deps Options, arguments json.RawMessage) 
 }
 
 // appendThreadSiblings finds same-subject mailbox siblings with one bounded
-// search and at most limit-1 additional bounded read-only fetches. It records
-// each appended sibling's already-fetched metadata in identities by opaque
-// key, and omits a sibling whose read identity is incomplete.
-func appendThreadSiblings(ctx context.Context, deps Options, members []bridge.ThreadMessage, identities map[string]bridge.MessageMetadata, target bridge.MessageMetadata, limit int) ([]bridge.ThreadMessage, bool, string) {
+// search and at most limit-1 additional selected header-only reads. It
+// records each appended sibling's metadata from the same header read in
+// identities by opaque key, and omits a sibling whose read identity is
+// incomplete.
+func appendThreadSiblings(ctx context.Context, reader MessageHeaderReader, deps Options, members []bridge.ThreadMessage, identities map[string]bridge.MessageMetadata, target bridge.MessageMetadata, limit int) ([]bridge.ThreadMessage, bool, string) {
 	subject := baseSubject(target.Subject)
 	if subject == "" || target.Mailbox == "" {
 		return members, false, ""
@@ -505,23 +511,25 @@ func appendThreadSiblings(ctx context.Context, deps Options, members []bridge.Th
 		}
 		attempts++
 
-		metadata, normalized, errCode := fetchNormalizedMessage(ctx, deps, candidate.ID)
-		if errCode == errStaleID {
-			continue
-		}
-		if errCode != "" {
+		sibling, err := reader.GetMessageHeaders(ctx, candidate.ID)
+		if err != nil {
+			errCode := mapAdapterError(err)
+			if errCode == errStaleID {
+				continue
+			}
+
 			return nil, false, errCode
 		}
-		if !strings.EqualFold(baseSubject(normalized.Headers.Subject), subject) {
+		if !strings.EqualFold(baseSubject(sibling.Headers.Subject), subject) {
 			continue
 		}
-		if !validReadIdentity(metadata) {
+		if !validReadIdentity(sibling.Metadata) {
 			truncated = true
 			continue
 		}
 
-		identities[candidate.ID] = metadata
-		members = append(members, bridge.ThreadMessage{Key: candidate.ID, Headers: normalized.Headers})
+		identities[candidate.ID] = sibling.Metadata
+		members = append(members, bridge.ThreadMessage{Key: candidate.ID, Headers: sibling.Headers})
 	}
 
 	return members, truncated, ""

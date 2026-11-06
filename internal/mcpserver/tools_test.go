@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"testing"
@@ -23,6 +24,8 @@ type fakeMail struct {
 	searchCalls     []bridge.SearchQuery
 	bodyCalls       []string
 	metaCalls       []string
+	headerCalls     []string
+	headerErrByID   map[string]error
 }
 
 func (mail *fakeMail) ListFolders(ctx context.Context) ([]bridge.Folder, error) {
@@ -83,6 +86,41 @@ func (mail *fakeMail) GetMessageBody(ctx context.Context, identifier string) ([]
 		return body, nil
 	}
 	return mail.body, nil
+}
+
+// GetMessageHeaders derives the fixture message's canonical headers without
+// recording a body or metadata call.
+func (mail *fakeMail) GetMessageHeaders(ctx context.Context, identifier string) (bridge.MessageHeaders, error) {
+	mail.headerCalls = append(mail.headerCalls, identifier)
+	if mail.err != nil {
+		return bridge.MessageHeaders{}, mail.err
+	}
+	if err := mail.headerErrByID[identifier]; err != nil {
+		return bridge.MessageHeaders{}, err
+	}
+
+	metadata, raw := mail.metadata, mail.body
+	if mail.metadataByID != nil {
+		found, ok := mail.metadataByID[identifier]
+		if !ok {
+			return bridge.MessageHeaders{}, &bridge.Error{Code: bridge.CodeStaleMessageID}
+		}
+		metadata = found
+	}
+	if mail.bodyByID != nil {
+		found, ok := mail.bodyByID[identifier]
+		if !ok {
+			return bridge.MessageHeaders{}, &bridge.Error{Code: bridge.CodeStaleMessageID}
+		}
+		raw = found
+	}
+
+	normalized, err := bridge.NormalizeMessage(bytes.NewReader(raw), bridge.NormalizeOptions{})
+	if err != nil {
+		return bridge.MessageHeaders{}, err
+	}
+
+	return bridge.MessageHeaders{Metadata: metadata, Headers: normalized.Headers}, nil
 }
 
 func connectTestClient(t *testing.T, options Options) *mcp.ClientSession {

@@ -841,8 +841,8 @@ func TestPublicReadIdentityThreadMCP(t *testing.T) {
 				t.Fatalf("node %q tuple = %+v, want its own %+v", key, got, source)
 			}
 		}
-		if len(fake.searchCalls) != 1 || len(fake.metaCalls) != 3 || len(fake.bodyCalls) != 3 {
-			t.Fatalf("operation budget changed: search=%d metadata=%d body=%d", len(fake.searchCalls), len(fake.metaCalls), len(fake.bodyCalls))
+		if len(fake.searchCalls) != 1 || len(fake.headerCalls) != 3 || len(fake.metaCalls)+len(fake.bodyCalls) != 0 {
+			t.Fatalf("operation budget changed: search=%d header=%d metadata=%d body=%d", len(fake.searchCalls), len(fake.headerCalls), len(fake.metaCalls), len(fake.bodyCalls))
 		}
 	})
 
@@ -1020,8 +1020,8 @@ func TestPublicReadIdentityThreadMCP(t *testing.T) {
 			if truncated, _ := thread["truncated"].(bool); truncated {
 				t.Fatalf("stale sibling omission now reports truncation: %v", thread)
 			}
-			if len(fake.metaCalls) != 2 || len(fake.bodyCalls) != 1 {
-				t.Fatalf("stale sibling triggered extra reads: metadata=%v body=%v", fake.metaCalls, fake.bodyCalls)
+			if len(fake.headerCalls) != 2 || len(fake.metaCalls)+len(fake.bodyCalls) != 0 {
+				t.Fatalf("stale sibling triggered extra reads: header=%v metadata=%v body=%v", fake.headerCalls, fake.metaCalls, fake.bodyCalls)
 			}
 		})
 
@@ -1087,8 +1087,8 @@ func TestPublicReadIdentityThreadMCP(t *testing.T) {
 				if truncated, _ := thread["truncated"].(bool); !truncated {
 					t.Fatalf("omitted tuple %v sibling not reported truncated: %v", tuple, thread)
 				}
-				if len(sibling.metaCalls) != 2 || len(sibling.bodyCalls) != 2 || len(sibling.searchCalls) != 1 {
-					t.Fatalf("tuple %v sibling triggered extra reads: metadata=%v body=%v", tuple, sibling.metaCalls, sibling.bodyCalls)
+				if len(sibling.headerCalls) != 2 || len(sibling.metaCalls)+len(sibling.bodyCalls) != 0 || len(sibling.searchCalls) != 1 {
+					t.Fatalf("tuple %v sibling triggered extra reads: header=%v metadata=%v body=%v", tuple, sibling.headerCalls, sibling.metaCalls, sibling.bodyCalls)
 				}
 			}
 		})
