@@ -113,6 +113,10 @@ func TestSearchObserverDetectsDuplicateUIDsBeforeSetNormalization(t *testing.T) 
 		{name: "repeated ESEARCH ALL UID without UID marker", input: "* ESEARCH (TAG \"T1\") ALL 7,7\r\n", want: true},
 		{name: "repeated UID only inside nested extension ALL", input: "* ESEARCH (TAG \"T1\") UID X (F ALL 7,7) ALL 7\r\n", want: false},
 		{name: "repeated ESEARCH ALL UID in lowercase field", input: "* ESEARCH (TAG \"T1\") UID COUNT 2 all 7:8,8\r\n", want: true},
+		{name: "repeated SEARCH UID after literal marker in status text", input: "* OK notice {18}\r\n* SEARCH 101 101\r\n* SEARCH\r\n", want: true},
+		{name: "repeated SEARCH UID after literal marker in numbered status text", input: "* 3 NO notice {18}\r\n* SEARCH 101 101\r\n", want: true},
+		{name: "repeated SEARCH UID after literal marker in tagged status text", input: "T0 OK notice {18}\r\n* SEARCH 101 101\r\n", want: true},
+		{name: "repeated SEARCH UID after literal marker in continuation text", input: "+ notice {18}\r\n* SEARCH 101 101\r\n", want: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			connection := &readBudgetConn{}

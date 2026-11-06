@@ -816,6 +816,7 @@ type readBudgetConn struct {
 	eSearchResponseSeen bool
 	searchBuffer        string
 	searchLiteralBytes  uint64
+	searchContinues     bool
 	searchPending       string
 	searchUIDs          map[uint32]struct{}
 	searchDuplicate     bool
@@ -849,6 +850,7 @@ func (connection *readBudgetConn) beginSearch(limit int) {
 	connection.eSearchResponseSeen = false
 	connection.searchBuffer = ""
 	connection.searchLiteralBytes = 0
+	connection.searchContinues = false
 	connection.searchPending = ""
 	connection.searchUIDs = nil
 	connection.searchDuplicate = false
@@ -874,6 +876,7 @@ func (connection *readBudgetConn) endSearch() searchObservation {
 	connection.eSearchResponseSeen = false
 	connection.searchBuffer = ""
 	connection.searchLiteralBytes = 0
+	connection.searchContinues = false
 	connection.searchPending = ""
 	connection.searchUIDs = nil
 	connection.searchDuplicate = false
@@ -942,7 +945,14 @@ func (connection *readBudgetConn) observeSearchResponseLocked(input string) {
 		connection.searchBuffer = connection.searchBuffer[end+2:]
 		connection.searchPending = ""
 
+		// go-imap reads status and continuation text to CRLF, so a literal
+		// marker there is ordinary text, unless the line resumes a response
+		// after its literal.
 		literalBytes, hasLiteral := trailingIMAPLiteralSize(line)
+		if !connection.searchContinues && imapTextResponse(line) {
+			hasLiteral = false
+		}
+		connection.searchContinues = hasLiteral
 		if hasLiteral {
 			connection.searchLiteralBytes = literalBytes
 		}
@@ -1169,6 +1179,28 @@ func correlatorEnd(rest string) int {
 		}
 	}
 	return -1
+}
+
+// imapTextResponse reports whether line starts a response go-imap reads as
+// text up to CRLF: a continuation request, a tagged status or an untagged,
+// optionally numbered, OK, PREAUTH, NO, BAD or BYE.
+func imapTextResponse(line string) bool {
+	fields := strings.SplitN(line, " ", 4)
+	if fields[0] != "*" {
+		return true
+	}
+
+	if len(fields) > 2 && fields[1] != "" && strings.Trim(fields[1], "0123456789") == "" {
+		fields = fields[1:]
+	}
+	if len(fields) < 2 {
+		return false
+	}
+	switch strings.ToUpper(fields[1]) {
+	case "OK", "PREAUTH", "NO", "BAD", "BYE":
+		return true
+	}
+	return false
 }
 
 func trailingIMAPLiteralSize(line string) (uint64, bool) {

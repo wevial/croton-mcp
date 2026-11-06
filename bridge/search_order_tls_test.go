@@ -112,8 +112,9 @@ func TestSearchOrderTLS(t *testing.T) {
 
 // runSearchOrderTLSRefusals witnesses that an invalid duplicate ESEARCH ALL
 // set behind a literal TAG, after an extension value carrying a nested ALL or
-// after an extension value the observer cannot walk stays a code-only refusal
-// in both TLS modes.
+// after an extension value the observer cannot walk, and a duplicate SEARCH
+// line after a status whose text ends in a literal marker, stays a code-only
+// refusal in both TLS modes.
 func runSearchOrderTLSRefusals(t *testing.T) {
 	for _, test := range []struct {
 		name     string
@@ -127,6 +128,8 @@ func runSearchOrderTLSRefusals(t *testing.T) {
 		{name: "implicit_tls_duplicate_after_nested_all", fake: testkit.ImplicitTLS, mode: bridge.TLSModeImplicit, response: `* ESEARCH (TAG "{TAG}") UID X (F ALL 101) ALL 101,101`},
 		{name: "starttls_duplicate_after_unspaced_extension", fake: testkit.StartTLS, mode: bridge.TLSModeStartTLS, response: `* ESEARCH (TAG "{TAG}") UID X(F ALL 101) ALL 101,101`},
 		{name: "implicit_tls_duplicate_after_unspaced_extension", fake: testkit.ImplicitTLS, mode: bridge.TLSModeImplicit, response: `* ESEARCH (TAG "{TAG}") UID X(F ALL 101) ALL 101,101`},
+		{name: "starttls_duplicate_after_status_literal_marker", fake: testkit.StartTLS, mode: bridge.TLSModeStartTLS, response: "* OK notice {18}\r\n* SEARCH 101 101\r\n* SEARCH"},
+		{name: "implicit_tls_duplicate_after_status_literal_marker", fake: testkit.ImplicitTLS, mode: bridge.TLSModeImplicit, response: "* OK notice {18}\r\n* SEARCH 101 101\r\n* SEARCH"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
