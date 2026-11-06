@@ -46,6 +46,22 @@ func TestSelectedThreadFields(t *testing.T) {
 		if !late.Truncation.HeaderCount {
 			t.Error("HeaderCount truncation was not reported for omitted generic fields")
 		}
+
+		sender := "From: Sender <sender@example.test>\r\nDate: Tue, 03 Nov 2026 09:15:00 -0800\r\n"
+		mixed, err := selectedHeaderRecord(MessageMetadata{}, []byte(sender+threadFiller(98)+threading+"\r\n"), headerTestLimit*4)
+		if err != nil {
+			t.Fatalf("mixed selectedHeaderRecord: %v", err)
+		}
+
+		if mixed.Metadata.From != "Sender <sender@example.test>" || mixed.Metadata.Date != "2026-11-03T17:15:00Z" || mixed.Metadata.DateSource != DateSourceHeader {
+			t.Errorf("early From/Date metadata = %+v, want values from the bounded header", mixed.Metadata)
+		}
+		if mixed.Headers.From != "Sender <sender@example.test>" || mixed.Headers.Date != "Tue, 03 Nov 2026 09:15:00 -0800" {
+			t.Errorf("early From/Date headers = %+v, want values from the bounded header", mixed.Headers)
+		}
+		if mixed.Metadata.Subject != early.Metadata.Subject || mixed.Headers.InReplyTo != early.Headers.InReplyTo || !mixed.Truncation.HeaderCount {
+			t.Errorf("mixed record = %+v, want late threading fields with HeaderCount", mixed)
+		}
 	})
 
 	t.Run("late_folded_case_insensitive", func(t *testing.T) {
