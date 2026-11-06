@@ -13,8 +13,8 @@ import (
 	"unicode/utf8"
 )
 
-// senderByteBound is the ticket's From cap, stated independently of the
-// production constant.
+// senderByteBound is the From cap, stated independently of the production
+// constant.
 const senderByteBound = 512
 
 // sourcedMetadata is the serialized view of the sourced metadata fields, so
@@ -118,7 +118,7 @@ func (script *metadataScript) serve(connection net.Conn, fetches []scriptedFetch
 }
 
 // scriptedMetadataSession uses the real go-imap metadata FETCH parser while
-// stubbing mailbox selection and search, which are outside this ticket.
+// stubbing mailbox selection and search.
 type scriptedMetadataSession struct {
 	*imapSession
 	uids []uint32

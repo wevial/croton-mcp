@@ -492,8 +492,8 @@ func (session *imapSession) UIDFetchMetadata(ctx context.Context, _ string, uids
 	return results, err
 }
 
-// metadataReadState maps a present FLAGS item to read or unread. A missing
-// FLAGS item never reaches this function and stays ReadStateUnknown.
+// metadataReadState sees only a present FLAGS item; a missing one stays
+// ReadStateUnknown.
 func metadataReadState(flags []imap.Flag) ReadState {
 	for _, flag := range flags {
 		if strings.EqualFold(string(flag), string(imap.FlagSeen)) {
@@ -537,8 +537,6 @@ func boundedSender(header mail.Header) (string, bool) {
 	return decoded, truncated || decodedTruncated
 }
 
-// cutUTF8 keeps at most limit bytes without splitting the rune that crosses
-// the boundary.
 func cutUTF8(value string, limit int) (string, bool) {
 	if len(value) <= limit {
 		return value, false
