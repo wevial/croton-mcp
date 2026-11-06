@@ -517,7 +517,6 @@ func (session *imapSession) UIDFetchMetadata(ctx context.Context, _ string, uids
 	return results, err
 }
 
-// applyHeaderMetadata derives the bounded metadata fields of one header block.
 func applyHeaderMetadata(item *MessageMetadata, header mail.Header) {
 	item.Subject = header.Get("Subject")
 	item.From, item.MetadataTruncated = boundedSender(header)

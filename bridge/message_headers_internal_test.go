@@ -236,7 +236,6 @@ func requireHeaderRefusal(t *testing.T, name string, result MessageHeaders, err 
 	}
 }
 
-// replyHeader is the full readable header used for identity checks.
 var replyHeader = metadataHeader(
 	"From: =?utf-8?q?R=C3=A9ply_Sender?= <reply@croton.test>",
 	"To: Reader <reader@croton.test>",
