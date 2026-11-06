@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/hex"
@@ -63,6 +64,20 @@ type moveSession interface {
 	SupportsMove() bool
 	ListMailboxes(context.Context, string, int) ([]listedMailbox, error)
 	MoveUID(context.Context, uint32, string) error
+}
+
+// headerSession is an optional read capability beside readSession, so
+// existing sessions need not implement it. It returns one selected message's
+// metadata and bounded canonical headers from a single header-only FETCH.
+type headerSession interface {
+	UIDFetchHeaders(context.Context, uint32, int) (selectedHeaders, error)
+}
+
+// selectedHeaders is the record of one validated header-only FETCH.
+type selectedHeaders struct {
+	metadata   MessageMetadata
+	headers    CanonicalHeaders
+	truncation Truncation
 }
 
 // listedMailbox is one ordinary LIST entry with its protocol attributes.
@@ -493,9 +508,7 @@ func (session *imapSession) UIDFetchMetadata(ctx context.Context, _ string, uids
 					if err != nil {
 						return errorCode(CodeIMAPProtocol)
 					}
-					item.Subject = parsed.Header.Get("Subject")
-					item.From, item.MetadataTruncated = boundedSender(parsed.Header)
-					item.Date, item.DateSource = headerDate(parsed.Header)
+					applyHeaderMetadata(&item, parsed.Header)
 				}
 			}
 			if uidItems != 1 || item.uid == 0 || bodySections != 1 {
@@ -509,6 +522,13 @@ func (session *imapSession) UIDFetchMetadata(ctx context.Context, _ string, uids
 		return validateFetchedMetadataUIDs(uids, results)
 	})
 	return results, err
+}
+
+// applyHeaderMetadata derives the bounded metadata fields of one header block.
+func applyHeaderMetadata(item *MessageMetadata, header mail.Header) {
+	item.Subject = header.Get("Subject")
+	item.From, item.MetadataTruncated = boundedSender(header)
+	item.Date, item.DateSource = headerDate(header)
 }
 
 // metadataReadState sees only a present FLAGS item; a missing one stays
@@ -793,6 +813,120 @@ func (session *imapSession) UIDFetchBody(ctx context.Context, uid uint32, limit 
 		return command.Close()
 	})
 	return body, err
+}
+
+// UIDFetchHeaders reads exactly one UID's FLAGS, RFC822.SIZE and
+// BODY.PEEK[HEADER] in one FETCH. The response must carry the requested UID
+// and header section exactly once, and the header literal must fit the limit
+// and end at the header terminator; any other shape is refused, aborting the
+// transport when the response framing was left unconsumed.
+func (session *imapSession) UIDFetchHeaders(ctx context.Context, uid uint32, headerLimit int) (selectedHeaders, error) {
+	if uid == 0 || headerLimit < 1 {
+		return selectedHeaders{}, errorCode(CodeBoundsExceeded)
+	}
+
+	section := &imap.FetchItemBodySection{Specifier: imap.PartSpecifierHeader, Peek: true}
+	options := &imap.FetchOptions{UID: true, Flags: true, RFC822Size: true, BodySection: []*imap.FetchItemBodySection{section}}
+	var item MessageMetadata
+	var header []byte
+	err := session.withContext(ctx, func() (err error) {
+		if session.budget != nil {
+			session.budget.begin(fetchInputBudget(headerLimit, 1))
+			defer func() {
+				if session.budget.end() {
+					err = errorCode(CodeBoundsExceeded)
+				}
+			}()
+		}
+
+		command := session.client.Fetch(imap.UIDSetNum(imap.UID(uid)), options)
+		defer func() {
+			if err != nil {
+				session.abortFetch(command)
+			}
+		}()
+
+		message := command.Next()
+		if message == nil {
+			if err := command.Close(); err != nil {
+				return err
+			}
+
+			return errorCode(CodeIMAPProtocol)
+		}
+
+		uidItems := 0
+		flagsItems := 0
+		bodySections := 0
+		for data := message.Next(); data != nil; data = message.Next() {
+			switch value := data.(type) {
+			case imapclient.FetchItemDataUID:
+				if uidItems != 0 || uint32(value.UID) != uid {
+					return errorCode(CodeIMAPProtocol)
+				}
+				uidItems++
+			case imapclient.FetchItemDataFlags:
+				if flagsItems != 0 {
+					return errorCode(CodeIMAPProtocol)
+				}
+				flagsItems++
+				item.ReadState = metadataReadState(value.Flags)
+			case imapclient.FetchItemDataRFC822Size:
+				item.Size = value.Size
+			case imapclient.FetchItemDataBodySection:
+				if value.Literal == nil || value.Section == nil || !value.MatchCommand(section) || bodySections != 0 {
+					return errorCode(CodeIMAPProtocol)
+				}
+				bodySections++
+				result, err := readBoundedLiteral(value.Literal, headerLimit)
+				if err != nil {
+					return err
+				}
+				header = result
+			}
+		}
+		if command.Next() != nil || uidItems != 1 || bodySections != 1 {
+			return errorCode(CodeIMAPProtocol)
+		}
+
+		return command.Close()
+	})
+	if err != nil {
+		return selectedHeaders{}, err
+	}
+
+	item.uid = uid
+	return selectedHeaderRecord(item, header, headerLimit)
+}
+
+// selectedHeaderRecord normalizes a complete header literal with the same
+// bounded canonical rules as message normalization. A literal that does not
+// end at the header terminator is incomplete and is never treated as whole.
+func selectedHeaderRecord(item MessageMetadata, header []byte, headerLimit int) (selectedHeaders, error) {
+	if !bytes.HasSuffix(header, []byte("\n\n")) && !bytes.HasSuffix(header, []byte("\r\n\r\n")) && !bytes.Equal(header, []byte("\r\n")) {
+		return selectedHeaders{}, errorCode(CodeIMAPProtocol)
+	}
+
+	parsed, err := mail.ReadMessage(bytes.NewReader(header))
+	if err != nil {
+		return selectedHeaders{}, errorCode(CodeIMAPProtocol)
+	}
+	applyHeaderMetadata(&item, parsed.Header)
+
+	limits := normalizedLimits(NormalizeLimits{MaxHeaderBytes: headerLimit})
+	bounded, countTruncated := boundedHeaderCount(header, limits.MaxHeaderCount)
+	counted, err := mail.ReadMessage(bytes.NewReader(bounded))
+	if err != nil {
+		return selectedHeaders{}, &NormalizeError{Code: errorCodeMalformedHeader}
+	}
+
+	headers, truncation, err := canonicalHeaders(counted.Header, bounded, limits)
+	if err != nil {
+		return selectedHeaders{}, err
+	}
+	truncation.HeaderCount = countTruncated
+
+	return selectedHeaders{metadata: item, headers: headers, truncation: truncation}, nil
 }
 
 func (session *imapSession) abortFetch(command *imapclient.FetchCommand) {

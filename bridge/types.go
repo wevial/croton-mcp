@@ -74,6 +74,16 @@ type CanonicalHeaders struct {
 	References []string `json:"references,omitempty"`
 }
 
+// MessageHeaders is one selected message's metadata and bounded canonical
+// headers, both taken from the same header-only FETCH. It never carries body
+// or attachment data. Truncation reports only header, header-count and
+// reference limits.
+type MessageHeaders struct {
+	Metadata   MessageMetadata
+	Headers    CanonicalHeaders
+	Truncation Truncation
+}
+
 // AttachmentMetadata describes an attachment without retaining any attachment bytes.
 type AttachmentMetadata struct {
 	Filename        string `json:"filename,omitempty"`
