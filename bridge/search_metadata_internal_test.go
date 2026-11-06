@@ -165,6 +165,24 @@ func TestSearchMetadataAdapter(t *testing.T) {
 			t.Fatalf("sourced metadata = from %q date %q source %q read %q truncated %t",
 				*got.From, *got.Date, *got.DateSource, *got.ReadState, *got.MetadataTruncated)
 		}
+
+		zones := []struct {
+			date       string
+			want       string
+			dateSource string
+		}{
+			{date: "Thu, 05 Nov 2026 10:00:00 PST", want: "2026-11-05T18:00:00Z", dateSource: "header"},
+			{date: "Thu, 05 Nov 2026 10:00:00 EDT", want: "2026-11-05T14:00:00Z", dateSource: "header"},
+			{date: "Thu, 05 Nov 2026 10:00:00 GMT", want: "2026-11-05T10:00:00Z", dateSource: "header"},
+			{date: "Thu, 05 Nov 2026 10:00:00 Z", dateSource: "unknown"},
+		}
+
+		for _, zone := range zones {
+			got := fetchOneSerialized(t, zone.date, scriptedFetch{flags: " FLAGS ()", header: metadataHeader("Date: " + zone.date)})
+			if *got.Date != zone.want || *got.DateSource != zone.dateSource {
+				t.Fatalf("%s: date %q source %q, want %q %q", zone.date, *got.Date, *got.DateSource, zone.want, zone.dateSource)
+			}
+		}
 	})
 
 	t.Run("unknown_and_duplicate", func(t *testing.T) {
