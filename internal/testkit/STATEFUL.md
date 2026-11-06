@@ -31,6 +31,51 @@ state). Non-ordinary modes require `Messages`, so they are refused with
 stateful or label mode. This is not a scripted server, and it does not show
 that Proton Mail Bridge returns the same FLAGS.
 
+## Custom-message typed BODYSTRUCTURE
+
+`Options.BodyStructures` gives each custom message, by index, an explicit
+`*BodyPart` tree. It is custom-only: it requires `Messages` with the same
+length and is refused with non-ordinary `MetadataFlags`, any `Scenario`,
+`Stateful` or `Labels`. `Seen` may accompany it with the usual index rules:
+`true` entries are read, `false` or omitted entries are unread, and nil `Seen`
+leaves every message unread. Nil `BodyStructures` keeps the legacy custom FETCH
+above byte for byte.
+
+Kinds are `BodyPartText` (`text/*`, renders a line count),
+`BodyPartBasic` (any other non-`multipart`, non-`message` type) and
+`BodyPartMultipart` (ordered children, subtype and parameters). Encodings are
+`7bit`, `8bit`, `binary`, `base64` or `quoted-printable`; empty renders `7bit`.
+`Size` is the caller-supplied transfer octet count and a disposition `size`
+parameter is caller-supplied text; neither is derived from message bytes, and
+no decoded size is implied. Nothing infers MIME structure from `Messages`, and
+embedded `message/rfc822` parts and fault injection are not supported.
+
+`Start` validates and renders each tree once, before listening, so later
+changes to the caller's descriptors cannot alter served bytes. It refuses nil
+or cyclic parts, unknown kinds, unsupported encodings, empty required strings,
+values with CR, LF, NUL or invalid UTF-8, and anything past these fixture
+construction limits:
+
+| Limit | Value |
+| --- | --- |
+| messages with descriptors | 64 |
+| parts per message, including the root | 128 |
+| depth, including the root | 16 |
+| content plus disposition parameters per part | 8 |
+| bytes per string value | 512 |
+| rendered BODYSTRUCTURE per message | 64 KiB |
+
+These bound the fixture only. They are not production parser safety limits.
+
+With descriptors, custom `UID FETCH` is request-driven. `UID` always leads.
+`FLAGS`, `RFC822.SIZE`, `BODYSTRUCTURE`, `BODY.PEEK[HEADER]` and
+`BODY.PEEK[]` (optionally `<offset.size>`) appear only when requested, in
+request order, and literals are sent only for requested body sections. The
+extended `BODYSTRUCTURE` uses quoted strings for printable ASCII and literals
+for other values, with NIL MD5, language and location. Only UIDs in the
+numeric UID set are returned. Duplicate, non-peek and other items, and `*` in
+the UID set, return tagged `BAD`. FETCH never changes `Seen`.
+
 ## Seeding
 
 ```go
