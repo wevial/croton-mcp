@@ -417,6 +417,11 @@ func TestMessageHeadersAdapter(t *testing.T) {
 		if err != nil || result.Headers.InReplyTo != "" || result.Headers.Subject != "counted" || !result.Truncation.HeaderCount {
 			t.Fatalf("101 header fields = %+v, %v", result, err)
 		}
+		malformed := append(fields(101)[:100], "not-a-header")
+		result, err, _ = run(t, 16, headerScript(" FLAGS ()", metadataHeader(malformed...)))
+		if err != nil || result.Headers.Subject != "counted" || result.Headers.MessageID != "<count@croton.test>" || !result.Truncation.HeaderCount {
+			t.Fatalf("malformed omitted field = %+v, %v", result, err)
+		}
 
 		references := make([]string, 51)
 		for index := range references {
@@ -446,6 +451,12 @@ func TestMessageHeadersAdapter(t *testing.T) {
 			{name: "missing response", edit: func(script *headerFetchScript) { script.omit = true }},
 			{name: "incomplete header literal", edit: func(script *headerFetchScript) {
 				script.header = "Subject: incomplete\r\nMessage-ID: <partial@croton.test>\r\n"
+			}},
+			{name: "trailing payload", edit: func(script *headerFetchScript) {
+				script.header = "Subject: hi\r\n\r\nunexpected body\r\n\r\n"
+			}},
+			{name: "trailing payload after mixed separator", edit: func(script *headerFetchScript) {
+				script.header = "Subject: hi\n\r\nunexpected body\r\n\r\n"
 			}},
 		}
 		for index, test := range structural {

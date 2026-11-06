@@ -892,33 +892,50 @@ func (session *imapSession) UIDFetchHeaders(ctx context.Context, uid uint32, hea
 }
 
 // selectedHeaderRecord normalizes a complete header literal with the same
-// bounded canonical rules as message normalization. A literal that does not
-// end at the header terminator is incomplete and is never treated as whole.
+// bounded canonical rules as message normalization. A literal whose first
+// blank line is missing or is followed by more data is not a whole header
+// block and is never treated as one. The count limit applies before parsing,
+// so omitted fields cannot make the retained fields unavailable.
 func selectedHeaderRecord(item MessageMetadata, header []byte, headerLimit int) (MessageHeaders, error) {
-	if !bytes.HasSuffix(header, []byte("\n\n")) && !bytes.HasSuffix(header, []byte("\r\n\r\n")) && !bytes.Equal(header, []byte("\r\n")) {
+	if headerTerminatorEnd(header) != len(header) {
 		return MessageHeaders{}, errorCode(CodeIMAPProtocol)
 	}
 
-	parsed, err := mail.ReadMessage(bytes.NewReader(header))
+	limits := normalizedLimits(NormalizeLimits{MaxHeaderBytes: headerLimit})
+	bounded, countTruncated := boundedHeaderCount(header, limits.MaxHeaderCount)
+	parsed, err := mail.ReadMessage(bytes.NewReader(bounded))
 	if err != nil {
 		return MessageHeaders{}, errorCode(CodeIMAPProtocol)
 	}
 	applyHeaderMetadata(&item, parsed.Header)
 
-	limits := normalizedLimits(NormalizeLimits{MaxHeaderBytes: headerLimit})
-	bounded, countTruncated := boundedHeaderCount(header, limits.MaxHeaderCount)
-	counted, err := mail.ReadMessage(bytes.NewReader(bounded))
-	if err != nil {
-		return MessageHeaders{}, &NormalizeError{Code: errorCodeMalformedHeader}
-	}
-
-	headers, truncation, err := canonicalHeaders(counted.Header, bounded, limits)
+	headers, truncation, err := canonicalHeaders(parsed.Header, bounded, limits)
 	if err != nil {
 		return MessageHeaders{}, err
 	}
 	truncation.HeaderCount = countTruncated
 
 	return MessageHeaders{Metadata: item, Headers: headers, Truncation: truncation}, nil
+}
+
+// headerTerminatorEnd returns the offset just past the first blank line, the
+// same line net/mail treats as the header/body separator, or -1 without one.
+func headerTerminatorEnd(header []byte) int {
+	for lineStart := 0; lineStart < len(header); {
+		lineLength := bytes.IndexByte(header[lineStart:], '\n')
+		if lineLength < 0 {
+			return -1
+		}
+
+		lineEnd := lineStart + lineLength
+		if len(bytes.TrimSuffix(header[lineStart:lineEnd], []byte{'\r'})) == 0 {
+			return lineEnd + 1
+		}
+
+		lineStart = lineEnd + 1
+	}
+
+	return -1
 }
 
 func (session *imapSession) abortFetch(command *imapclient.FetchCommand) {
