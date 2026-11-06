@@ -407,6 +407,8 @@ func TestAdapterRejectsDuplicateSearchUIDsOnTheWire(t *testing.T) {
 		{name: "ESEARCH ALL repeated UID after literal TAG", response: "* ESEARCH (TAG {2}\r\n{TAG}) UID ALL 101,101"},
 		{name: "ESEARCH ALL repeated UID after nested extension ALL", response: `* ESEARCH (TAG "{TAG}") UID X (F ALL 101) ALL 101,101`},
 		{name: "ESEARCH ALL repeated UID after quoted extension value", response: `* ESEARCH (TAG "{TAG}") UID X "ALL 101" ALL 101,101`},
+		{name: "ESEARCH ALL repeated UID after unspaced extension value", response: `* ESEARCH (TAG "{TAG}") UID X(F ALL 101) ALL 101,101`},
+		{name: "SEARCH repeated UID before unspaced MODSEQ", response: "* SEARCH 101 101(MODSEQ 5)"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server, err := testkit.Start(testkit.Options{

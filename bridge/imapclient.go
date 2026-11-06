@@ -378,7 +378,7 @@ func (session *imapSession) UIDSearchWindow(ctx context.Context, query SearchQue
 		if searchErr != nil {
 			return searchErr
 		}
-		if observed.duplicate {
+		if observed.duplicate || observed.incomplete {
 			return errorCode(CodeIMAPProtocol)
 		}
 		if !observed.searchSeen && (!observed.eSearchSeen || !eSearchAppliedToUIDSearch(data)) {
@@ -801,6 +801,7 @@ type searchObservation struct {
 	searchSeen  bool
 	eSearchSeen bool
 	duplicate   bool
+	incomplete  bool
 }
 
 type readBudgetConn struct {
@@ -818,6 +819,7 @@ type readBudgetConn struct {
 	searchPending       string
 	searchUIDs          map[uint32]struct{}
 	searchDuplicate     bool
+	searchIncomplete    bool
 }
 
 func newReadBudgetConn(connection net.Conn, idleLimit int) *readBudgetConn {
@@ -850,6 +852,7 @@ func (connection *readBudgetConn) beginSearch(limit int) {
 	connection.searchPending = ""
 	connection.searchUIDs = nil
 	connection.searchDuplicate = false
+	connection.searchIncomplete = false
 }
 
 func (connection *readBudgetConn) endSearch() searchObservation {
@@ -861,6 +864,7 @@ func (connection *readBudgetConn) endSearch() searchObservation {
 		searchSeen:  connection.searchResponseSeen,
 		eSearchSeen: connection.eSearchResponseSeen,
 		duplicate:   connection.searchDuplicate,
+		incomplete:  connection.searchIncomplete,
 	}
 	connection.active = true
 	connection.remaining = connection.idleLimit
@@ -873,6 +877,7 @@ func (connection *readBudgetConn) endSearch() searchObservation {
 	connection.searchPending = ""
 	connection.searchUIDs = nil
 	connection.searchDuplicate = false
+	connection.searchIncomplete = false
 	return observed
 }
 
@@ -955,8 +960,12 @@ func (connection *readBudgetConn) observeSearchResponseLocked(input string) {
 				connection.searchPending = line[:strings.LastIndexByte(line, '{')] + `""`
 				continue
 			}
-			if eSearchAllOverlaps(line[len("* ESEARCH"):]) {
+			overlaps, complete := eSearchAllOverlaps(line[len("* ESEARCH"):])
+			if overlaps {
 				connection.searchDuplicate = true
+			}
+			if !complete {
+				connection.searchIncomplete = true
 			}
 		}
 	}
@@ -964,19 +973,25 @@ func (connection *readBudgetConn) observeSearchResponseLocked(input string) {
 
 // observeSearchUIDsLocked records the numbers of one SEARCH line. go-imap
 // accumulates every SEARCH line of a command into one set, so a UID repeated
-// within or across lines is a duplicate. Parsing stops at a MODSEQ group;
-// malformed numbers are left for go-imap to reject.
+// within or across lines is a duplicate. Only a final MODSEQ group, which
+// go-imap accepts with or without a leading space, may follow the numbers;
+// any other field marks the line incomplete so the command fails closed.
 func (connection *readBudgetConn) observeSearchUIDsLocked(numbers string) {
 	if connection.searchUIDs == nil {
 		connection.searchUIDs = make(map[uint32]struct{})
 	}
 
-	for _, field := range strings.Fields(numbers) {
-		if strings.HasPrefix(field, "(") {
-			return
+	if opening := strings.IndexByte(numbers, '('); opening >= 0 {
+		if !searchModSeqGroup(numbers[opening:]) {
+			connection.searchIncomplete = true
 		}
+		numbers = numbers[:opening]
+	}
+
+	for _, field := range strings.Fields(numbers) {
 		uid, err := strconv.ParseUint(field, 10, 32)
 		if err != nil {
+			connection.searchIncomplete = true
 			return
 		}
 		if _, duplicate := connection.searchUIDs[uint32(uid)]; duplicate {
@@ -986,19 +1001,35 @@ func (connection *readBudgetConn) observeSearchUIDsLocked(numbers string) {
 	}
 }
 
+// searchModSeqGroup reports whether group is exactly the trailing
+// "(MODSEQ n)" of a SEARCH line, allowing the one space go-imap tolerates
+// before CRLF.
+func searchModSeqGroup(group string) bool {
+	group = strings.TrimSuffix(group, " ")
+	name, value, ok := strings.Cut(strings.TrimSuffix(strings.TrimPrefix(group, "("), ")"), " ")
+	if !ok || !strings.HasPrefix(group, "(") || !strings.HasSuffix(group, ")") || !strings.EqualFold(name, "MODSEQ") {
+		return false
+	}
+
+	_, err := strconv.ParseUint(value, 10, 64)
+	return err == nil
+}
+
 // eSearchAllOverlaps reports whether any top-level ALL sequence set of one
-// ESEARCH line names a UID twice. go-imap replaces the result with each
-// matching ESEARCH, so overlap is judged per line. The line is walked as
-// go-imap reads it, name SP value pairs after the correlator and UID marker,
-// so an ALL nested inside an extension value is skipped rather than mistaken
-// for the result. Ranges are compared as intervals and never expanded; an
-// unparseable line is left for go-imap to reject.
-func eSearchAllOverlaps(rest string) bool {
+// ESEARCH line names a UID twice, and whether the walk consumed the whole
+// line. go-imap replaces the result with each matching ESEARCH, so overlap is
+// judged per line. The line is walked as go-imap reads it, name SP value
+// pairs after the correlator and UID marker, so an ALL nested inside an
+// extension value is skipped rather than mistaken for the result. Ranges are
+// compared as intervals and never expanded. A line the walk cannot consume,
+// including forms go-imap still accepts, is reported incomplete so the
+// caller fails closed.
+func eSearchAllOverlaps(rest string) (overlaps, complete bool) {
 	rest = strings.TrimSpace(rest)
 	if strings.HasPrefix(rest, "(") {
 		closing := correlatorEnd(rest)
 		if closing < 0 {
-			return false
+			return false, false
 		}
 		rest = strings.TrimPrefix(rest[closing+1:], " ")
 	}
@@ -1010,22 +1041,31 @@ func eSearchAllOverlaps(rest string) bool {
 
 	for name != "" {
 		if !strings.HasPrefix(rest, " ") {
-			return false
+			return false, false
 		}
 		value, after := eSearchValue(rest[1:])
 		if value == "" {
-			return false
+			return false, false
 		}
-		if strings.EqualFold(name, "ALL") && sequenceSetOverlaps(value) {
-			return true
+		if strings.EqualFold(name, "ALL") {
+			overlap, parsed := sequenceSetOverlaps(value)
+			if overlap {
+				return true, true
+			}
+			if !parsed {
+				return false, false
+			}
+		}
+		if after == "" {
+			return false, true
 		}
 		if !strings.HasPrefix(after, " ") {
-			return false
+			return false, false
 		}
 		name, rest = eSearchAtom(after[1:])
 	}
 
-	return false
+	return false, rest == ""
 }
 
 // eSearchAtom splits the leading IMAP atom from input.
@@ -1081,20 +1121,20 @@ func isIMAPAtomChar(character byte) bool {
 }
 
 // sequenceSetOverlaps reports whether the numeric sequence set names any
-// number twice; an unparseable set reports false.
-func sequenceSetOverlaps(set string) bool {
+// number twice, and whether the set parsed.
+func sequenceSetOverlaps(set string) (overlaps, parsed bool) {
 	type interval struct{ start, stop uint64 }
 	var intervals []interval
 	for _, item := range strings.Split(set, ",") {
 		low, high, isRange := strings.Cut(item, ":")
 		start, err := strconv.ParseUint(low, 10, 32)
 		if err != nil {
-			return false
+			return false, false
 		}
 		stop := start
 		if isRange {
 			if stop, err = strconv.ParseUint(high, 10, 32); err != nil {
-				return false
+				return false, false
 			}
 		}
 		if stop < start {
@@ -1106,11 +1146,11 @@ func sequenceSetOverlaps(set string) bool {
 	sort.Slice(intervals, func(i, j int) bool { return intervals[i].start < intervals[j].start })
 	for index := 1; index < len(intervals); index++ {
 		if intervals[index].start <= intervals[index-1].stop {
-			return true
+			return true, true
 		}
 	}
 
-	return false
+	return false, true
 }
 
 // correlatorEnd returns the index of the parenthesis closing the ESEARCH

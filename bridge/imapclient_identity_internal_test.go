@@ -98,6 +98,7 @@ func TestSearchObserverDetectsDuplicateUIDsBeforeSetNormalization(t *testing.T) 
 		{name: "repeated SEARCH UID", input: "* SEARCH 7 7\r\n", want: true},
 		{name: "repeated across SEARCH lines", input: "* SEARCH 7\r\n* SEARCH 7\r\n", want: true},
 		{name: "SEARCH MODSEQ group", input: "* SEARCH 7 (MODSEQ 7)\r\n", want: false},
+		{name: "repeated SEARCH UID before unspaced MODSEQ group", input: "* SEARCH 7 7(MODSEQ 5)\r\n", want: true},
 		{name: "distinct ESEARCH ALL", input: "* ESEARCH (TAG \"T1\") UID ALL 1:3,4:6\r\n", want: false},
 		{name: "wide ESEARCH range", input: "* ESEARCH (TAG \"T1\") UID ALL 1:100000000\r\n", want: false},
 		{name: "repeated ESEARCH ALL UID", input: "* ESEARCH (TAG \"T1\") UID ALL 7,7\r\n", want: true},
@@ -121,6 +122,38 @@ func TestSearchObserverDetectsDuplicateUIDsBeforeSetNormalization(t *testing.T) 
 
 			if observed := connection.endSearch(); observed.duplicate != test.want {
 				t.Fatalf("duplicate = %v, want %v", observed.duplicate, test.want)
+			}
+		})
+	}
+}
+
+func TestSearchObserverFailsClosedOnLinesItCannotWalk(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{name: "ESEARCH unspaced extension value", input: "* ESEARCH (TAG \"T1\") UID X(F ALL 101) ALL 101,101\r\n", want: true},
+		{name: "ESEARCH unclosed correlator", input: "* ESEARCH (TAG \"T1\" UID ALL 7\r\n", want: true},
+		{name: "ESEARCH unparseable ALL set", input: "* ESEARCH (TAG \"T1\") UID ALL 7:x\r\n", want: true},
+		{name: "SEARCH unspaced MODSEQ group", input: "* SEARCH 7 8(MODSEQ 5)\r\n", want: false},
+		{name: "SEARCH group other than MODSEQ", input: "* SEARCH 7 (X 5)\r\n", want: true},
+		{name: "SEARCH numbers after MODSEQ group", input: "* SEARCH 7 (MODSEQ 5) 7\r\n", want: true},
+		{name: "SEARCH numbers", input: "* SEARCH 7 8\r\n", want: false},
+		{name: "SEARCH MODSEQ group", input: "* SEARCH 7 (MODSEQ 7)\r\n", want: false},
+		{name: "empty SEARCH", input: "* SEARCH\r\n", want: false},
+		{name: "empty ESEARCH", input: "* ESEARCH (TAG \"T1\") UID\r\n", want: false},
+		{name: "ESEARCH spaced extension value", input: "* ESEARCH (TAG \"T1\") UID X (F ALL 7) ALL 7\r\n", want: false},
+		{name: "ESEARCH COUNT and ALL", input: "* ESEARCH (TAG \"T1\") UID COUNT 2 ALL 7:8\r\n", want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			connection := &readBudgetConn{}
+			connection.beginSearch(maxSearchResponseBytes)
+
+			connection.observeSearchResponseLocked(test.input)
+
+			if observed := connection.endSearch(); observed.incomplete != test.want {
+				t.Fatalf("incomplete = %v, want %v", observed.incomplete, test.want)
 			}
 		})
 	}
