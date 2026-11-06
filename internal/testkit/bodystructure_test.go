@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -36,8 +37,6 @@ const (
 		`("application" "octet-stream" ("name" "positive.bin") NIL NIL "base64" 1368 NIL ("attachment" ("filename" "positive.bin" "size" "1000")) NIL NIL)` +
 		` "mixed" ("boundary" "mixed-boundary") NIL NIL NIL)`
 )
-
-var fetchCompletion = regexp.MustCompile(`^(?s)(.*?)T\d+ OK FETCH completed\r\n$`)
 
 func plainStructure() *BodyPart {
 	return &BodyPart{Kind: BodyPartText, Type: "text", Subtype: "plain", Params: []BodyParam{{"charset", "us-ascii"}}, Size: 42, Lines: 2}
@@ -444,8 +443,8 @@ func TestBodyStructureFixture(t *testing.T) {
 				t.Fatalf("%s: header served %q", mode, headerServed)
 			}
 
-			if wire.contains(sentinel) || wire.len() > 8<<10 {
-				t.Fatalf("%s: client received %d bytes including body sentinel=%t", mode, wire.len(), wire.contains(sentinel))
+			if received := wire.received(); strings.Contains(received, sentinel) || len(received) > 8<<10 {
+				t.Fatalf("%s: client received %d bytes including body sentinel=%t", mode, len(received), strings.Contains(received, sentinel))
 			}
 			for _, command := range server.Commands() {
 				if strings.Contains(strings.ToUpper(command.Raw), "BODY.PEEK[]") || strings.Contains(strings.ToUpper(command.Raw), "BODY[") {
@@ -585,35 +584,75 @@ func startStructureFixture(t *testing.T, options Options) *Server {
 	return server
 }
 
-// wireLog records the client's raw post-TLS traffic in order.
+// wireLog records the client's raw post-TLS traffic split by direction. The
+// client tees ingress through io.TeeReader and egress through io.MultiWriter
+// into one DebugWriter, so each write is classified by its caller frame.
+// Writes from neither path are counted as unclassified.
 type wireLog struct {
-	mu     sync.Mutex
-	buffer bytes.Buffer
+	mu           sync.Mutex
+	ingress      bytes.Buffer
+	egress       bytes.Buffer
+	unclassified int
 }
 
 func (log *wireLog) Write(data []byte) (int, error) {
+	ingress, egress := debugWriteDirection()
+
 	log.mu.Lock()
 	defer log.mu.Unlock()
 
-	return log.buffer.Write(data)
+	switch {
+	case ingress:
+		return log.ingress.Write(data)
+	case egress:
+		return log.egress.Write(data)
+	default:
+		log.unclassified += len(data)
+		return len(data), nil
+	}
 }
 
-func (log *wireLog) since(mark int) string {
+// debugWriteDirection reports whether the current DebugWriter call carries
+// bytes read from the server or written by the client.
+func debugWriteDirection() (bool, bool) {
+	callers := make([]uintptr, 64)
+	frames := runtime.CallersFrames(callers[:runtime.Callers(3, callers)])
+	for {
+		frame, more := frames.Next()
+		switch frame.Function {
+		case "io.(*teeReader).Read":
+			return true, false
+		case "io.(*multiWriter).Write", "io.(*multiWriter).WriteString":
+			return false, true
+		}
+
+		if !more {
+			return false, false
+		}
+	}
+}
+
+// marks returns the current ingress and egress lengths.
+func (log *wireLog) marks() (int, int) {
 	log.mu.Lock()
 	defer log.mu.Unlock()
 
-	return log.buffer.String()[mark:]
+	return log.ingress.Len(), log.egress.Len()
 }
 
-func (log *wireLog) len() int {
+// since returns ingress and egress bytes after the given marks and the
+// number of unclassified bytes seen so far.
+func (log *wireLog) since(ingress, egress int) (string, string, int) {
 	log.mu.Lock()
 	defer log.mu.Unlock()
 
-	return log.buffer.Len()
+	return log.ingress.String()[ingress:], log.egress.String()[egress:], log.unclassified
 }
 
-func (log *wireLog) contains(text string) bool {
-	return strings.Contains(log.since(0), text)
+// received returns every byte the client read from the server.
+func (log *wireLog) received() string {
+	received, _, _ := log.since(0, 0)
+	return received
 }
 
 // structureSession connects the pinned go-imap client over verified TLS,
@@ -657,33 +696,91 @@ func structureSession(t *testing.T, server *Server, mode TLSMode) (*imapclient.C
 		t.Fatalf("examine over %s: %v", mode, err)
 	}
 
-	// Settle the client's own CAPABILITY lookup so later exchanges are sequential.
-	if client.Caps() == nil {
-		t.Fatalf("capabilities over %s unavailable", mode)
-	}
-
 	return client, wire
 }
 
 // fetchStructureWire runs one UID FETCH and returns the parsed messages, the
-// exact command bytes sent and the untagged bytes served before completion.
+// exact command sent and the untagged FETCH responses served for its tag.
+// Unrelated exchanges, such as the client's own CAPABILITY, are skipped.
 func fetchStructureWire(t *testing.T, client *imapclient.Client, wire *wireLog, uids imap.UIDSet, options *imap.FetchOptions) ([]*imapclient.FetchMessageBuffer, string, string) {
 	t.Helper()
 
-	mark := wire.len()
+	ingressMark, egressMark := wire.marks()
 	messages, err := client.Fetch(uids, options).Collect()
 	if err != nil {
 		t.Fatalf("UID FETCH %s: %v", uids, err)
 	}
 
-	command, response, _ := strings.Cut(wire.since(mark), "\r\n")
-	match := fetchCompletion.FindStringSubmatch(response)
-	if match == nil {
-		t.Fatalf("FETCH response %q lacks tagged completion", response)
+	ingress, egress, unclassified := wire.since(ingressMark, egressMark)
+	if unclassified != 0 {
+		t.Fatalf("%d DebugWriter bytes had no direction", unclassified)
 	}
-	_, command, _ = strings.Cut(command, " ")
 
-	return messages, command, match[1]
+	tag, command := "", ""
+	for _, line := range strings.Split(egress, "\r\n") {
+		if lineTag, rest, _ := strings.Cut(line, " "); strings.HasPrefix(rest, "UID FETCH ") {
+			if tag != "" {
+				t.Fatalf("more than one FETCH sent: %q", egress)
+			}
+			tag, command = lineTag, rest
+		}
+	}
+	if tag == "" {
+		t.Fatalf("no FETCH command in egress %q", egress)
+	}
+
+	served, ok := servedFetch(ingress, tag)
+	if !ok {
+		t.Fatalf("ingress %q lacks %s FETCH completion", ingress, tag)
+	}
+
+	return messages, command, served
+}
+
+var (
+	literalSuffix = regexp.MustCompile(`\{(\d+)\}$`)
+	untaggedFetch = regexp.MustCompile(`^\* \d+ FETCH \(`)
+)
+
+// servedFetch splits ingress into whole responses, following literals, and
+// returns the untagged FETCH responses before the tagged OK for tag.
+func servedFetch(ingress, tag string) (string, bool) {
+	var served strings.Builder
+	for ingress != "" {
+		end := 0
+		for {
+			line := strings.Index(ingress[end:], "\r\n")
+			if line < 0 {
+				return "", false
+			}
+			line += end
+
+			match := literalSuffix.FindStringSubmatch(ingress[end:line])
+			if match == nil {
+				end = line + 2
+				break
+			}
+
+			size, err := strconv.Atoi(match[1])
+			if err != nil || line+2+size > len(ingress) {
+				return "", false
+			}
+			end = line + 2 + size
+		}
+
+		response := ingress[:end]
+		ingress = ingress[end:]
+		switch {
+		case response == tag+" OK FETCH completed\r\n":
+			return served.String(), true
+		case strings.HasPrefix(response, tag+" "):
+			return "", false
+		case untaggedFetch.MatchString(response):
+			served.WriteString(response)
+		}
+	}
+
+	return "", false
 }
 
 func unseenUIDs(t *testing.T, client *imapclient.Client) []imap.UID {
@@ -698,7 +795,8 @@ func unseenUIDs(t *testing.T, client *imapclient.Client) []imap.UID {
 }
 
 // assertReadOnlyTLSTranscript checks that every recorded command is read-only,
-// peek-only and, apart from STARTTLS, sent after verified TLS.
+// peek-only and, apart from STARTTLS and the client's own CAPABILITY probe,
+// sent after verified TLS.
 func assertReadOnlyTLSTranscript(t *testing.T, server *Server) {
 	t.Helper()
 
@@ -719,7 +817,7 @@ func assertReadOnlyTLSTranscript(t *testing.T, server *Server) {
 			t.Fatalf("transcript records mutating %s", command.Verb)
 		}
 
-		if command.Verb != "STARTTLS" && !command.TLS {
+		if command.Verb != "STARTTLS" && command.Verb != "CAPABILITY" && !command.TLS {
 			t.Fatalf("%s recorded before TLS", command.Verb)
 		}
 	}
