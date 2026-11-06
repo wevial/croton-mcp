@@ -2,8 +2,12 @@ package bridge
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/mail"
 	"sort"
@@ -13,9 +17,11 @@ import (
 	"syscall"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	imap "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
+	"golang.org/x/net/html/charset"
 )
 
 const (
@@ -431,7 +437,7 @@ func (session *imapSession) UIDFetchMetadata(ctx context.Context, _ string, uids
 		set.AddNum(imap.UID(uid))
 	}
 	section := &imap.FetchItemBodySection{Specifier: imap.PartSpecifierHeader, Peek: true}
-	options := &imap.FetchOptions{UID: true, RFC822Size: true, BodySection: []*imap.FetchItemBodySection{section}}
+	options := &imap.FetchOptions{UID: true, Flags: true, RFC822Size: true, BodySection: []*imap.FetchItemBodySection{section}}
 	var results []MessageMetadata
 	err := session.withContext(ctx, func() (err error) {
 		if session.budget != nil {
@@ -454,6 +460,7 @@ func (session *imapSession) UIDFetchMetadata(ctx context.Context, _ string, uids
 			var item MessageMetadata
 			bodySections := 0
 			uidItems := 0
+			flagsItems := 0
 			for data := message.Next(); data != nil; data = message.Next() {
 				switch value := data.(type) {
 				case imapclient.FetchItemDataUID:
@@ -462,6 +469,12 @@ func (session *imapSession) UIDFetchMetadata(ctx context.Context, _ string, uids
 					}
 					uidItems++
 					item.uid = uint32(value.UID)
+				case imapclient.FetchItemDataFlags:
+					if flagsItems != 0 {
+						return errorCode(CodeIMAPProtocol)
+					}
+					flagsItems++
+					item.ReadState = metadataReadState(value.Flags)
 				case imapclient.FetchItemDataRFC822Size:
 					item.Size = value.Size
 				case imapclient.FetchItemDataBodySection:
@@ -478,6 +491,8 @@ func (session *imapSession) UIDFetchMetadata(ctx context.Context, _ string, uids
 						return errorCode(CodeIMAPProtocol)
 					}
 					item.Subject = parsed.Header.Get("Subject")
+					item.From, item.MetadataTruncated = boundedSender(parsed.Header)
+					item.Date, item.DateSource = headerDate(parsed.Header)
 				}
 			}
 			if uidItems != 1 || item.uid == 0 || bodySections != 1 {
@@ -491,6 +506,201 @@ func (session *imapSession) UIDFetchMetadata(ctx context.Context, _ string, uids
 		return validateFetchedMetadataUIDs(uids, results)
 	})
 	return results, err
+}
+
+// metadataReadState sees only a present FLAGS item; a missing one stays
+// ReadStateUnknown.
+func metadataReadState(flags []imap.Flag) ReadState {
+	for _, flag := range flags {
+		if strings.EqualFold(string(flag), string(imap.FlagSeen)) {
+			return ReadStateRead
+		}
+	}
+
+	return ReadStateUnread
+}
+
+// boundedSender decodes the single From header into at most maxSenderBytes of
+// valid UTF-8. Missing, repeated, malformed or control-bearing values are
+// omitted rather than reported, so decoder text and errors never escape.
+// Charset decoders replace bytes invalid for the declared charset with
+// U+FFFD instead of failing, so any replacement character marks a lossy
+// decode and the sender is omitted.
+func boundedSender(header mail.Header) (string, bool) {
+	values := header["From"]
+	if len(values) != 1 {
+		return "", false
+	}
+
+	// The raw value is already bounded by the header literal limit; it is
+	// decoded whole so the cap never splits an encoded word.
+	raw := values[0]
+	if !utf8.ValidString(raw) || !validSenderEncodedWords(raw) {
+		return "", false
+	}
+
+	decoder := mime.WordDecoder{CharsetReader: charset.NewReaderLabel}
+	decoded, err := decoder.DecodeHeader(raw)
+	if err != nil || !utf8.ValidString(decoded) || strings.ContainsFunc(decoded, unicode.IsControl) || strings.Contains(decoded, "=?") || strings.ContainsRune(decoded, utf8.RuneError) {
+		return "", false
+	}
+
+	return truncateUTF8(strings.TrimSpace(decoded), maxSenderBytes)
+}
+
+// validSenderEncodedWords requires every "=?" in the sender to open a
+// complete RFC 2047 word with a charset, a B or Q encoding and a well-formed
+// payload. The standard decoder passes unterminated words, unknown encodings
+// and bad Q escapes through verbatim, so those shapes are refused here.
+func validSenderEncodedWords(value string) bool {
+	for {
+		start := strings.Index(value, "=?")
+		if start < 0 {
+			return true
+		}
+
+		// The charset and encoding are located by position so a Q payload that
+		// opens with "=" is not mistaken for the closing "?=".
+		value = value[start+2:]
+		charsetEnd := strings.IndexByte(value, '?')
+		if charsetEnd < 1 || len(value) < charsetEnd+3 || value[charsetEnd+2] != '?' {
+			return false
+		}
+
+		encoding := value[charsetEnd+1 : charsetEnd+2]
+		value = value[charsetEnd+3:]
+		end := strings.Index(value, "?=")
+		if end < 1 {
+			return false
+		}
+
+		payload := value[:end]
+		value = value[end+2:]
+		if strings.Contains(payload, "?") || strings.ContainsFunc(payload, unicode.IsSpace) {
+			return false
+		}
+
+		switch {
+		case strings.EqualFold(encoding, "b"):
+			if _, err := base64.StdEncoding.DecodeString(payload); err != nil {
+				return false
+			}
+		case strings.EqualFold(encoding, "q"):
+			if !validQEscapes(payload) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+}
+
+func validQEscapes(text string) bool {
+	for index := 0; index < len(text); index++ {
+		if text[index] != '=' {
+			continue
+		}
+		if index+2 >= len(text) {
+			return false
+		}
+		if _, err := hex.DecodeString(text[index+1 : index+3]); err != nil {
+			return false
+		}
+		index += 2
+	}
+
+	return true
+}
+
+// headerDate parses the single Date header into RFC3339 UTC. It never falls
+// back to another clock: an absent, repeated or invalid Date is unknown.
+func headerDate(header mail.Header) (string, DateSource) {
+	values := header["Date"]
+	if len(values) != 1 {
+		return "", DateSourceUnknown
+	}
+
+	value, ok := numericDateZone(values[0])
+	if !ok {
+		return "", DateSourceUnknown
+	}
+
+	parsed, err := mail.ParseDate(value)
+	if err != nil || parsed.UTC().Year() < 1 || parsed.UTC().Year() > 9999 {
+		return "", DateSourceUnknown
+	}
+
+	return parsed.UTC().Format(time.RFC3339), DateSourceHeader
+}
+
+// rfc5322NamedZones are the obsolete zone names RFC 5322 section 4.3 defines,
+// with their offsets in seconds. UTC is accepted as a common synonym of UT.
+var rfc5322NamedZones = map[string]int{
+	"UT": 0, "UTC": 0, "GMT": 0,
+	"EST": -5 * 3600, "EDT": -4 * 3600,
+	"CST": -6 * 3600, "CDT": -5 * 3600,
+	"MST": -7 * 3600, "MDT": -6 * 3600,
+	"PST": -8 * 3600, "PDT": -7 * 3600,
+}
+
+// numericDateZone rewrites a trailing RFC 5322 named zone as its numeric
+// offset. Go's date parser otherwise gives an unrecognised abbreviation a zero
+// offset, or the host's offset when it matches the local zone. Dates that
+// already carry a numeric offset pass through; any other named zone, including
+// military letters whose meaning RFC 5322 leaves unknown, is refused. Only the
+// zone token is replaced, and anything after the zone must be whitespace or
+// comments, because the parser ignores unconsumed trailing text.
+func numericDateZone(value string) (string, bool) {
+	uncommented := value
+	if index := strings.IndexByte(uncommented, '('); index >= 0 {
+		uncommented = uncommented[:index]
+	}
+	if index := strings.IndexAny(uncommented, "+-"); index >= 0 && len(uncommented) >= index+5 {
+		return value, onlyCFWS(value[index+5:])
+	}
+
+	zoneEnd := len(strings.TrimRight(uncommented, " \t\r\n"))
+	zoneStart := strings.LastIndexAny(uncommented[:zoneEnd], " \t\r\n") + 1
+	if zoneStart == 0 {
+		return "", false
+	}
+
+	offset, known := rfc5322NamedZones[strings.ToUpper(uncommented[zoneStart:zoneEnd])]
+	if !known || !onlyCFWS(value[zoneEnd:]) {
+		return "", false
+	}
+
+	sign := "+"
+	if offset < 0 {
+		sign = "-"
+		offset = -offset
+	}
+
+	return value[:zoneStart] + fmt.Sprintf("%s%02d%02d", sign, offset/3600, offset%3600/60) + value[zoneEnd:], true
+}
+
+// onlyCFWS reports whether s holds nothing but folding whitespace and
+// balanced, possibly nested RFC 5322 comments.
+func onlyCFWS(s string) bool {
+	depth := 0
+	for index := 0; index < len(s); index++ {
+		switch char := s[index]; {
+		case depth > 0 && char == '\\':
+			index++
+		case char == '(':
+			depth++
+		case char == ')':
+			if depth == 0 {
+				return false
+			}
+			depth--
+		case depth > 0, char == ' ', char == '\t', char == '\r', char == '\n':
+		default:
+			return false
+		}
+	}
+
+	return depth == 0
 }
 
 func validateFetchedMetadataUIDs(requested []uint32, results []MessageMetadata) error {

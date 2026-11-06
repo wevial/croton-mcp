@@ -522,14 +522,14 @@ func TestDigestSyntheticWire(t *testing.T) {
 						}
 						if strings.Contains(upper, " FETCH ") {
 							fetches++
-							// Permit only UID, size and a non-mutating header read. A
+							// Permit only UID, FLAGS, size and a non-mutating header read. A
 							// body read fails even if combined with a permitted header read.
 							if !strings.Contains(upper, "UID FETCH ") || !strings.Contains(upper, "BODY.PEEK[HEADER]") {
 								t.Fatalf("unexpected metadata fetch: %s", command.Raw)
 							}
 							_, items, _ := strings.Cut(upper, "(")
 							for _, item := range strings.Fields(strings.TrimSuffix(items, ")")) {
-								if item != "UID" && item != "RFC822.SIZE" && item != "BODY.PEEK[HEADER]" {
+								if item != "UID" && item != "FLAGS" && item != "RFC822.SIZE" && item != "BODY.PEEK[HEADER]" {
 									t.Fatalf("digest requested non-metadata fetch item: %s", command.Raw)
 								}
 							}

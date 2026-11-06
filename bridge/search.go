@@ -14,7 +14,55 @@ import (
 const (
 	maxMessageIDBytes        = 1024
 	maxMessageIDEncodedBytes = 1366
+	maxSenderBytes           = 512
 )
+
+// DateSource names where MessageMetadata.Date came from. The zero value is
+// DateSourceUnknown, so metadata built without a parsed header Date never
+// claims a source.
+type DateSource uint8
+
+const (
+	// DateSourceUnknown means no usable header Date was found.
+	DateSourceUnknown DateSource = iota
+	// DateSourceHeader means Date was parsed from the message's own Date
+	// header. It is sender-controlled and is not arrival or delivery time.
+	DateSourceHeader
+)
+
+// MarshalText renders the source as a closed lowercase token.
+func (source DateSource) MarshalText() ([]byte, error) {
+	if source == DateSourceHeader {
+		return []byte("header"), nil
+	}
+	return []byte("unknown"), nil
+}
+
+// ReadState is the three-state Seen status from a metadata FETCH. The zero
+// value is ReadStateUnknown, so metadata without a FLAGS item is never
+// reported as unread.
+type ReadState uint8
+
+const (
+	// ReadStateUnknown means the server returned no FLAGS item.
+	ReadStateUnknown ReadState = iota
+	// ReadStateUnread means FLAGS was present without \Seen.
+	ReadStateUnread
+	// ReadStateRead means FLAGS was present with \Seen.
+	ReadStateRead
+)
+
+// MarshalText renders the state as a closed lowercase token.
+func (state ReadState) MarshalText() ([]byte, error) {
+	switch state {
+	case ReadStateUnread:
+		return []byte("unread"), nil
+	case ReadStateRead:
+		return []byte("read"), nil
+	default:
+		return []byte("unknown"), nil
+	}
+}
 
 type messageIDPayload struct {
 	Mailbox     string `json:"m"`
@@ -38,13 +86,25 @@ type SearchQuery struct {
 // and UID are the same positive tuple the adapter validated and bound into ID
 // during the successful read attempt; they confer no account or write
 // authority.
+//
+// From, Date, DateSource and ReadState come from the same bounded metadata
+// FETCH. From is untrusted decoded header text of at most 512 UTF-8 bytes and
+// is empty when the header is missing or invalid; it asserts no account or
+// address ownership. Date is RFC3339 UTC parsed only from the header Date and
+// is empty unless DateSource is DateSourceHeader. MetadataTruncated reports
+// that From was cut to its byte bound.
 type MessageMetadata struct {
-	ID          string
-	Mailbox     string
-	UIDValidity uint32
-	UID         uint32
-	Subject     string
-	Size        int64
+	ID                string
+	Mailbox           string
+	UIDValidity       uint32
+	UID               uint32
+	Subject           string
+	Size              int64
+	From              string
+	Date              string
+	DateSource        DateSource
+	ReadState         ReadState
+	MetadataTruncated bool
 
 	uid uint32
 }

@@ -143,6 +143,20 @@ type Scenario struct {
 	UnexpectedBodyFetchBinaryLiteralBytes int
 }
 
+// MetadataFlagsMode selects how custom-message metadata FETCH responses carry
+// a requested FLAGS item. It never applies to whole-body FETCH responses.
+type MetadataFlagsMode int
+
+const (
+	// MetadataFlagsOrdinary returns one FLAGS item derived from Seen.
+	MetadataFlagsOrdinary MetadataFlagsMode = iota
+	// MetadataFlagsOmitted leaves out the requested FLAGS item.
+	MetadataFlagsOmitted
+	// MetadataFlagsDuplicated returns the requested FLAGS item twice. It is a
+	// parser fault input, not a valid read state.
+	MetadataFlagsDuplicated
+)
+
 // Options configures a fake server. The zero value uses STARTTLS without faults.
 type Options struct {
 	Mode     TLSMode
@@ -157,6 +171,10 @@ type Options struct {
 	// Seen optionally marks custom Messages as read by index. Omitted entries
 	// remain unread, preserving the existing custom-message defaults.
 	Seen []bool
+
+	// MetadataFlags selects the FLAGS shape of custom-message metadata FETCH
+	// responses that request FLAGS. Non-ordinary modes require Messages.
+	MetadataFlags MetadataFlagsMode
 
 	// Stateful opts into mutable synthetic mailboxes; see STATEFUL.md. It
 	// cannot be combined with Messages, Seen or Scenario. Nil keeps legacy behavior.
@@ -246,6 +264,14 @@ func Start(options Options) (*Server, error) {
 
 	if options.Scenario.UnexpectedBodyFetchBinaryLiteralBytes < 0 {
 		return nil, errors.New("testkit: unexpected body FETCH binary literal size must not be negative")
+	}
+
+	if options.MetadataFlags < MetadataFlagsOrdinary || options.MetadataFlags > MetadataFlagsDuplicated {
+		return nil, fmt.Errorf("testkit: unsupported metadata FLAGS mode %d", options.MetadataFlags)
+	}
+
+	if options.MetadataFlags != MetadataFlagsOrdinary && len(options.Messages) == 0 {
+		return nil, errors.New("testkit: metadata FLAGS mode requires custom Messages")
 	}
 
 	var stateful *mailboxStore
@@ -1255,6 +1281,7 @@ func (server *Server) writeFixtureFetch(writer *bufio.Writer, tag, raw string) b
 	}
 
 	header := strings.Contains(strings.ToUpper(raw), "HEADER")
+	flagsRequested := header && fetchRequestsFlags(fields[4:])
 	for index, body := range server.options.Messages {
 		uid := uint32(101 + index)
 		matched := false
@@ -1282,8 +1309,13 @@ func (server *Server) writeFixtureFetch(writer *bufio.Writer, tag, raw string) b
 			literal = partialBodyLiteral(raw, body)
 		}
 
-		response := fmt.Sprintf("* %d FETCH (UID %d RFC822.SIZE %d BODY%s {%d}\r\n%s)",
-			index+1, uid, len(body), fetchResponseSection(raw, header), len(literal), literal)
+		flags := ""
+		if flagsRequested {
+			flags = server.fixtureFlagsItems(index)
+		}
+
+		response := fmt.Sprintf("* %d FETCH (UID %d%s RFC822.SIZE %d BODY%s {%d}\r\n%s)",
+			index+1, uid, flags, len(body), fetchResponseSection(raw, header), len(literal), literal)
 		if err := server.writeLine(writer, response); err != nil {
 			return false
 		}
@@ -1294,4 +1326,52 @@ func (server *Server) writeFixtureFetch(writer *bufio.Writer, tag, raw string) b
 
 func (server *Server) fixtureSeen(index int) bool {
 	return index < len(server.options.Seen) && server.options.Seen[index]
+}
+
+// fixtureFlagsItems renders the FLAGS item, with a leading space, for one
+// custom message in the configured metadata FLAGS mode.
+func (server *Server) fixtureFlagsItems(index int) string {
+	item := " FLAGS ()"
+	if server.fixtureSeen(index) {
+		item = ` FLAGS (\Seen)`
+	}
+
+	switch server.options.MetadataFlags {
+	case MetadataFlagsOmitted:
+		return ""
+	case MetadataFlagsDuplicated:
+		return item + item
+	default:
+		return item
+	}
+}
+
+// fetchRequestsFlags reports whether FLAGS is a top-level FETCH item, ignoring
+// bracketed section specifiers such as HEADER.FIELDS (...).
+func fetchRequestsFlags(items []string) bool {
+	depth := 0
+	stripped := strings.Map(func(character rune) rune {
+		switch {
+		case character == '[':
+			depth++
+		case character == ']' && depth > 0:
+			depth--
+			return ' '
+		}
+		if depth > 0 {
+			return ' '
+		}
+
+		return character
+	}, strings.Join(items, " "))
+
+	for _, item := range strings.FieldsFunc(stripped, func(character rune) bool {
+		return character == ' ' || character == '(' || character == ')'
+	}) {
+		if strings.EqualFold(item, "FLAGS") {
+			return true
+		}
+	}
+
+	return false
 }

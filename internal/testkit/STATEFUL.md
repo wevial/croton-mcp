@@ -14,6 +14,23 @@ All seeds must be synthetic. Use reserved `.test` addresses and invented
 content. Mailbox names such as `Labels/...` are fixture examples and do not
 describe actual Proton Mail Bridge layout.
 
+## Custom-message metadata FLAGS
+
+This is legacy custom-message support, not part of stateful or label mode.
+When `Options.Messages` is set, a metadata `UID FETCH` that requests a
+`BODY.PEEK[HEADER...]` section and a top-level `FLAGS` item returns one
+`FLAGS` item after `UID`: `(\Seen)` when `Options.Seen` marks the message,
+otherwise `()`. Requests without `FLAGS`, and whole-body FETCH responses, carry
+no `FLAGS` item. Nothing changes `Seen`, so `UID SEARCH UNSEEN` and `STATUS`
+stay as configured.
+
+`Options.MetadataFlags` picks the shape of that item on the metadata path only:
+`MetadataFlagsOrdinary` (default), `MetadataFlagsOmitted` (left out) or
+`MetadataFlagsDuplicated` (sent twice; a parser fault input, not a valid read
+state). Non-ordinary modes require `Messages`, so they are refused with
+stateful or label mode. This is not a scripted server, and it does not show
+that Proton Mail Bridge returns the same FLAGS.
+
 ## Seeding
 
 ```go
