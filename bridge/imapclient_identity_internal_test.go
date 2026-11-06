@@ -117,6 +117,13 @@ func TestSearchObserverDetectsDuplicateUIDsBeforeSetNormalization(t *testing.T) 
 		{name: "repeated SEARCH UID after literal marker in numbered status text", input: "* 3 NO notice {18}\r\n* SEARCH 101 101\r\n", want: true},
 		{name: "repeated SEARCH UID after literal marker in tagged status text", input: "T0 OK notice {18}\r\n* SEARCH 101 101\r\n", want: true},
 		{name: "repeated SEARCH UID after literal marker in continuation text", input: "+ notice {18}\r\n* SEARCH 101 101\r\n", want: true},
+		{name: "distinct ESEARCH ALL after unspaced correlator", input: "* ESEARCH(TAG \"T1\") UID ALL 7,8\r\n", want: false},
+		{name: "repeated ESEARCH ALL UID after unspaced correlator", input: "* ESEARCH(TAG \"T1\") UID ALL 101,101\r\n* SEARCH\r\n", want: true},
+		{name: "repeated ESEARCH ALL UID in numbered response", input: "* 3 ESEARCH (TAG \"T1\") UID ALL 7,7\r\n", want: true},
+		{name: "distinct SEARCH framed by lone LF", input: "* SEARCH 7 8\n", want: false},
+		{name: "repeated across SEARCH lines framed by lone LF", input: "* SEARCH 7\n* SEARCH 7\n", want: true},
+		{name: "repeated SEARCH UID behind status ended by lone LF", input: "* OK notice\n* SEARCH 101 101\r\n* SEARCH\r\n", want: true},
+		{name: "repeated ESEARCH ALL UID behind status ended by lone LF", input: "* OK notice\n* ESEARCH (TAG \"T1\") UID ALL 101,101\r\n* SEARCH\r\n", want: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			connection := &readBudgetConn{}
@@ -149,6 +156,9 @@ func TestSearchObserverFailsClosedOnLinesItCannotWalk(t *testing.T) {
 		{name: "empty ESEARCH", input: "* ESEARCH (TAG \"T1\") UID\r\n", want: false},
 		{name: "ESEARCH spaced extension value", input: "* ESEARCH (TAG \"T1\") UID X (F ALL 7) ALL 7\r\n", want: false},
 		{name: "ESEARCH COUNT and ALL", input: "* ESEARCH (TAG \"T1\") UID COUNT 2 ALL 7:8\r\n", want: false},
+		{name: "lone CR inside a line", input: "* OK notice\r* SEARCH 7 7\r\n", want: true},
+		{name: "SEARCH framed by lone LF", input: "* SEARCH 7 8\n", want: false},
+		{name: "ESEARCH after unspaced correlator", input: "* ESEARCH(TAG \"T1\") UID ALL 7\r\n", want: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			connection := &readBudgetConn{}

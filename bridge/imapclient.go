@@ -937,18 +937,24 @@ func (connection *readBudgetConn) observeSearchResponseLocked(input string) {
 			connection.searchLiteralBytes = 0
 		}
 
-		end := strings.Index(connection.searchBuffer, "\r\n")
+		// go-imap ends a line at LF with an optional CR before it, so a lone
+		// LF frames a response exactly as CRLF does. A CR anywhere else is
+		// not framing go-imap accepts, so the command fails closed.
+		end := strings.IndexByte(connection.searchBuffer, '\n')
 		if end < 0 {
 			return
 		}
-		line := connection.searchPending + connection.searchBuffer[:end]
-		connection.searchBuffer = connection.searchBuffer[end+2:]
+		line := connection.searchPending + strings.TrimSuffix(connection.searchBuffer[:end], "\r")
+		connection.searchBuffer = connection.searchBuffer[end+1:]
 		connection.searchPending = ""
+		if strings.IndexByte(line, '\r') >= 0 {
+			connection.searchIncomplete = true
+		}
 
 		// go-imap reads status and continuation text to CRLF, so a literal
 		// marker there is ordinary text, unless the line resumes a response
-		// after its literal.
-		literalBytes, hasLiteral := trailingIMAPLiteralSize(line)
+		// after its literal. go-imap also tolerates one space before CRLF.
+		literalBytes, hasLiteral := trailingIMAPLiteralSize(strings.TrimSuffix(line, " "))
 		if !connection.searchContinues && imapTextResponse(line) {
 			hasLiteral = false
 		}
@@ -956,12 +962,12 @@ func (connection *readBudgetConn) observeSearchResponseLocked(input string) {
 		if hasLiteral {
 			connection.searchLiteralBytes = literalBytes
 		}
-		upper := strings.ToUpper(line)
-		switch {
-		case upper == "* SEARCH" || strings.HasPrefix(upper, "* SEARCH "):
+		name, rest := imapResponseName(line)
+		switch name {
+		case "SEARCH":
 			connection.searchResponseSeen = true
-			connection.observeSearchUIDsLocked(line[len("* SEARCH"):])
-		case upper == "* ESEARCH" || strings.HasPrefix(upper, "* ESEARCH "):
+			connection.observeSearchUIDsLocked(rest)
+		case "ESEARCH":
 			connection.eSearchResponseSeen = true
 			if hasLiteral {
 				// The response continues after the literal, so judge it once
@@ -970,7 +976,7 @@ func (connection *readBudgetConn) observeSearchResponseLocked(input string) {
 				connection.searchPending = line[:strings.LastIndexByte(line, '{')] + `""`
 				continue
 			}
-			overlaps, complete := eSearchAllOverlaps(line[len("* ESEARCH"):])
+			overlaps, complete := eSearchAllOverlaps(rest)
 			if overlaps {
 				connection.searchDuplicate = true
 			}
@@ -979,6 +985,24 @@ func (connection *readBudgetConn) observeSearchResponseLocked(input string) {
 			}
 		}
 	}
+}
+
+// imapResponseName returns the uppercased type of an untagged response and
+// the text after it, read as go-imap reads them: an atom after "* ", behind
+// an optional message number. The type ends at the first non-atom character,
+// so "* ESEARCH(TAG ...)" names ESEARCH just as "* ESEARCH (TAG ...)" does.
+func imapResponseName(line string) (string, string) {
+	rest, untagged := strings.CutPrefix(line, "* ")
+	if !untagged {
+		return "", line
+	}
+
+	name, rest := eSearchAtom(rest)
+	if name != "" && strings.Trim(name, "0123456789") == "" && strings.HasPrefix(rest, " ") {
+		name, rest = eSearchAtom(rest[1:])
+	}
+
+	return strings.ToUpper(name), rest
 }
 
 // observeSearchUIDsLocked records the numbers of one SEARCH line. go-imap
