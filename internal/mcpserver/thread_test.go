@@ -240,12 +240,13 @@ func TestGetThreadBoundsAttemptedSiblingFetches(t *testing.T) {
 		})
 	}
 
-	_, _, code := appendThreadSiblings(
+	_, _, _, code := appendThreadSiblings(
 		context.Background(),
 		mail,
 		Options{Mail: mail},
 		[]bridge.ThreadMessage{{Key: "target"}},
 		map[string]bridge.MessageMetadata{},
+		map[string]threadNodeTruncation{},
 		bridge.MessageMetadata{ID: "target", Mailbox: "INBOX", Subject: "Planning"},
 		3,
 	)
@@ -276,12 +277,13 @@ func TestGetThreadDeduplicatesAndRejectsSubjectFalsePositives(t *testing.T) {
 		},
 	}
 
-	members, _, code := appendThreadSiblings(
+	members, _, _, code := appendThreadSiblings(
 		context.Background(),
 		mail,
 		Options{Mail: mail},
 		[]bridge.ThreadMessage{{Key: "target"}},
 		map[string]bridge.MessageMetadata{},
+		map[string]threadNodeTruncation{},
 		bridge.MessageMetadata{ID: "target", Mailbox: "INBOX", Subject: "Planning"},
 		10,
 	)

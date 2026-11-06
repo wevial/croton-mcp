@@ -711,6 +711,7 @@ func requireCatalog(t *testing.T, session *mcp.ClientSession, want map[string][]
 var threadNodeKeys = map[string]bool{
 	"key": true, "mailbox": true, "uidvalidity": true, "uid": true, "messageId": true,
 	"parentKey": true, "depth": true, "subject": true, "from": true, "date": true,
+	"truncation": true,
 }
 
 func fakeThreadBody(subject, messageID, references string) []byte {

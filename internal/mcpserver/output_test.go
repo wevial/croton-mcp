@@ -2,6 +2,8 @@ package mcpserver
 
 import (
 	"encoding/json"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -118,9 +120,10 @@ func TestEncodeBoundedPreservesToolSpecificShapeOnFallback(t *testing.T) {
 	t.Parallel()
 
 	result := &getThreadResult{
-		ID:      strings.Repeat("x", maxToolResultBytes*2),
-		Mailbox: "INBOX",
-		Nodes:   []threadNodeResult{{Key: "target"}},
+		ID:                 strings.Repeat("x", maxToolResultBytes*2),
+		Mailbox:            "INBOX",
+		Nodes:              []threadNodeResult{{Key: "target"}},
+		UnavailableMembers: []threadUnavailableMember{{Reason: threadUnavailableStaleID}},
 	}
 	encoded, truncated, err := encodeBounded(result)
 	if err != nil {
@@ -139,4 +142,142 @@ func TestEncodeBoundedPreservesToolSpecificShapeOnFallback(t *testing.T) {
 			t.Fatalf("fallback dropped get_thread field %q: %s", key, encoded)
 		}
 	}
+	if _, ok := fields["unavailableMembers"]; ok {
+		t.Fatalf("fallback fabricated unavailable members: %s", encoded)
+	}
+}
+
+func TestEncodeBoundedShrinksThreadNodesAndUnavailableMembers(t *testing.T) {
+	t.Parallel()
+
+	requireThreadOutputControls(t)
+}
+
+// encodedThreadNodes returns each source node's own serialized form by key.
+func encodedThreadNodes(t *testing.T, nodes []threadNodeResult) map[string]map[string]any {
+	t.Helper()
+
+	source := make(map[string]map[string]any, len(nodes))
+	for _, node := range nodes {
+		encoded, err := json.Marshal(node)
+		if err != nil {
+			t.Fatalf("marshal node: %v", err)
+		}
+		decoder := json.NewDecoder(strings.NewReader(string(encoded)))
+		decoder.UseNumber()
+		var object map[string]any
+		if err := decoder.Decode(&object); err != nil {
+			t.Fatalf("decode node: %v", err)
+		}
+		source[node.Key] = object
+	}
+	return source
+}
+
+// requireThreadOutputControls pins get_thread output shrinking: whole
+// unavailable records and whole nodes are removed with truncated set, every
+// retained node keeps its complete identity and flags, and the final
+// fallback is empty bounded context.
+func requireThreadOutputControls(t *testing.T) {
+	t.Helper()
+
+	records := func(count int) []threadUnavailableMember {
+		reasons := []string{threadUnavailableStaleID, threadUnavailableInvalidIdentity, threadUnavailableMalformedHeader}
+		result := make([]threadUnavailableMember, 0, count)
+		for index := range count {
+			result = append(result, threadUnavailableMember{Reason: reasons[index%len(reasons)]})
+		}
+		return result
+	}
+	requireValid := func(t *testing.T, label string, encoded []byte, truncated bool, err error) map[string]any {
+		t.Helper()
+
+		if err != nil || !truncated || !utf8.Valid(encoded) {
+			t.Fatalf("%s: truncated=%v err=%v validUTF8=%v", label, truncated, err, utf8.Valid(encoded))
+		}
+		return decodeBounded(t, encoded)
+	}
+	requireRetainedNodes := func(t *testing.T, label string, object map[string]any, source map[string]map[string]any, total int) {
+		t.Helper()
+
+		nodes := rawItems(t, object, "nodes")
+		if len(nodes) == 0 || len(nodes) > total {
+			t.Fatalf("%s retained %d of %d nodes", label, len(nodes), total)
+		}
+		for _, node := range nodes {
+			key, _ := node["key"].(string)
+			if want, ok := source[key]; !ok || !reflect.DeepEqual(node, want) {
+				t.Fatalf("%s retained node %.60q altered or unknown", label, key)
+			}
+		}
+	}
+
+	t.Run("nodes and records", func(t *testing.T) {
+		thread := &getThreadResult{ID: "opaque-target", Mailbox: "INBOX", UnavailableMembers: records(maxThreadMessages - 1)}
+		for index := range maxThreadMessages {
+			thread.Nodes = append(thread.Nodes, threadNodeResult{
+				Key: fmt.Sprintf("opaque-%02d", index), Mailbox: "INBOX", UIDValidity: 3001, UID: uint32(100 + index),
+				Subject:    strings.Repeat("☃", 3000),
+				Truncation: threadNodeTruncation{Headers: index%2 == 0, HeaderCount: index%3 == 0, References: index%5 == 0},
+			})
+		}
+		source := encodedThreadNodes(t, thread.Nodes)
+
+		encoded, truncated, err := encodeBounded(thread)
+		object := requireValid(t, "nodes and records", encoded, truncated, err)
+		requireRetainedNodes(t, "nodes and records", object, source, maxThreadMessages-1)
+		if _, present := object["unavailableMembers"]; present {
+			t.Fatalf("records outlived node removal: %.200s", encoded)
+		}
+	})
+
+	t.Run("records only", func(t *testing.T) {
+		thread := &getThreadResult{ID: "opaque-target", Mailbox: "INBOX", Nodes: []threadNodeResult{
+			{Key: "opaque-only", Mailbox: "INBOX", UIDValidity: 3001, UID: 7, Truncation: threadNodeTruncation{References: true}},
+		}}
+		base, err := json.Marshal(thread)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		thread.Nodes[0].Subject = strings.Repeat("s", maxToolResultBytes-len(base)-60)
+		thread.UnavailableMembers = records(maxThreadMessages - 1)
+		source := encodedThreadNodes(t, thread.Nodes)
+
+		encoded, truncated, err := encodeBounded(thread)
+		object := requireValid(t, "records only", encoded, truncated, err)
+		requireRetainedNodes(t, "records only", object, source, 1)
+		if kept := len(thread.UnavailableMembers); kept >= maxThreadMessages-1 {
+			t.Fatalf("records were not shrunk: %d", kept)
+		}
+		if _, present := object["unavailableMembers"]; present {
+			for _, record := range rawItems(t, object, "unavailableMembers") {
+				if len(record) != 1 || record["reason"] == "" {
+					t.Fatalf("shrunk record is not reason-only: %v", record)
+				}
+			}
+		}
+	})
+
+	t.Run("fallback", func(t *testing.T) {
+		longID := strings.Repeat("é", maxToolResultBytes)
+		longMailbox := "Folders/" + strings.Repeat("☃", maxToolResultBytes)
+		thread := &getThreadResult{ID: longID, Mailbox: longMailbox, UnavailableMembers: records(5), Nodes: []threadNodeResult{
+			{Key: "opaque-only", Mailbox: longMailbox, UIDValidity: 3001, UID: 11, Truncation: threadNodeTruncation{Headers: true}},
+		}}
+
+		encoded, truncated, err := encodeBounded(thread)
+		object := requireValid(t, "fallback", encoded, truncated, err)
+		requireNoIdentityKeys(t, "thread fallback", object)
+		if nodes := rawItems(t, object, "nodes"); len(nodes) != 0 {
+			t.Fatalf("fallback fabricated nodes: %v", nodes)
+		}
+		if _, present := object["unavailableMembers"]; present {
+			t.Fatalf("fallback fabricated unavailable members: %.200s", encoded)
+		}
+		id, _ := object["id"].(string)
+		mailbox, _ := object["mailbox"].(string)
+		if id == "" || len(id) > 1024 || !strings.HasPrefix(longID, id) || mailbox == "" || len(mailbox) > 1024 || !strings.HasPrefix(longMailbox, mailbox) {
+			t.Fatalf("fallback context is not bounded aggregate context: id=%d mailbox=%d bytes", len(id), len(mailbox))
+		}
+	})
 }

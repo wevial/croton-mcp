@@ -117,13 +117,22 @@ func (result *getMessageResult) shrinkForOutput() bool {
 	return true
 }
 
+// Thread shrinking drops whole unavailable-member records before whole
+// nodes, so every retained node keeps its own identity and truncation flags
+// and no record or node is ever manufactured.
 func (result *getThreadResult) shrinkForOutput() bool {
-	if len(result.Nodes) <= 1 {
+	switch {
+	case len(result.UnavailableMembers) > 0:
+		result.UnavailableMembers = result.UnavailableMembers[:len(result.UnavailableMembers)/2]
+		if len(result.UnavailableMembers) == 0 {
+			result.UnavailableMembers = nil
+		}
+	case len(result.Nodes) > 1:
+		result.Nodes = result.Nodes[:(len(result.Nodes)+1)/2]
+	default:
 		return false
 	}
 
-	remaining := (len(result.Nodes) + 1) / 2
-	result.Nodes = result.Nodes[:remaining]
 	result.Truncated = true
 	return true
 }
@@ -194,6 +203,8 @@ func (result *getMessageResult) fallbackForOutput() any {
 	}
 }
 
+// The thread fallback keeps only bounded, nonselectable aggregate context:
+// no node, unavailable-member record or selectable identity.
 func (result *getThreadResult) fallbackForOutput() any {
 	return &getThreadResult{
 		ID:        fallbackString(result.ID),

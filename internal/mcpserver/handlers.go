@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -383,26 +384,81 @@ func runGetMessage(ctx context.Context, deps Options, arguments json.RawMessage)
 	}, ""
 }
 
+// threadNodeTruncation names the header limits that shaped one thread node.
+// Only true reasons are serialized, so a complete node carries an empty
+// object.
+type threadNodeTruncation struct {
+	Headers     bool `json:"headers,omitempty"`
+	HeaderCount bool `json:"headerCount,omitempty"`
+	References  bool `json:"references,omitempty"`
+}
+
+func newThreadNodeTruncation(truncation bridge.Truncation) threadNodeTruncation {
+	return threadNodeTruncation{
+		Headers:     truncation.Headers,
+		HeaderCount: truncation.HeaderCount,
+		References:  truncation.References,
+	}
+}
+
+func (truncation threadNodeTruncation) any() bool {
+	return truncation.Headers || truncation.HeaderCount || truncation.References
+}
+
 // threadNodeResult exposes header-level metadata and the member's own read
 // identity for one thread member; it never carries message body text.
 type threadNodeResult struct {
-	Key         string `json:"key"`
-	Mailbox     string `json:"mailbox"`
-	UIDValidity uint32 `json:"uidvalidity,omitempty"`
-	UID         uint32 `json:"uid,omitempty"`
-	MessageID   string `json:"messageId,omitempty"`
-	ParentKey   string `json:"parentKey,omitempty"`
-	Depth       int    `json:"depth"`
-	Subject     string `json:"subject,omitempty"`
-	From        string `json:"from,omitempty"`
-	Date        string `json:"date,omitempty"`
+	Key         string               `json:"key"`
+	Mailbox     string               `json:"mailbox"`
+	UIDValidity uint32               `json:"uidvalidity,omitempty"`
+	UID         uint32               `json:"uid,omitempty"`
+	MessageID   string               `json:"messageId,omitempty"`
+	ParentKey   string               `json:"parentKey,omitempty"`
+	Depth       int                  `json:"depth"`
+	Subject     string               `json:"subject,omitempty"`
+	From        string               `json:"from,omitempty"`
+	Date        string               `json:"date,omitempty"`
+	Truncation  threadNodeTruncation `json:"truncation"`
+}
+
+// Closed reasons for one omitted, attempted thread sibling.
+const (
+	threadUnavailableStaleID         = "stale_id"
+	threadUnavailableInvalidIdentity = "invalid_identity"
+	threadUnavailableMalformedHeader = "malformed_header"
+)
+
+// maxThreadUnavailableMembers bounds the omission records to the sibling
+// header-read budget of the largest thread.
+const maxThreadUnavailableMembers = maxThreadMessages - 1
+
+// threadUnavailableMember records one attempted sibling that was omitted. It
+// carries only a closed reason: no id, tuple or error text, so it is never a
+// selectable message.
+type threadUnavailableMember struct {
+	Reason string `json:"reason"`
 }
 
 type getThreadResult struct {
-	ID        string             `json:"id"`
-	Mailbox   string             `json:"mailbox"`
-	Nodes     []threadNodeResult `json:"nodes"`
-	Truncated bool               `json:"truncated,omitempty"`
+	ID                 string                    `json:"id"`
+	Mailbox            string                    `json:"mailbox"`
+	Nodes              []threadNodeResult        `json:"nodes"`
+	Truncated          bool                      `json:"truncated,omitempty"`
+	UnavailableMembers []threadUnavailableMember `json:"unavailableMembers,omitempty"`
+}
+
+// threadHeaderLocalFailure reports whether a selected header read failed only
+// because canonical header normalization rejected a malformed encoded word.
+// Any bridge error code, including one wrapped or joined beside the
+// normalization error, and any context error keep their whole-call policy.
+func threadHeaderLocalFailure(err error) bool {
+	if bridge.CodeOf(err) != "" || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+
+	var normalizeError *bridge.NormalizeError
+
+	return errors.As(err, &normalizeError) && normalizeError.Code == threadUnavailableMalformedHeader
 }
 
 func runGetThread(ctx context.Context, deps Options, arguments json.RawMessage) (any, string) {
@@ -425,6 +481,10 @@ func runGetThread(ctx context.Context, deps Options, arguments json.RawMessage) 
 
 	target, err := reader.GetMessageHeaders(ctx, input.MessageID)
 	if err != nil {
+		if threadHeaderLocalFailure(err) {
+			return nil, errUnavailable
+		}
+
 		return nil, mapAdapterError(err)
 	}
 	if !validReadIdentity(target.Metadata) {
@@ -432,8 +492,9 @@ func runGetThread(ctx context.Context, deps Options, arguments json.RawMessage) 
 	}
 
 	identities := map[string]bridge.MessageMetadata{input.MessageID: target.Metadata}
+	truncations := map[string]threadNodeTruncation{input.MessageID: newThreadNodeTruncation(target.Truncation)}
 	members := []bridge.ThreadMessage{{Key: input.MessageID, Headers: target.Headers}}
-	members, siblingsTruncated, errCode := appendThreadSiblings(ctx, reader, deps, members, identities, target.Metadata, limit)
+	members, unavailable, siblingsTruncated, errCode := appendThreadSiblings(ctx, reader, deps, members, identities, truncations, target.Metadata, limit)
 	if errCode != "" {
 		return nil, errCode
 	}
@@ -441,16 +502,18 @@ func runGetThread(ctx context.Context, deps Options, arguments json.RawMessage) 
 	thread := bridge.BuildThread(members, bridge.ThreadOptions{Limits: bridge.NormalizeLimits{MaxThreadMessages: limit}})
 
 	result := getThreadResult{
-		ID:        input.MessageID,
-		Mailbox:   target.Metadata.Mailbox,
-		Nodes:     make([]threadNodeResult, 0, len(thread.Nodes)),
-		Truncated: siblingsTruncated || thread.Truncation.Any(),
+		ID:                 input.MessageID,
+		Mailbox:            target.Metadata.Mailbox,
+		Nodes:              make([]threadNodeResult, 0, len(thread.Nodes)),
+		Truncated:          siblingsTruncated || thread.Truncation.Any(),
+		UnavailableMembers: unavailable,
 	}
 	for _, node := range thread.Nodes {
 		identity, ok := identities[node.Key]
 		if !ok {
 			return nil, errInternal
 		}
+		truncation := truncations[node.Key]
 
 		result.Nodes = append(result.Nodes, threadNodeResult{
 			Key:         node.Key,
@@ -463,7 +526,9 @@ func runGetThread(ctx context.Context, deps Options, arguments json.RawMessage) 
 			Subject:     node.Message.Headers.Subject,
 			From:        node.Message.Headers.From,
 			Date:        node.Message.Headers.Date,
+			Truncation:  truncation,
 		})
+		result.Truncated = result.Truncated || truncation.any()
 	}
 
 	return &result, ""
@@ -471,21 +536,33 @@ func runGetThread(ctx context.Context, deps Options, arguments json.RawMessage) 
 
 // appendThreadSiblings finds same-subject mailbox siblings with one bounded
 // search and at most limit-1 additional selected header-only reads. It
-// records each appended sibling's metadata from the same header read in
-// identities by opaque key, and omits a sibling whose read identity is
-// incomplete.
-func appendThreadSiblings(ctx context.Context, reader MessageHeaderReader, deps Options, members []bridge.ThreadMessage, identities map[string]bridge.MessageMetadata, target bridge.MessageMetadata, limit int) ([]bridge.ThreadMessage, bool, string) {
+// records each appended sibling's metadata and header truncation from the
+// same header read by opaque key, and returns one reason-only record per
+// attempted sibling omitted as stale, without a complete read identity, or
+// with a malformed encoded header. Only identity and header omissions mark
+// the result truncated; a stale sibling no longer exists.
+func appendThreadSiblings(ctx context.Context, reader MessageHeaderReader, deps Options, members []bridge.ThreadMessage, identities map[string]bridge.MessageMetadata, truncations map[string]threadNodeTruncation, target bridge.MessageMetadata, limit int) ([]bridge.ThreadMessage, []threadUnavailableMember, bool, string) {
 	subject := baseSubject(target.Subject)
 	if subject == "" || target.Mailbox == "" {
-		return members, false, ""
+		return members, nil, false, ""
 	}
 
 	page, err := deps.Mail.SearchMailPage(ctx, bridge.SearchQuery{Mailbox: target.Mailbox, Subject: subject})
 	if err != nil {
-		return nil, false, mapAdapterError(err)
+		return nil, nil, false, mapAdapterError(err)
 	}
 
 	truncated := page.Truncated
+	var unavailable []threadUnavailableMember
+	omit := func(reason string) {
+		if len(unavailable) == maxThreadUnavailableMembers {
+			truncated = true
+			return
+		}
+
+		unavailable = append(unavailable, threadUnavailableMember{Reason: reason})
+	}
+
 	attempts := 0
 	maximumAttempts := limit - len(members)
 	seen := make(map[string]struct{}, len(members)+1)
@@ -513,26 +590,35 @@ func appendThreadSiblings(ctx context.Context, reader MessageHeaderReader, deps 
 
 		sibling, err := reader.GetMessageHeaders(ctx, candidate.ID)
 		if err != nil {
-			errCode := mapAdapterError(err)
-			if errCode == errStaleID {
+			if threadHeaderLocalFailure(err) {
+				omit(threadUnavailableMalformedHeader)
+				truncated = true
 				continue
 			}
 
-			return nil, false, errCode
+			errCode := mapAdapterError(err)
+			if errCode == errStaleID {
+				omit(threadUnavailableStaleID)
+				continue
+			}
+
+			return nil, nil, false, errCode
 		}
 		if !strings.EqualFold(baseSubject(sibling.Headers.Subject), subject) {
 			continue
 		}
 		if !validReadIdentity(sibling.Metadata) {
+			omit(threadUnavailableInvalidIdentity)
 			truncated = true
 			continue
 		}
 
 		identities[candidate.ID] = sibling.Metadata
+		truncations[candidate.ID] = newThreadNodeTruncation(sibling.Truncation)
 		members = append(members, bridge.ThreadMessage{Key: candidate.ID, Headers: sibling.Headers})
 	}
 
-	return members, truncated, ""
+	return members, unavailable, truncated, ""
 }
 
 // baseSubject strips repeated reply and forward prefixes so thread siblings

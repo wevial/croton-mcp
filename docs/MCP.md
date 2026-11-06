@@ -199,7 +199,8 @@ opaque `key`. A node never borrows the target's tuple, an ordinal or its RFC
 top-level `id` and `mailbox` are context and carry no UID. A target without a
 positive tuple fails with `unavailable` and a stale target fails with
 `stale_id`. A stale sibling is omitted as before, and a sibling without a
-positive tuple is omitted and the result is marked truncated.
+positive tuple is omitted and the result is marked truncated. Each omitted
+sibling is reported only by a reason-only `unavailableMembers` record.
 
 Bounded output keeps every retained identity exact. Oversized search results,
 digest candidates and thread nodes are removed whole, so each retained item
@@ -208,7 +209,10 @@ keeps its exact tuple, mailbox and opaque id. The `get_message` and
 identity; when even that cannot fit, the call fails with `bounds_exceeded`
 instead of returning a shortened identity. An empty fallback list contains no
 selectable item, and a thread fallback's top-level `id` and `mailbox` are
-bounded context, not a selectable identity. A truncated or fallback result
+bounded context, not a selectable identity, and it carries no
+`unavailableMembers` records. Thread shrinking removes whole
+`unavailableMembers` records before whole nodes and never alters a retained
+node's identity or `truncation` flags. A truncated or fallback result
 lists fewer items, but every item it retains is a complete selectable
 identity.
 
@@ -410,11 +414,35 @@ Each member is read with one selected header-only `BODY.PEEK[HEADER]` FETCH
 whose same-attempt metadata supplies the node's tuple; the message body is
 never fetched, so a large body does not block thread metadata. An adapter
 without the header-only read fails with `unsupported` rather than falling back
-to body reads. Malformed or over-bound headers still fail the whole call.
+to body reads.
 `maxMessages` bounds the returned nodes and header reads: one target read plus
 at most `maxMessages - 1` attempted sibling reads after one bounded search, and
 failed attempts consume that budget. When matching siblings are omitted
 because of this bound, the result reports `truncated: true`.
+The `get_thread` result keys are `id`, `mailbox`, `nodes`, `truncated` and `unavailableMembers`.
+Each node carries `key`, `mailbox`, `uidvalidity`, `uid`, `messageId`, `parentKey`, `depth`, `subject`, `from`, `date` and `truncation`.
+A node's `truncation` object carries only the true reasons among `headers`, `headerCount` and `references`, and is empty when the node's headers are complete.
+The aggregate `truncated` is true when any node reports a header limit, when
+an attempted sibling is omitted for `invalid_identity` or `malformed_header`,
+or when eligible siblings were not attempted.
+
+The optional `unavailableMembers` list has one record per attempted sibling
+that was omitted. Each `unavailableMembers` record is `{"reason": ...}` with one of `stale_id`, `invalid_identity` or `malformed_header`, at most 19 records.
+Records are nonselectable failed-attempt records, not a mailbox inventory:
+they carry no id, tuple, header or error text, and unattempted or
+subject-mismatched candidates are not listed. `stale_id` marks a sibling that
+no longer exists in its generation; `invalid_identity` is the existing
+defensive drop of a read without a positive tuple; `malformed_header` marks a
+sibling whose canonical header normalization rejected a malformed RFC 2047
+encoded word. Only that typed normalization failure is sibling-local: healthy
+siblings stay, and an omitted sibling's `Message-ID` never becomes a parent.
+A target whose own header has a malformed encoded word now fails `get_thread` with `unavailable` instead of `internal`, without a sibling scan; `get_message` and the global error mapping are unchanged.
+Malformed header syntax and over-bound header blocks still fail the whole call
+with the mapped `unavailable` (IMAP protocol) or `bounds_exceeded` error, as
+do transport, authentication, credential helper, timeout and cancellation
+failures and every other normalization code; no partial graph is returned.
+`TestThreadHeaderResults` witnesses these records and refusals.
+
 `TestGetThreadSyntheticWire` and `TestThreadHeaderTransport` verify linked and
 independent-root membership, the one-message bound, and read-only header-only
 PEEK fetches over loopback TLS using synthetic mail. `TestThreadSubjectSiblingDocumentation` pins the contract
