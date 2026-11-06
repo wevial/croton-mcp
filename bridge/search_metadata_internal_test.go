@@ -207,6 +207,12 @@ func TestSearchMetadataAdapter(t *testing.T) {
 				readState:  "unread",
 			},
 			{
+				name:       "named zone with unterminated comment",
+				fetch:      scriptedFetch{flags: " FLAGS ()", header: metadataHeader("Date: Thu, 05 Nov 2026 10:00:00 PST (unterminated")},
+				dateSource: "unknown",
+				readState:  "unread",
+			},
+			{
 				name:       "numeric zone with named comment",
 				fetch:      scriptedFetch{flags: " FLAGS ()", header: metadataHeader("Date: Tue, 03 Nov 2026 09:15:00 -0800 (PST)")},
 				date:       "2026-11-03T17:15:00Z",

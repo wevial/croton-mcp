@@ -622,7 +622,8 @@ var rfc5322NamedZones = map[string]int{
 // offset. Go's date parser otherwise gives an unrecognised abbreviation a zero
 // offset, or the host's offset when it matches the local zone. Dates that
 // already carry a numeric offset pass through; any other named zone, including
-// military letters whose meaning RFC 5322 leaves unknown, is refused.
+// military letters whose meaning RFC 5322 leaves unknown, is refused. Only the
+// zone token is replaced, so the parser still validates the complete value.
 func numericDateZone(value string) (string, bool) {
 	uncommented := value
 	if index := strings.IndexByte(uncommented, '('); index >= 0 {
@@ -632,12 +633,13 @@ func numericDateZone(value string) (string, bool) {
 		return value, true
 	}
 
-	fields := strings.Fields(uncommented)
-	if len(fields) < 2 {
+	zoneEnd := len(strings.TrimRight(uncommented, " \t\r\n"))
+	zoneStart := strings.LastIndexAny(uncommented[:zoneEnd], " \t\r\n") + 1
+	if zoneStart == 0 {
 		return "", false
 	}
 
-	offset, known := rfc5322NamedZones[strings.ToUpper(fields[len(fields)-1])]
+	offset, known := rfc5322NamedZones[strings.ToUpper(uncommented[zoneStart:zoneEnd])]
 	if !known {
 		return "", false
 	}
@@ -647,9 +649,8 @@ func numericDateZone(value string) (string, bool) {
 		sign = "-"
 		offset = -offset
 	}
-	fields[len(fields)-1] = fmt.Sprintf("%s%02d%02d", sign, offset/3600, offset%3600/60)
 
-	return strings.Join(fields, " "), true
+	return value[:zoneStart] + fmt.Sprintf("%s%02d%02d", sign, offset/3600, offset%3600/60) + value[zoneEnd:], true
 }
 
 func validateFetchedMetadataUIDs(requested []uint32, results []MessageMetadata) error {
