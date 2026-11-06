@@ -510,6 +510,9 @@ func metadataReadState(flags []imap.Flag) ReadState {
 // boundedSender decodes the single From header into at most maxSenderBytes of
 // valid UTF-8. Missing, repeated, malformed or control-bearing values are
 // omitted rather than reported, so decoder text and errors never escape.
+// Charset decoders replace bytes invalid for the declared charset with
+// U+FFFD instead of failing, so any replacement character marks a lossy
+// decode and the sender is omitted.
 func boundedSender(header mail.Header) (string, bool) {
 	values := header["From"]
 	if len(values) != 1 {
@@ -525,7 +528,7 @@ func boundedSender(header mail.Header) (string, bool) {
 
 	decoder := mime.WordDecoder{CharsetReader: charset.NewReaderLabel}
 	decoded, err := decoder.DecodeHeader(raw)
-	if err != nil || !utf8.ValidString(decoded) || strings.ContainsFunc(decoded, unicode.IsControl) || strings.Contains(decoded, "=?") {
+	if err != nil || !utf8.ValidString(decoded) || strings.ContainsFunc(decoded, unicode.IsControl) || strings.Contains(decoded, "=?") || strings.ContainsRune(decoded, utf8.RuneError) {
 		return "", false
 	}
 

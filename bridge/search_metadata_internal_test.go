@@ -273,6 +273,8 @@ func TestSearchMetadataAdapter(t *testing.T) {
 			{name: "unknown charset", from: "=?x-croton-unknown?q?decoder-marker?= <bad@croton.test>"},
 			{name: "encoded control", from: "=?utf-8?q?line=0D=0Abreak?= <bad@croton.test>"},
 			{name: "encoded invalid UTF-8", from: "=?utf-8?b?" + base64.StdEncoding.EncodeToString([]byte{0xff, 0xfe}) + "?="},
+			{name: "invalid US-ASCII payload", from: "=?us-ascii?b?//4=?= <bad@croton.test>"},
+			{name: "invalid Shift_JIS payload", from: "=?shift_jis?b?" + base64.StdEncoding.EncodeToString([]byte{0xff, 0xfe}) + "?= <bad@croton.test>"},
 		}
 
 		for _, test := range cases {
