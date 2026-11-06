@@ -147,7 +147,7 @@ func TestMessageHeadersTLS(t *testing.T) {
 			// Readable headers of a 300KiB message come from one header FETCH.
 			server, adapter := startTLSHeaderAdapter(t, mode.mode, testkit.Options{Messages: messages, Seen: []bool{true, false}})
 			identifier := searchTLSHeaderID(t, adapter, 101)
-			result, err := adapter.GetMessageHeaders(context.Background(), identifier)
+			result, err := callGetMessageHeaders(t, adapter, identifier)
 			if err != nil {
 				t.Fatalf("GetMessageHeaders: %v", err)
 			}
@@ -183,9 +183,9 @@ func TestMessageHeadersTLS(t *testing.T) {
 
 			// A missing UID is stale, and the fully consumed connection serves
 			// the next bounded read.
-			result, err = adapter.GetMessageHeaders(context.Background(), headerTestID(t, adapter, 9001, 150))
+			result, err = callGetMessageHeaders(t, adapter, headerTestID(t, adapter, 9001, 150))
 			requireHeaderRefusal(t, "missing UID", result, err, CodeStaleMessageID)
-			result, err = adapter.GetMessageHeaders(context.Background(), identifier)
+			result, err = callGetMessageHeaders(t, adapter, identifier)
 			if err != nil || result.Headers.MessageID != "<large-reply@croton.test>" {
 				t.Fatalf("follow-up after missing UID = %+v, %v", result.Headers, err)
 			}
@@ -195,10 +195,10 @@ func TestMessageHeadersTLS(t *testing.T) {
 			// new ID that reads on the same connection.
 			server, adapter = startTLSHeaderAdapter(t, mode.mode, testkit.Options{Messages: messages, Scenario: testkit.Scenario{UIDValidityAfterExamine: 9002}})
 			identifier = searchTLSHeaderID(t, adapter, 101)
-			result, err = adapter.GetMessageHeaders(context.Background(), identifier)
+			result, err = callGetMessageHeaders(t, adapter, identifier)
 			requireHeaderRefusal(t, "stale generation", result, err, CodeStaleMessageID)
 			fresh := searchTLSHeaderID(t, adapter, 101)
-			result, err = adapter.GetMessageHeaders(context.Background(), fresh)
+			result, err = callGetMessageHeaders(t, adapter, fresh)
 			if err != nil || result.Metadata.UIDValidity != 9002 || result.Headers.InReplyTo != "<large-root@croton.test>" {
 				t.Fatalf("follow-up after stale generation = %+v, %v", result, err)
 			}
@@ -207,7 +207,7 @@ func TestMessageHeadersTLS(t *testing.T) {
 			// A wrong response section is refused code-only; the adapter safely
 			// aborts and reopens for the next bounded read.
 			server, adapter = startTLSHeaderAdapter(t, mode.mode, testkit.Options{Scenario: testkit.Scenario{FetchResponseSection: "[TEXT]"}})
-			result, err = adapter.GetMessageHeaders(context.Background(), headerTestID(t, adapter, 9001, 101))
+			result, err = callGetMessageHeaders(t, adapter, headerTestID(t, adapter, 9001, 101))
 			requireHeaderRefusal(t, "wrong section", result, err, CodeIMAPProtocol)
 			status, err := adapter.Status(context.Background(), "INBOX")
 			if err != nil || status.UIDValidity != 9001 {
