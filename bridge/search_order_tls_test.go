@@ -117,13 +117,15 @@ func TestSearchOrderTLS(t *testing.T) {
 // behind a status whose text ends in a literal marker or a lone LF, including
 // a status name directly followed by its text, or behind a quoted string
 // whose literal marker spans lines, stays a code-only refusal in both TLS
-// modes.
+// modes. So does an out-of-window UID that a later ESEARCH ALL, in another
+// response or the same one, would replace before the final set is checked.
 func runSearchOrderTLSRefusals(t *testing.T) {
 	for _, test := range []struct {
 		name     string
 		fake     testkit.TLSMode
 		mode     string
 		response string
+		code     string
 	}{
 		{name: "starttls_duplicate_literal_tag", fake: testkit.StartTLS, mode: bridge.TLSModeStartTLS, response: "* ESEARCH (TAG {2}\r\n{TAG}) UID ALL 101,101"},
 		{name: "implicit_tls_duplicate_literal_tag", fake: testkit.ImplicitTLS, mode: bridge.TLSModeImplicit, response: "* ESEARCH (TAG {2}\r\n{TAG}) UID ALL 101,101"},
@@ -143,6 +145,10 @@ func runSearchOrderTLSRefusals(t *testing.T) {
 		{name: "implicit_tls_duplicate_after_unspaced_status_literal_marker", fake: testkit.ImplicitTLS, mode: bridge.TLSModeImplicit, response: "* OK(notice) {18}\r\n* SEARCH 101 101"},
 		{name: "starttls_duplicate_after_quoted_literal_marker", fake: testkit.StartTLS, mode: bridge.TLSModeStartTLS, response: "* LIST () \"/\" \"INBOX\" (\"X\" \"notice {18}\r\n\")\r\n* SEARCH 101 101\r\n* SEARCH"},
 		{name: "implicit_tls_duplicate_after_quoted_literal_marker", fake: testkit.ImplicitTLS, mode: bridge.TLSModeImplicit, response: "* LIST () \"/\" \"INBOX\" (\"X\" \"notice {18}\r\n\")\r\n* SEARCH 101 101\r\n* SEARCH"},
+		{name: "starttls_out_of_window_search_replaced_by_esearch", fake: testkit.StartTLS, mode: bridge.TLSModeStartTLS, response: "* SEARCH 999\r\n* ESEARCH (TAG \"{TAG}\") UID ALL 101", code: bridge.CodeBoundsExceeded},
+		{name: "implicit_tls_out_of_window_search_replaced_by_esearch", fake: testkit.ImplicitTLS, mode: bridge.TLSModeImplicit, response: "* SEARCH 999\r\n* ESEARCH (TAG \"{TAG}\") UID ALL 101", code: bridge.CodeBoundsExceeded},
+		{name: "starttls_out_of_window_all_replaced_by_later_all", fake: testkit.StartTLS, mode: bridge.TLSModeStartTLS, response: `* ESEARCH (TAG "{TAG}") UID ALL 999 ALL 101`, code: bridge.CodeBoundsExceeded},
+		{name: "implicit_tls_out_of_window_all_replaced_by_later_all", fake: testkit.ImplicitTLS, mode: bridge.TLSModeImplicit, response: `* ESEARCH (TAG "{TAG}") UID ALL 999 ALL 101`, code: bridge.CodeBoundsExceeded},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -166,8 +172,12 @@ func runSearchOrderTLSRefusals(t *testing.T) {
 
 			page, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
 
-			if bridge.CodeOf(err) != bridge.CodeIMAPProtocol || page.Messages != nil || page.Truncated {
-				t.Fatalf("SearchMailPage duplicate ESEARCH = %#v, %v, want %q and no partial page", page, err, bridge.CodeIMAPProtocol)
+			want := test.code
+			if want == "" {
+				want = bridge.CodeIMAPProtocol
+			}
+			if bridge.CodeOf(err) != want || page.Messages != nil || page.Truncated {
+				t.Fatalf("SearchMailPage invalid SEARCH response = %#v, %v, want %q and no partial page", page, err, want)
 			}
 			if err := server.AssertReadOnlyCommands(); err != nil {
 				t.Fatalf("read-only transcript: %v", err)

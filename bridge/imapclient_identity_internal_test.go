@@ -226,3 +226,38 @@ func TestSearchObserverClassifiesDivergenceProneFormsAsGoIMAPDoes(t *testing.T) 
 		})
 	}
 }
+
+func TestSearchObserverRefusesOutOfWindowUIDsBeforeReplacement(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		input       string
+		outOfWindow bool
+		incomplete  bool
+	}{
+		{name: "in-window SEARCH", input: "* SEARCH 3 102\r\n"},
+		{name: "out-of-window SEARCH", input: "* SEARCH 999\r\n", outOfWindow: true},
+		{name: "SEARCH below window", input: "* SEARCH 2\r\n", outOfWindow: true},
+		{name: "zero SEARCH UID", input: "* SEARCH 0\r\n", incomplete: true},
+		{name: "out-of-window SEARCH replaced by ESEARCH", input: "* SEARCH 999\r\n* ESEARCH (TAG \"T1\") UID ALL 101\r\n", outOfWindow: true},
+		{name: "out-of-window ESEARCH replaced by ESEARCH", input: "* ESEARCH (TAG \"T1\") UID ALL 999\r\n* ESEARCH (TAG \"T1\") UID ALL 101\r\n", outOfWindow: true},
+		{name: "out-of-window ALL replaced by later ALL", input: "* ESEARCH (TAG \"T1\") UID ALL 999 ALL 101\r\n", outOfWindow: true},
+		{name: "ESEARCH range crossing window end", input: "* ESEARCH (TAG \"T1\") UID ALL 101:103\r\n", outOfWindow: true},
+		{name: "in-window ESEARCH ranges", input: "* ESEARCH (TAG \"T1\") UID ALL 3:5,100:102\r\n"},
+		{name: "zero ESEARCH ALL UID", input: "* ESEARCH (TAG \"T1\") UID ALL 0:3\r\n", incomplete: true},
+		{name: "out-of-window value only inside nested extension ALL", input: "* ESEARCH (TAG \"T1\") UID X (F ALL 999) ALL 101\r\n"},
+		{name: "out-of-window MAX beside in-window ALL", input: "* ESEARCH (TAG \"T1\") UID MAX 999 ALL 101\r\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			connection := &readBudgetConn{}
+			connection.beginSearch(maxSearchResponseBytes)
+			connection.checkSearchWindow(uidWindow{Start: 3, End: 102})
+
+			connection.observeSearchResponseLocked(test.input)
+
+			observed := connection.endSearch()
+			if observed.outOfWindow != test.outOfWindow || observed.incomplete != test.incomplete {
+				t.Fatalf("outOfWindow, incomplete = %v, %v, want %v, %v", observed.outOfWindow, observed.incomplete, test.outOfWindow, test.incomplete)
+			}
+		})
+	}
+}

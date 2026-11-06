@@ -375,7 +375,7 @@ func (session *imapSession) UIDSearchWindow(ctx context.Context, query SearchQue
 		}
 		var data *imap.SearchData
 		var searchErr error
-		observed, searchErr := session.withSearchInputBudget(func() error {
+		observed, searchErr := session.withSearchInputBudget(window, func() error {
 			data, searchErr = session.client.UIDSearch(criteria, nil).Wait()
 			return searchErr
 		})
@@ -387,6 +387,9 @@ func (session *imapSession) UIDSearchWindow(ctx context.Context, query SearchQue
 		}
 		if observed.duplicate || observed.incomplete {
 			return errorCode(CodeIMAPProtocol)
+		}
+		if observed.outOfWindow {
+			return errorCode(CodeBoundsExceeded)
 		}
 		if !observed.searchSeen && (!observed.eSearchSeen || !eSearchAppliedToUIDSearch(data)) {
 			return errorCode(CodeIMAPProtocol)
@@ -851,12 +854,13 @@ func (session *imapSession) withBoundedInput(ctx context.Context, limit int, ope
 	})
 }
 
-func (session *imapSession) withSearchInputBudget(operation func() error) (searchObservation, error) {
+func (session *imapSession) withSearchInputBudget(window uidWindow, operation func() error) (searchObservation, error) {
 	if session.budget == nil {
 		return searchObservation{}, operation()
 	}
 
 	session.budget.beginSearch(maxSearchResponseBytes)
+	session.budget.checkSearchWindow(window)
 	err := operation()
 	return session.budget.endSearch(), err
 }
@@ -1006,13 +1010,17 @@ func (connection *syntheticGreetingConn) Read(buffer []byte) (int, error) {
 
 // searchObservation is what the wire observer saw while one SEARCH ran.
 // duplicate is decided on the raw response because go-imap merges a repeated
-// UID into its set before any caller can see it.
+// UID into its set before any caller can see it. outOfWindow is decided there
+// too because go-imap replaces earlier SEARCH data, and earlier ALL sets of
+// one ESEARCH, with a later ESEARCH ALL, erasing an invalid UID before the
+// final set is validated.
 type searchObservation struct {
 	exceeded    bool
 	searchSeen  bool
 	eSearchSeen bool
 	duplicate   bool
 	incomplete  bool
+	outOfWindow bool
 }
 
 type readBudgetConn struct {
@@ -1032,6 +1040,8 @@ type readBudgetConn struct {
 	searchUIDs          map[uint32]struct{}
 	searchDuplicate     bool
 	searchIncomplete    bool
+	searchWindow        uidWindow
+	searchOutOfWindow   bool
 }
 
 func newReadBudgetConn(connection net.Conn, idleLimit int) *readBudgetConn {
@@ -1066,6 +1076,34 @@ func (connection *readBudgetConn) beginSearch(limit int) {
 	connection.searchUIDs = nil
 	connection.searchDuplicate = false
 	connection.searchIncomplete = false
+	connection.searchWindow = uidWindow{}
+	connection.searchOutOfWindow = false
+}
+
+// checkSearchWindow makes the running SEARCH observation refuse any raw UID
+// outside window, including one a later response would replace.
+func (connection *readBudgetConn) checkSearchWindow(window uidWindow) {
+	connection.mu.Lock()
+	defer connection.mu.Unlock()
+
+	connection.searchWindow = window
+}
+
+// searchRangeLocked records a raw UID range of the running SEARCH that is
+// zero or lies outside its checked window. Without a window only zero is
+// refused.
+func (connection *readBudgetConn) searchRangeLocked(start, stop uint64) {
+	if start == 0 || stop == 0 {
+		connection.searchIncomplete = true
+		return
+	}
+	if connection.searchWindow.width() == 0 {
+		return
+	}
+
+	if start < uint64(connection.searchWindow.Start) || stop > uint64(connection.searchWindow.End) {
+		connection.searchOutOfWindow = true
+	}
 }
 
 func (connection *readBudgetConn) endSearch() searchObservation {
@@ -1078,6 +1116,7 @@ func (connection *readBudgetConn) endSearch() searchObservation {
 		eSearchSeen: connection.eSearchResponseSeen,
 		duplicate:   connection.searchDuplicate,
 		incomplete:  connection.searchIncomplete,
+		outOfWindow: connection.searchOutOfWindow,
 	}
 	connection.active = true
 	connection.remaining = connection.idleLimit
@@ -1092,6 +1131,8 @@ func (connection *readBudgetConn) endSearch() searchObservation {
 	connection.searchUIDs = nil
 	connection.searchDuplicate = false
 	connection.searchIncomplete = false
+	connection.searchWindow = uidWindow{}
+	connection.searchOutOfWindow = false
 	return observed
 }
 
@@ -1201,7 +1242,7 @@ func (connection *readBudgetConn) observeSearchResponseLocked(input string) {
 				connection.searchPending = line[:opening] + `""`
 				continue
 			}
-			overlaps, complete := eSearchAllOverlaps(rest)
+			overlaps, complete := eSearchAllOverlaps(rest, connection.searchRangeLocked)
 			if overlaps {
 				connection.searchDuplicate = true
 			}
@@ -1316,6 +1357,7 @@ func (connection *readBudgetConn) observeSearchUIDsLocked(numbers string) {
 			connection.searchIncomplete = true
 			return
 		}
+		connection.searchRangeLocked(uid, uid)
 		if _, duplicate := connection.searchUIDs[uint32(uid)]; duplicate {
 			connection.searchDuplicate = true
 		}
@@ -1345,8 +1387,9 @@ func searchModSeqGroup(group string) bool {
 // extension value is skipped rather than mistaken for the result. Ranges are
 // compared as intervals and never expanded. A line the walk cannot consume,
 // including forms go-imap still accepts, is reported incomplete so the
-// caller fails closed.
-func eSearchAllOverlaps(rest string) (overlaps, complete bool) {
+// caller fails closed. Every interval of each top-level ALL set, including
+// one a later ALL replaces, is passed to observe before overlap is judged.
+func eSearchAllOverlaps(rest string, observe func(start, stop uint64)) (overlaps, complete bool) {
 	rest = strings.TrimSpace(rest)
 	if strings.HasPrefix(rest, "(") {
 		closing := correlatorEnd(rest)
@@ -1370,7 +1413,7 @@ func eSearchAllOverlaps(rest string) (overlaps, complete bool) {
 			return false, false
 		}
 		if strings.EqualFold(name, "ALL") {
-			overlap, parsed := sequenceSetOverlaps(value)
+			overlap, parsed := sequenceSetOverlaps(value, observe)
 			if overlap {
 				return true, true
 			}
@@ -1443,8 +1486,9 @@ func isIMAPAtomChar(character byte) bool {
 }
 
 // sequenceSetOverlaps reports whether the numeric sequence set names any
-// number twice, and whether the set parsed.
-func sequenceSetOverlaps(set string) (overlaps, parsed bool) {
+// number twice, and whether the set parsed. Each parsed interval is passed to
+// observe in ascending order.
+func sequenceSetOverlaps(set string, observe func(start, stop uint64)) (overlaps, parsed bool) {
 	type interval struct{ start, stop uint64 }
 	var intervals []interval
 	for _, item := range strings.Split(set, ",") {
@@ -1463,6 +1507,10 @@ func sequenceSetOverlaps(set string) (overlaps, parsed bool) {
 			start, stop = stop, start
 		}
 		intervals = append(intervals, interval{start: start, stop: stop})
+	}
+
+	for _, item := range intervals {
+		observe(item.start, item.stop)
 	}
 
 	sort.Slice(intervals, func(i, j int) bool { return intervals[i].start < intervals[j].start })
