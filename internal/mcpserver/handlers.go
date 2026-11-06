@@ -336,9 +336,8 @@ func attachmentResults(attachments []bridge.AttachmentMetadata) []attachmentResu
 			Disposition: attachment.Disposition,
 		}
 		if attachment.HasDeclaredSize && attachment.DeclaredSize >= 0 {
-			declaredSize := attachment.DeclaredSize
 			result.HasDeclaredSize = true
-			result.DeclaredSize = &declaredSize
+			result.DeclaredSize = &attachment.DeclaredSize
 		}
 
 		results = append(results, result)
