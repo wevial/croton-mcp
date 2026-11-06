@@ -193,6 +193,17 @@ func fetchScriptedMetadata(t *testing.T, fetches []scriptedFetch) ([]MessageMeta
 	return session.UIDFetchMetadata(context.Background(), "INBOX", session.uids, defaultMaxHeaderBytes)
 }
 
+func fetchOneSerialized(t *testing.T, name string, fetch scriptedFetch) sourcedMetadata {
+	t.Helper()
+
+	results, err := fetchScriptedMetadata(t, []scriptedFetch{fetch})
+	if err != nil || len(results) != 1 {
+		t.Fatalf("%s: UIDFetchMetadata = %d results, %v", name, len(results), err)
+	}
+
+	return serializedMetadata(t, results[0])
+}
+
 func TestSearchMetadataAdapter(t *testing.T) {
 	t.Run("sourced_fields", func(t *testing.T) {
 		fetches := []scriptedFetch{
@@ -295,12 +306,7 @@ func TestSearchMetadataAdapter(t *testing.T) {
 		}
 
 		for _, test := range cases {
-			results, err := fetchScriptedMetadata(t, []scriptedFetch{test.fetch})
-			if err != nil || len(results) != 1 {
-				t.Fatalf("%s: UIDFetchMetadata = %d results, %v", test.name, len(results), err)
-			}
-
-			got := serializedMetadata(t, results[0])
+			got := fetchOneSerialized(t, test.name, test.fetch)
 			if *got.Date != test.date || *got.DateSource != test.dateSource || *got.ReadState != test.readState {
 				t.Fatalf("%s: date %q source %q read %q, want %q %q %q", test.name, *got.Date, *got.DateSource, *got.ReadState, test.date, test.dateSource, test.readState)
 			}
@@ -345,13 +351,7 @@ func TestSearchMetadataAdapter(t *testing.T) {
 		}
 
 		for _, test := range cases {
-			fetch := scriptedFetch{uid: 101, flags: " FLAGS ()", header: metadataHeader("From: "+test.from, "Subject: bounds")}
-			results, err := fetchScriptedMetadata(t, []scriptedFetch{fetch})
-			if err != nil || len(results) != 1 {
-				t.Fatalf("%s: UIDFetchMetadata = %d results, %v", test.name, len(results), err)
-			}
-
-			got := serializedMetadata(t, results[0])
+			got := fetchOneSerialized(t, test.name, scriptedFetch{uid: 101, flags: " FLAGS ()", header: metadataHeader("From: "+test.from, "Subject: bounds")})
 			if *got.From != test.want || *got.MetadataTruncated != test.truncated {
 				t.Fatalf("%s: From %q (%d bytes) truncated %t, want %q truncated %t", test.name, *got.From, len(*got.From), *got.MetadataTruncated, test.want, test.truncated)
 			}
@@ -365,11 +365,7 @@ func TestSearchMetadataAdapter(t *testing.T) {
 			"missing":  metadataHeader("Subject: no sender"),
 			"repeated": metadataHeader("From: One <one@croton.test>", "From: Two <two@croton.test>"),
 		} {
-			results, err := fetchScriptedMetadata(t, []scriptedFetch{{uid: 101, flags: " FLAGS ()", header: header}})
-			if err != nil || len(results) != 1 {
-				t.Fatalf("%s: UIDFetchMetadata = %d results, %v", name, len(results), err)
-			}
-			if got := serializedMetadata(t, results[0]); *got.From != "" || *got.MetadataTruncated {
+			if got := fetchOneSerialized(t, name, scriptedFetch{uid: 101, flags: " FLAGS ()", header: header}); *got.From != "" || *got.MetadataTruncated {
 				t.Fatalf("%s From = %q truncated %t, want omitted", name, *got.From, *got.MetadataTruncated)
 			}
 		}
@@ -380,8 +376,7 @@ func TestSearchMetadataAdapter(t *testing.T) {
 			t.Fatal("header or aggregate limits changed")
 		}
 		oversized := scriptedFetch{uid: 101, flags: " FLAGS ()", header: metadataHeader("From: "+strings.Repeat("c", defaultMaxHeaderBytes), "Subject: oversized")}
-		session, _ := startScriptedMetadataSession(t, []scriptedFetch{oversized})
-		results, err := session.UIDFetchMetadata(context.Background(), "INBOX", []uint32{101}, defaultMaxHeaderBytes)
+		results, err := fetchScriptedMetadata(t, []scriptedFetch{oversized})
 		if CodeOf(err) != CodeBoundsExceeded || results != nil {
 			t.Fatalf("oversized header literal = %d results, %v, want %q", len(results), err, CodeBoundsExceeded)
 		}
