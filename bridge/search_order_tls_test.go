@@ -106,4 +106,52 @@ func TestSearchOrderTLS(t *testing.T) {
 			}
 		})
 	}
+
+	runSearchOrderTLSRefusals(t)
+}
+
+// runSearchOrderTLSRefusals witnesses that an invalid duplicate ESEARCH ALL
+// set behind a literal TAG stays a code-only refusal in both TLS modes.
+func runSearchOrderTLSRefusals(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		fake testkit.TLSMode
+		mode string
+	}{
+		{name: "starttls_duplicate_literal_tag", fake: testkit.StartTLS, mode: bridge.TLSModeStartTLS},
+		{name: "implicit_tls_duplicate_literal_tag", fake: testkit.ImplicitTLS, mode: bridge.TLSModeImplicit},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			server, err := testkit.Start(testkit.Options{
+				Mode:     test.fake,
+				Scenario: testkit.Scenario{SearchResponse: "* ESEARCH (TAG {2}\r\n{TAG}) UID ALL 101,101"},
+			})
+			if err != nil {
+				t.Fatalf("start fake server: %v", err)
+			}
+			t.Cleanup(func() { _ = server.Close() })
+
+			config := fakeServerConfig(t, server.Addr(), test.mode, bridge.TLSConfig{SPKISHA256: server.SPKISHA256()})
+			config.Bounds = bridge.BoundsPatch{MaxSearchResults: bridge.Int(1)}
+			adapter, err := bridge.NewAdapter(config)
+			if err != nil {
+				t.Fatalf("NewAdapter: %v", err)
+			}
+			t.Cleanup(func() { _ = adapter.Close() })
+
+			page, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+
+			if bridge.CodeOf(err) != bridge.CodeIMAPProtocol || page.Messages != nil || page.Truncated {
+				t.Fatalf("SearchMailPage duplicate literal-TAG ESEARCH = %#v, %v, want %q and no partial page", page, err, bridge.CodeIMAPProtocol)
+			}
+			if err := server.AssertReadOnlyCommands(); err != nil {
+				t.Fatalf("read-only transcript: %v", err)
+			}
+			if err := server.AssertNoInsecureAuthentication(); err != nil {
+				t.Fatalf("authentication transcript: %v", err)
+			}
+		})
+	}
 }

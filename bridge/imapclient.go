@@ -815,6 +815,7 @@ type readBudgetConn struct {
 	eSearchResponseSeen bool
 	searchBuffer        string
 	searchLiteralBytes  uint64
+	searchPending       string
 	searchUIDs          map[uint32]struct{}
 	searchDuplicate     bool
 }
@@ -846,6 +847,7 @@ func (connection *readBudgetConn) beginSearch(limit int) {
 	connection.eSearchResponseSeen = false
 	connection.searchBuffer = ""
 	connection.searchLiteralBytes = 0
+	connection.searchPending = ""
 	connection.searchUIDs = nil
 	connection.searchDuplicate = false
 }
@@ -868,6 +870,7 @@ func (connection *readBudgetConn) endSearch() searchObservation {
 	connection.eSearchResponseSeen = false
 	connection.searchBuffer = ""
 	connection.searchLiteralBytes = 0
+	connection.searchPending = ""
 	connection.searchUIDs = nil
 	connection.searchDuplicate = false
 	return observed
@@ -930,8 +933,14 @@ func (connection *readBudgetConn) observeSearchResponseLocked(input string) {
 		if end < 0 {
 			return
 		}
-		line := connection.searchBuffer[:end]
+		line := connection.searchPending + connection.searchBuffer[:end]
 		connection.searchBuffer = connection.searchBuffer[end+2:]
+		connection.searchPending = ""
+
+		literalBytes, hasLiteral := trailingIMAPLiteralSize(line)
+		if hasLiteral {
+			connection.searchLiteralBytes = literalBytes
+		}
 		upper := strings.ToUpper(line)
 		switch {
 		case upper == "* SEARCH" || strings.HasPrefix(upper, "* SEARCH "):
@@ -939,12 +948,16 @@ func (connection *readBudgetConn) observeSearchResponseLocked(input string) {
 			connection.observeSearchUIDsLocked(line[len("* SEARCH"):])
 		case upper == "* ESEARCH" || strings.HasPrefix(upper, "* ESEARCH "):
 			connection.eSearchResponseSeen = true
+			if hasLiteral {
+				// The response continues after the literal, so judge it once
+				// the whole logical line, with the literal as an empty
+				// string, has arrived.
+				connection.searchPending = line[:strings.LastIndexByte(line, '{')] + `""`
+				continue
+			}
 			if eSearchAllOverlaps(line[len("* ESEARCH"):]) {
 				connection.searchDuplicate = true
 			}
-		}
-		if literalBytes, ok := trailingIMAPLiteralSize(line); ok {
-			connection.searchLiteralBytes = literalBytes
 		}
 	}
 }
@@ -980,7 +993,7 @@ func (connection *readBudgetConn) observeSearchUIDsLocked(numbers string) {
 func eSearchAllOverlaps(rest string) bool {
 	rest = strings.TrimSpace(rest)
 	if strings.HasPrefix(rest, "(") {
-		closing := strings.IndexByte(rest, ')')
+		closing := correlatorEnd(rest)
 		if closing < 0 {
 			return false
 		}
@@ -1027,6 +1040,24 @@ func eSearchAllOverlaps(rest string) bool {
 	}
 
 	return false
+}
+
+// correlatorEnd returns the index of the parenthesis closing the ESEARCH
+// correlator at the start of rest, ignoring parentheses inside quoted
+// strings, or -1 when it is not closed.
+func correlatorEnd(rest string) int {
+	quoted := false
+	for index := 1; index < len(rest); index++ {
+		switch character := rest[index]; {
+		case quoted && character == '\\':
+			index++
+		case character == '"':
+			quoted = !quoted
+		case !quoted && character == ')':
+			return index
+		}
+	}
+	return -1
 }
 
 func trailingIMAPLiteralSize(line string) (uint64, bool) {
