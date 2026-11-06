@@ -211,6 +211,19 @@ func TestMCPCredentialHelperProcess(t *testing.T) {
 	}
 }
 
+// selectedUIDFetch reports whether a UID FETCH names exactly one UID, as a
+// selected-message read does, rather than a search metadata range.
+func selectedUIDFetch(raw string) bool {
+	fields := strings.Fields(strings.ToUpper(raw))
+	for index, field := range fields {
+		if field == "FETCH" && index > 0 && fields[index-1] == "UID" && index+1 < len(fields) {
+			return !strings.ContainsAny(fields[index+1], ":,*")
+		}
+	}
+
+	return false
+}
+
 func requireReadOnlyTranscript(t *testing.T, server *testkit.Server) {
 	t.Helper()
 
@@ -399,17 +412,24 @@ func TestGetThreadSyntheticWire(t *testing.T) {
 				}
 			}
 
-			bodyFetches := 0
+			headerFetches := 0
 			for _, command := range server.Commands()[before:] {
 				if !command.TLS {
 					t.Error("thread command used plaintext transport")
 				}
-				if strings.Contains(strings.ToUpper(command.Raw), "UID FETCH") && strings.Contains(strings.ToUpper(command.Raw), "BODY.PEEK[]") {
-					bodyFetches++
+				upper := strings.ToUpper(command.Raw)
+				if !strings.Contains(upper, "UID FETCH") {
+					continue
+				}
+				if !strings.Contains(upper, "BODY.PEEK[HEADER]") || strings.Contains(upper, "BODY.PEEK[]") {
+					t.Errorf("thread FETCH %q is not header-only", command.Raw)
+				}
+				if selectedUIDFetch(command.Raw) {
+					headerFetches++
 				}
 			}
-			if bodyFetches == 0 || bodyFetches > limit {
-				t.Errorf("body PEEK fetches = %d, want 1..%d", bodyFetches, limit)
+			if headerFetches == 0 || headerFetches > limit {
+				t.Errorf("selected header PEEK fetches = %d, want 1..%d", headerFetches, limit)
 			}
 
 			requireReadOnlyTranscript(t, server)

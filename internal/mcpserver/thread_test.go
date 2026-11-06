@@ -122,8 +122,8 @@ func TestGetThreadBoundsFetchesWithMaxMessages(t *testing.T) {
 	if !decoded.Truncated {
 		t.Fatal("truncation not reported when siblings were dropped")
 	}
-	if len(mail.bodyCalls) != 1 {
-		t.Fatalf("body fetches = %v, want only the target fetch", mail.bodyCalls)
+	if len(mail.headerCalls) != 1 || len(mail.bodyCalls)+len(mail.metaCalls) != 0 {
+		t.Fatalf("header reads = %v body=%v metadata=%v, want only the target header read", mail.headerCalls, mail.bodyCalls, mail.metaCalls)
 	}
 }
 
@@ -147,8 +147,8 @@ func TestGetThreadDoesNotReportTruncationWhenNothingWasDropped(t *testing.T) {
 	if decoded.Truncated {
 		t.Fatal("complete one-message thread reported truncated=true")
 	}
-	if len(mail.bodyCalls) != 1 {
-		t.Fatalf("body fetches = %v, want only target", mail.bodyCalls)
+	if len(mail.headerCalls) != 1 || len(mail.bodyCalls)+len(mail.metaCalls) != 0 {
+		t.Fatalf("header reads = %v body=%v metadata=%v, want only target", mail.headerCalls, mail.bodyCalls, mail.metaCalls)
 	}
 }
 
@@ -196,7 +196,7 @@ func TestGetThreadValidatesArguments(t *testing.T) {
 			result := callTool(t, session, "get_thread", testCase.arguments)
 
 			requireToolError(t, result, errInvalidArgument)
-			if len(mail.metaCalls)+len(mail.bodyCalls)+len(mail.searchCalls) != 0 {
+			if len(mail.metaCalls)+len(mail.bodyCalls)+len(mail.headerCalls)+len(mail.searchCalls) != 0 {
 				t.Fatal("adapter reached despite invalid arguments")
 			}
 		})
@@ -216,8 +216,8 @@ func TestGetThreadClampsOversizedMaxMessages(t *testing.T) {
 	if len(decoded.Nodes) != 2 {
 		t.Fatalf("nodes = %d, want 2", len(decoded.Nodes))
 	}
-	if len(mail.bodyCalls) > maxThreadMessages {
-		t.Fatalf("body fetches = %d, exceeds bound %d", len(mail.bodyCalls), maxThreadMessages)
+	if len(mail.headerCalls) > maxThreadMessages {
+		t.Fatalf("header reads = %d, exceeds bound %d", len(mail.headerCalls), maxThreadMessages)
 	}
 }
 
@@ -242,6 +242,7 @@ func TestGetThreadBoundsAttemptedSiblingFetches(t *testing.T) {
 
 	_, _, code := appendThreadSiblings(
 		context.Background(),
+		mail,
 		Options{Mail: mail},
 		[]bridge.ThreadMessage{{Key: "target"}},
 		map[string]bridge.MessageMetadata{},
@@ -251,8 +252,8 @@ func TestGetThreadBoundsAttemptedSiblingFetches(t *testing.T) {
 	if code != "" {
 		t.Fatalf("code = %q", code)
 	}
-	if got := len(mail.metaCalls); got > 2 {
-		t.Fatalf("sibling metadata attempts = %d, want <= 2", got)
+	if got := len(mail.headerCalls); got > 2 {
+		t.Fatalf("sibling header attempts = %d, want <= 2", got)
 	}
 }
 
@@ -277,6 +278,7 @@ func TestGetThreadDeduplicatesAndRejectsSubjectFalsePositives(t *testing.T) {
 
 	members, _, code := appendThreadSiblings(
 		context.Background(),
+		mail,
 		Options{Mail: mail},
 		[]bridge.ThreadMessage{{Key: "target"}},
 		map[string]bridge.MessageMetadata{},

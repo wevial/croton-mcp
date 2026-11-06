@@ -166,7 +166,7 @@ transport admits only one unambiguous newline-delimited JSON object of at most
 | `list_folders` | Bounded folder list from the local Bridge. |
 | `search_mail` | Structured, bounded search in one mailbox; returns metadata. |
 | `get_message` | One message by opaque id: headers, normalized text, attachment metadata. |
-| `get_thread` | Local thread resolution with bounded sibling fetches. |
+| `get_thread` | Local thread resolution with bounded header-only sibling reads. |
 | `list_attachments` | Attachment metadata only; never attachment bytes. |
 | `select_digest_candidates` | Metadata-first digest selection composing STATUS and one bounded search; no body fetches. |
 
@@ -406,11 +406,18 @@ the base subject strips repeated `Re:`, `Fw:`, and `Fwd:` prefixes. Reply
 relationships are resolved from `References` and `In-Reply-To` headers.
 An unlinked subject sibling has depth 0 and no parent; subject similarity alone does not establish a reply relationship.
 
-`maxMessages` bounds the returned nodes and body fetches. When matching siblings
-are omitted because of this bound, the result reports `truncated: true`.
-`TestGetThreadSyntheticWire` verifies linked and independent-root membership,
-the one-message bound, and read-only PEEK fetches over loopback TLS using
-synthetic mail. `TestThreadSubjectSiblingDocumentation` pins the contract
+Each member is read with one selected header-only `BODY.PEEK[HEADER]` FETCH
+whose same-attempt metadata supplies the node's tuple; the message body is
+never fetched, so a large body does not block thread metadata. An adapter
+without the header-only read fails with `unsupported` rather than falling back
+to body reads. Malformed or over-bound headers still fail the whole call.
+`maxMessages` bounds the returned nodes and header reads: one target read plus
+at most `maxMessages - 1` attempted sibling reads after one bounded search, and
+failed attempts consume that budget. When matching siblings are omitted
+because of this bound, the result reports `truncated: true`.
+`TestGetThreadSyntheticWire` and `TestThreadHeaderTransport` verify linked and
+independent-root membership, the one-message bound, and read-only header-only
+PEEK fetches over loopback TLS using synthetic mail. `TestThreadSubjectSiblingDocumentation` pins the contract
 sentences above.
 
 ## Output
