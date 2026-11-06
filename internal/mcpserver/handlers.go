@@ -245,11 +245,43 @@ func clampLimit(value *int, fallback, ceiling int) (int, bool) {
 }
 
 // attachmentResult mirrors bridge.AttachmentMetadata without attachment bytes.
+// DeclaredSize is the sender's Content-Disposition size parameter, present
+// exactly when HasDeclaredSize is true, so a declared zero stays distinct
+// from an unknown size.
 type attachmentResult struct {
-	Filename     string `json:"filename,omitempty"`
-	ContentType  string `json:"contentType,omitempty"`
-	Disposition  string `json:"disposition,omitempty"`
-	DeclaredSize int64  `json:"declaredSize,omitempty"`
+	Filename        string `json:"filename,omitempty"`
+	ContentType     string `json:"contentType,omitempty"`
+	Disposition     string `json:"disposition,omitempty"`
+	HasDeclaredSize bool   `json:"hasDeclaredSize"`
+	DeclaredSize    *int64 `json:"declaredSize,omitempty"`
+}
+
+// messageTruncation names every limit that shaped a get_message result. Only
+// true reasons are serialized, so a complete result carries an empty object.
+type messageTruncation struct {
+	Headers     bool `json:"headers,omitempty"`
+	HeaderCount bool `json:"headerCount,omitempty"`
+	Text        bool `json:"text,omitempty"`
+	MIMEParts   bool `json:"mimeParts,omitempty"`
+	MIMEDepth   bool `json:"mimeDepth,omitempty"`
+	Attachments bool `json:"attachments,omitempty"`
+	References  bool `json:"references,omitempty"`
+	Output      bool `json:"output,omitempty"`
+}
+
+// attachmentListTruncation names the limits that can omit or shorten
+// list_attachments entries; text and reference limits do not apply.
+type attachmentListTruncation struct {
+	Headers     bool `json:"headers,omitempty"`
+	HeaderCount bool `json:"headerCount,omitempty"`
+	MIMEParts   bool `json:"mimeParts,omitempty"`
+	MIMEDepth   bool `json:"mimeDepth,omitempty"`
+	Attachments bool `json:"attachments,omitempty"`
+	Output      bool `json:"output,omitempty"`
+}
+
+func (truncation attachmentListTruncation) any() bool {
+	return truncation.Headers || truncation.HeaderCount || truncation.MIMEParts || truncation.MIMEDepth || truncation.Attachments || truncation.Output
 }
 
 type getMessageResult struct {
@@ -262,6 +294,7 @@ type getMessageResult struct {
 	Text        string                  `json:"text,omitempty"`
 	TextSource  string                  `json:"textSource"`
 	Attachments []attachmentResult      `json:"attachments,omitempty"`
+	Truncation  messageTruncation       `json:"truncation"`
 	Truncated   bool                    `json:"truncated,omitempty"`
 }
 
@@ -297,12 +330,17 @@ func fetchNormalizedMessage(ctx context.Context, deps Options, identifier string
 func attachmentResults(attachments []bridge.AttachmentMetadata) []attachmentResult {
 	results := make([]attachmentResult, 0, len(attachments))
 	for _, attachment := range attachments {
-		results = append(results, attachmentResult{
-			Filename:     attachment.Filename,
-			ContentType:  attachment.ContentType,
-			Disposition:  attachment.Disposition,
-			DeclaredSize: attachment.DeclaredSize,
-		})
+		result := attachmentResult{
+			Filename:    attachment.Filename,
+			ContentType: attachment.ContentType,
+			Disposition: attachment.Disposition,
+		}
+		if attachment.HasDeclaredSize && attachment.DeclaredSize >= 0 {
+			result.HasDeclaredSize = true
+			result.DeclaredSize = &attachment.DeclaredSize
+		}
+
+		results = append(results, result)
 	}
 
 	return results
@@ -332,7 +370,16 @@ func runGetMessage(ctx context.Context, deps Options, arguments json.RawMessage)
 		Text:        normalized.Text,
 		TextSource:  string(normalized.TextSource),
 		Attachments: attachmentResults(normalized.Attachments),
-		Truncated:   normalized.Truncation.Any(),
+		Truncation: messageTruncation{
+			Headers:     normalized.Truncation.Headers,
+			HeaderCount: normalized.Truncation.HeaderCount,
+			Text:        normalized.Truncation.Text,
+			MIMEParts:   normalized.Truncation.MIMEParts,
+			MIMEDepth:   normalized.Truncation.MIMEDepth,
+			Attachments: normalized.Truncation.Attachments,
+			References:  normalized.Truncation.References,
+		},
+		Truncated: normalized.Truncation.Any(),
 	}, ""
 }
 
@@ -512,12 +559,13 @@ func baseSubject(subject string) string {
 }
 
 type listAttachmentsResult struct {
-	ID          string             `json:"id"`
-	Mailbox     string             `json:"mailbox"`
-	UIDValidity uint32             `json:"uidvalidity,omitempty"`
-	UID         uint32             `json:"uid,omitempty"`
-	Attachments []attachmentResult `json:"attachments"`
-	Truncated   bool               `json:"truncated,omitempty"`
+	ID          string                   `json:"id"`
+	Mailbox     string                   `json:"mailbox"`
+	UIDValidity uint32                   `json:"uidvalidity,omitempty"`
+	UID         uint32                   `json:"uid,omitempty"`
+	Attachments []attachmentResult       `json:"attachments"`
+	Truncation  attachmentListTruncation `json:"truncation"`
+	Truncated   bool                     `json:"truncated,omitempty"`
 }
 
 func runListAttachments(ctx context.Context, deps Options, arguments json.RawMessage) (any, string) {
@@ -534,13 +582,22 @@ func runListAttachments(ctx context.Context, deps Options, arguments json.RawMes
 		return nil, errUnavailable
 	}
 
+	truncation := attachmentListTruncation{
+		Headers:     normalized.Truncation.Headers,
+		HeaderCount: normalized.Truncation.HeaderCount,
+		MIMEParts:   normalized.Truncation.MIMEParts,
+		MIMEDepth:   normalized.Truncation.MIMEDepth,
+		Attachments: normalized.Truncation.Attachments,
+	}
+
 	return &listAttachmentsResult{
 		ID:          metadata.ID,
 		Mailbox:     metadata.Mailbox,
 		UIDValidity: metadata.UIDValidity,
 		UID:         metadata.UID,
 		Attachments: attachmentResults(normalized.Attachments),
-		Truncated:   normalized.Truncation.Attachments,
+		Truncation:  truncation,
+		Truncated:   truncation.any(),
 	}, ""
 }
 

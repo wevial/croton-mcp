@@ -45,6 +45,13 @@ func TestOversizeMessageTextTruncatesToValidJSONOnRuneBoundary(t *testing.T) {
 	if decoded.ID != "opaque-big" || decoded.Headers.Subject != "Oversize fixture" {
 		t.Fatalf("truncation dropped identity fields: %+v", decoded)
 	}
+	var reasons struct {
+		Truncation map[string]bool `json:"truncation"`
+	}
+	decodeResult(t, result, &reasons)
+	if len(reasons.Truncation) != 1 || !reasons.Truncation["output"] {
+		t.Fatalf("truncation = %v, want only the output reason", reasons.Truncation)
+	}
 }
 
 func TestOversizeFolderListTruncatesWholeItems(t *testing.T) {
