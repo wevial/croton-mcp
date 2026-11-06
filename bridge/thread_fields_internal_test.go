@@ -45,12 +45,8 @@ func TestSelectedThreadFields(t *testing.T) {
 			"Message-ID: <reply@example.test>\r\n" +
 			"In-Reply-To: <root@example.test>\r\n" +
 			"References: <root@example.test>\r\n"
-		var generic strings.Builder
-		for index := range 100 {
-			fmt.Fprintf(&generic, "X-Filler-%03d: %d\r\n", index, index)
-		}
 
-		early, err := selectedHeaderRecord(MessageMetadata{}, []byte(threading+generic.String()+"\r\n"), headerTestLimit*4)
+		early, err := selectedHeaderRecord(MessageMetadata{}, []byte(threading+threadFiller(100)+"\r\n"), headerTestLimit*4)
 		if err != nil {
 			t.Fatalf("early selectedHeaderRecord: %v", err)
 		}
@@ -58,7 +54,7 @@ func TestSelectedThreadFields(t *testing.T) {
 			t.Fatalf("early control lost threading fields: %+v", early)
 		}
 
-		late, err := selectedHeaderRecord(MessageMetadata{}, []byte(generic.String()+threading+"\r\n"), headerTestLimit*4)
+		late, err := selectedHeaderRecord(MessageMetadata{}, []byte(threadFiller(100)+threading+"\r\n"), headerTestLimit*4)
 		if err != nil {
 			t.Fatalf("late selectedHeaderRecord: %v", err)
 		}
