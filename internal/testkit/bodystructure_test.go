@@ -436,6 +436,9 @@ func TestBodyStructureFixture(t *testing.T) {
 			if len(messages) != 1 || messages[0].RFC822Size != int64(len(large)) || !slices.Equal(messages[0].Flags, []imap.Flag{imap.FlagSeen}) {
 				t.Fatalf("%s: size/flags parsed %+v", mode, messages)
 			}
+			if !strings.Contains(served, fmt.Sprintf("RFC822.SIZE %d", len(large))) || !strings.Contains(served, `FLAGS (\Seen)`) || strings.Contains(served, "BODYSTRUCTURE") || strings.Contains(served, sentinel) {
+				t.Fatalf("%s: size/flags served %q", mode, served)
+			}
 
 			header := &imap.FetchItemBodySection{Specifier: imap.PartSpecifierHeader, Peek: true}
 			messages, _, headerServed := fetchStructureWire(t, client, wire, imap.UIDSetNum(101), &imap.FetchOptions{BodySection: []*imap.FetchItemBodySection{header}})
