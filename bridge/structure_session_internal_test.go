@@ -416,11 +416,8 @@ func (harness *pendingHarness) release(step int) {
 
 	for _, part := range harness.writes[step] {
 		harness.written += len(part.text)
-		if part.kind == peerApproved {
-			harness.approved = append(harness.approved, part.text...)
-		}
 	}
-	close(harness.gates[step])
+	harness.releaseOnly(step)
 	harness.settle()
 }
 
@@ -489,12 +486,9 @@ func withinTimeout(t *testing.T, what string, call func() error) error {
 }
 
 func TestStructureSessionRefusal(t *testing.T) {
-	const control = "* OK [ALERT] structure note\r\n"
 	const second = "* OK [ALERT] second note\r\n"
 	const refused = "* 1 FETCH (UID 7 BODY[] {6}\r\nsecret BODYSTRUCTURE " + structureSessionTarget + ")\r\n"
-	const incomplete = "* 1 FETCH (UID 7 BODYSTRUCTURE (\"TEXT\""
 	target := "* 1 FETCH (UID 7 FLAGS (\\Seen) BODYSTRUCTURE " + structureSessionTarget + ")\r\n"
-	flags := "* 1 FETCH (UID 7 FLAGS (\\Seen))\r\n"
 
 	t.Run("pending_read", func(t *testing.T) {
 		// A control fragmented across writes is withheld until it is
@@ -503,8 +497,8 @@ func TestStructureSessionRefusal(t *testing.T) {
 		// state complete while both Reads are outstanding.
 		t.Run("write", func(t *testing.T) {
 			harness := startPending(t, [][]structurePeerPart{
-				{{kind: peerConsumed, text: flags}, {kind: peerApproved, text: control[:9]}},
-				{{kind: peerApproved, text: control[9:]}, {kind: peerRefused, text: refused[:12]}},
+				{{kind: peerConsumed, text: structureFlagsFrame}, {kind: peerApproved, text: structureNoteControl[:9]}},
+				{{kind: peerApproved, text: structureNoteControl[9:]}, {kind: peerRefused, text: refused[:12]}},
 				{{kind: peerRefused, text: refused[12:]}},
 			}, false)
 
@@ -526,7 +520,7 @@ func TestStructureSessionRefusal(t *testing.T) {
 
 		t.Run("cancel", func(t *testing.T) {
 			harness := startPending(t, [][]structurePeerPart{
-				{{kind: peerApproved, text: control}, {kind: peerRefused, text: incomplete}},
+				{{kind: peerApproved, text: structureNoteControl}, {kind: peerRefused, text: structureIncompleteFetch}},
 			}, false)
 
 			harness.release(0)
@@ -537,7 +531,7 @@ func TestStructureSessionRefusal(t *testing.T) {
 
 		t.Run("close", func(t *testing.T) {
 			harness := startPending(t, [][]structurePeerPart{
-				{{kind: peerApproved, text: control}, {kind: peerRefused, text: incomplete}},
+				{{kind: peerApproved, text: structureNoteControl}, {kind: peerRefused, text: structureIncompleteFetch}},
 			}, false)
 
 			harness.release(0)
@@ -553,8 +547,8 @@ func TestStructureSessionRefusal(t *testing.T) {
 		// are not.
 		t.Run("bytes_with_error", func(t *testing.T) {
 			harness := startPending(t, [][]structurePeerPart{
-				{{kind: peerApproved, text: control}},
-				{{kind: peerApproved, text: second}, {kind: peerRefused, text: incomplete}},
+				{{kind: peerApproved, text: structureNoteControl}},
+				{{kind: peerApproved, text: second}, {kind: peerRefused, text: structureIncompleteFetch}},
 			}, false)
 
 			harness.release(0)
@@ -568,7 +562,7 @@ func TestStructureSessionRefusal(t *testing.T) {
 		// target fragmented after an approved control, exactly once.
 		t.Run("epoch_release", func(t *testing.T) {
 			harness := startPending(t, [][]structurePeerPart{
-				{{kind: peerConsumed, text: flags}, {kind: peerApproved, text: control}},
+				{{kind: peerConsumed, text: structureFlagsFrame}, {kind: peerApproved, text: structureNoteControl}},
 				{{kind: peerApproved, text: target[:20]}},
 				{{kind: peerApproved, text: target[20:]}},
 			}, true)
@@ -608,7 +602,7 @@ func TestStructureSessionRefusal(t *testing.T) {
 		// operation is canceled; the refusal category survives cleanup.
 		t.Run("refusal_then_cancellation", func(t *testing.T) {
 			peer := startStructureTLSPeer(t, false, structurePeerScript{adverse: &structurePeerAdverse{schedule: func(structurePeerRecord) []structurePeerWrite {
-				return []structurePeerWrite{{parts: []structurePeerPart{{kind: peerApproved, text: control}, {kind: peerRefused, text: nestedStructure(depthLimit - 1)}}}}
+				return []structurePeerWrite{{parts: []structurePeerPart{{kind: peerApproved, text: structureNoteControl}, {kind: peerRefused, text: nestedStructure(depthLimit - 1)}}}}
 			}}})
 			config := structureTLSConfig(t, peer.listener.Addr().String(), TLSModeImplicit, peer.pin)
 			hold, held := make(chan struct{}), make(chan struct{})
@@ -668,7 +662,7 @@ func TestStructureSessionRefusal(t *testing.T) {
 		// aborts and reads never change it.
 		t.Run("cancellation_first", func(t *testing.T) {
 			harness := startPending(t, [][]structurePeerPart{
-				{{kind: peerApproved, text: control}, {kind: peerRefused, text: incomplete}},
+				{{kind: peerApproved, text: structureNoteControl}, {kind: peerRefused, text: structureIncompleteFetch}},
 			}, false)
 
 			harness.release(0)
@@ -697,7 +691,7 @@ func TestStructureSessionRefusal(t *testing.T) {
 		// passes it, ends an unrefused reader with that category.
 		for _, cause := range []string{CodeOperationCanceled, CodeCommandTimedOut} {
 			t.Run("abort_"+cause, func(t *testing.T) {
-				harness := startPending(t, [][]structurePeerPart{{{kind: peerApproved, text: control}}}, false)
+				harness := startPending(t, [][]structurePeerPart{{{kind: peerApproved, text: structureNoteControl}}}, false)
 
 				harness.session.Abort(errorCode(cause))
 
@@ -759,7 +753,7 @@ func TestStructureSessionRefusal(t *testing.T) {
 
 	t.Run("negative_control", func(t *testing.T) {
 		schedule := func(structurePeerRecord) []structurePeerWrite {
-			return []structurePeerWrite{{parts: []structurePeerPart{{kind: peerApproved, text: control}, {kind: peerRefused, text: refused}}}}
+			return []structurePeerWrite{{parts: []structurePeerPart{{kind: peerApproved, text: structureNoteControl}, {kind: peerRefused, text: refused}}}}
 		}
 
 		// The same tap below the normal pooled stack records the refused
@@ -784,7 +778,7 @@ func TestStructureSessionRefusal(t *testing.T) {
 		}
 
 		// The dedicated stack, same frame and same tap type: zero bytes.
-		harness := startPending(t, [][]structurePeerPart{{{kind: peerApproved, text: control}, {kind: peerRefused, text: refused}}}, false)
+		harness := startPending(t, [][]structurePeerPart{{{kind: peerApproved, text: structureNoteControl}, {kind: peerRefused, text: refused}}}, false)
 		harness.releaseOnly(0)
 		harness.refusedWith(CodeIMAPProtocol, "")
 		if bytes.Contains(harness.tap.bytes(), []byte(refused[:len("* 1 FETCH")])) {

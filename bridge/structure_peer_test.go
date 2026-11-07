@@ -260,22 +260,7 @@ func (tap *structureSourceTap) SetWriteDeadline(deadline time.Time) error {
 
 // newStructureTapSeam returns the private seam and the tap it installs.
 func newStructureTapSeam() (func(net.Conn) net.Conn, func() *structureTap) {
-	var mu sync.Mutex
-	var installed *structureTap
-
-	seam := func(connection net.Conn) net.Conn {
-		mu.Lock()
-		defer mu.Unlock()
-
-		installed = &structureTap{Conn: connection}
-		return installed
-	}
-	return seam, func() *structureTap {
-		mu.Lock()
-		defer mu.Unlock()
-
-		return installed
-	}
+	return newHeldStructureTapSeam(nil, nil)
 }
 
 // newHeldStructureTapSeam is newStructureTapSeam with a tap that closes held

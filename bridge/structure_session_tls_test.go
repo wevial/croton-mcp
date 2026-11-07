@@ -246,6 +246,8 @@ const (
 	// The closing of a frame that ends in a quoted string at depth 2.
 	structureQuotedEnd = "\"))\r\n"
 	structureListEnd   = "))\r\n"
+	// An incomplete target FETCH the peer never finishes.
+	structureIncompleteFetch = "* 1 FETCH (UID 7 BODYSTRUCTURE (\"TEXT\""
 )
 
 // structureDefaultBefore is a consumed target FLAGS-only frame and an
@@ -417,7 +419,7 @@ func structureRefusalCases() []structureRefusalCase {
 		{name: "fetch_leading_zero", code: CodeIMAPProtocol, plan: staticRefusal("* 01 FETCH (UID 7 BODYSTRUCTURE "+structureSessionTarget+")\r\n", len("* 01 FETCH "))},
 		{name: "fetch_without_list", code: CodeIMAPProtocol, plan: staticRefusal("* 1 FETCH UID 7 BODYSTRUCTURE "+structureSessionTarget+"\r\n", len("* 1 FETCH U"))},
 		{name: "truncation", code: CodeIMAPProtocol, truncate: true, plan: staticRefusal("* 1 FETCH (UID 7 BODYSTRUCTURE (\"TEXT\" \"PL", -1)},
-		{name: "cancellation_incomplete", code: CodeOperationCanceled, cancel: true, plan: staticRefusal("* 1 FETCH (UID 7 BODYSTRUCTURE (\"TEXT\"", -1)},
+		{name: "cancellation_incomplete", code: CodeOperationCanceled, cancel: true, plan: staticRefusal(structureIncompleteFetch, -1)},
 
 		// Resource refusals one over each fixed limit.
 		{name: "over_depth", code: CodeBoundsExceeded, plan: staticRefusal(nestedStructure(depthLimit-1), len("* 1 FETCH (UID 7 BODYSTRUCTURE ")+depthLimit)},
