@@ -128,11 +128,11 @@ func plainAttachmentStructure(structure bodyStructure) ([]AttachmentStructureEnt
 
 	// Both name fields are bounded before one is selected, so a bounded
 	// filename cannot mask an overlong Content-Type name.
-	dispositionFilename, filenameTruncated := truncateUTF8(dispositionParameters["filename"], defaultMaxFilenameBytes)
-	name, nameTruncated := truncateUTF8(part.Params["name"], defaultMaxFilenameBytes)
-	contentType, contentTypeTruncated := truncateUTF8(contentType, defaultMaxContentTypeBytes)
-	disposition, dispositionTruncated := truncateUTF8(disposition, defaultMaxDispositionBytes)
-	if filenameTruncated || nameTruncated || contentTypeTruncated || dispositionTruncated {
+	dispositionFilename, filenameOverlong := boundedStructureField(dispositionParameters["filename"], defaultMaxFilenameBytes)
+	name, nameOverlong := boundedStructureField(part.Params["name"], defaultMaxFilenameBytes)
+	contentType, contentTypeOverlong := boundedStructureField(contentType, defaultMaxContentTypeBytes)
+	disposition, dispositionOverlong := boundedStructureField(disposition, defaultMaxDispositionBytes)
+	if filenameOverlong || nameOverlong || contentTypeOverlong || dispositionOverlong {
 		return nil, errorCode(CodeUnsupported)
 	}
 
@@ -156,6 +156,15 @@ func plainAttachmentStructure(structure bodyStructure) ([]AttachmentStructureEnt
 	}
 
 	return []AttachmentStructureEntry{entry}, nil
+}
+
+// boundedStructureField repairs invalid UTF-8 the way truncateUTF8 does and
+// reports whether the value exceeds limit either as received or once
+// repaired, since each replaced byte can grow into three.
+func boundedStructureField(value string, limit int) (string, bool) {
+	repaired := strings.ToValidUTF8(value, "\uFFFD")
+
+	return repaired, len(value) > limit || len(repaired) > limit
 }
 
 // extendedParameter reports whether parameters carry an RFC 2231 extended or

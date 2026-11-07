@@ -138,13 +138,13 @@ func TestAttachmentStructureTLS(t *testing.T) {
 			// The production dedicated reader returns the tuple and the plain
 			// metadata of the 300KiB message from one structure FETCH.
 			identifier := headerTestID(t, adapter, 9001, 101)
-			result, err := adapter.GetMessageAttachmentStructure(context.Background(), identifier)
+			result, err := callAttachmentStructure(t, context.Background(), adapter, identifier)
 			if err != nil {
 				t.Fatalf("report error = %v", err)
 			}
-			want := MessageAttachmentStructure{ID: identifier, Mailbox: "INBOX", UIDValidity: 9001, UID: 101, Attachments: []AttachmentStructureEntry{{
-				AttachmentMetadata: AttachmentMetadata{Filename: "report.pdf", ContentType: "application/pdf", Disposition: "attachment", DeclaredSize: 224000, HasDeclaredSize: true},
-				HasTransferOctets:  true, TransferOctets: 307400,
+			want := attachmentStructureResult{ID: identifier, Mailbox: "INBOX", UIDValidity: 9001, UID: 101, Attachments: []attachmentStructureView{{
+				Metadata:          AttachmentMetadata{Filename: "report.pdf", ContentType: "application/pdf", Disposition: "attachment", DeclaredSize: 224000, HasDeclaredSize: true},
+				HasTransferOctets: true, TransferOctets: 307400,
 			}}}
 			if !reflect.DeepEqual(result, want) {
 				t.Fatalf("report result = %+v, want %+v", result, want)
@@ -167,7 +167,7 @@ func TestAttachmentStructureTLS(t *testing.T) {
 
 			// A stale generation is refused on the fresh selection with no
 			// structure FETCH.
-			stale, err := adapter.GetMessageAttachmentStructure(context.Background(), headerTestID(t, adapter, 9002, 101))
+			stale, err := callAttachmentStructure(t, context.Background(), adapter, headerTestID(t, adapter, 9002, 101))
 			requireStructureRefusal(t, "stale generation", stale, err, CodeStaleMessageID)
 			assertStructureOnlyTranscript(t, server, 1)
 
@@ -177,16 +177,14 @@ func TestAttachmentStructureTLS(t *testing.T) {
 			// through the actual adapter.
 			var mu sync.Mutex
 			var spliced []*flagsBeforeStructureConn
-			adapter.reader = func(ctx context.Context, config ValidatedConfig, request structureRequest) (selectedStructure, error) {
-				return readStructure(ctx, config, request, structureSeams{transport: func(transport net.Conn) net.Conn {
-					connection := &flagsBeforeStructureConn{Conn: transport}
-					mu.Lock()
-					spliced = append(spliced, connection)
-					mu.Unlock()
-					return connection
-				}})
-			}
-			flagged, err := adapter.GetMessageAttachmentStructure(context.Background(), identifier)
+			wrapStructureTransport(t, adapter, func(_ int, transport net.Conn) net.Conn {
+				connection := &flagsBeforeStructureConn{Conn: transport}
+				mu.Lock()
+				spliced = append(spliced, connection)
+				mu.Unlock()
+				return connection
+			})
+			flagged, err := callAttachmentStructure(t, context.Background(), adapter, identifier)
 			if err != nil {
 				t.Fatalf("report with FLAGS traffic error = %v", err)
 			}
