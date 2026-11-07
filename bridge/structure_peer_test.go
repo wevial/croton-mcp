@@ -34,13 +34,15 @@ const (
 // Consumed frames are FLAGS-only FETCH responses the quarantine must swallow;
 // structure is the complete target FETCH response, CRLF included, which may
 // carry literals the public testkit cannot render. adverse, when set,
-// replaces the reply to one command with a private schedule.
+// replaces the reply to one command with a private schedule. wrap, when
+// set, wraps the peer side of the secured connection with a private fault.
 type structurePeerScript struct {
 	greeting     bool
 	beforeSearch []string
 	duringFetch  []string
 	structure    string
 	adverse      *structurePeerAdverse
+	wrap         func(net.Conn) net.Conn
 }
 
 // structurePeerKind is what the quarantine must do with one scheduled part.
@@ -290,6 +292,9 @@ func (peer *structurePeer) serve(connection net.Conn) {
 	defer close(peer.done)
 	defer connection.Close()
 
+	if peer.script.wrap != nil {
+		connection = peer.script.wrap(connection)
+	}
 	_ = connection.SetDeadline(time.Now().Add(structurePeerTimeout))
 	peer.fail(peer.converse(bufio.NewReaderSize(connection, structurePeerLineBytes+1), connection))
 }
@@ -420,33 +425,41 @@ func (peer *structurePeer) writeSchedule(writer net.Conn, closed <-chan struct{}
 	return nil
 }
 
-// writeParts coalesces parts into one Write and records each by kind.
+// writeParts coalesces parts into one Write and records by kind exactly the
+// bytes Write reports delivered, even when it also returns an error. A part
+// cut short records only its delivered prefix and counts as no response.
 func (peer *structurePeer) writeParts(writer net.Conn, parts []structurePeerPart) error {
 	var output strings.Builder
 	for _, part := range parts {
 		output.WriteString(part.text)
 	}
-	if _, err := writer.Write([]byte(output.String())); err != nil {
-		return err
-	}
+
+	delivered, err := writer.Write([]byte(output.String()))
 
 	peer.mu.Lock()
 	defer peer.mu.Unlock()
 
 	for _, part := range parts {
-		peer.written += len(part.text)
+		text := part.text[:min(len(part.text), delivered)]
+		delivered -= len(text)
+		peer.written += len(text)
+		complete := len(text) == len(part.text)
 		switch part.kind {
 		case peerApproved:
-			peer.responses++
-			peer.approved = append(peer.approved, part.text...)
+			if complete {
+				peer.responses++
+			}
+			peer.approved = append(peer.approved, text...)
 		case peerConsumed:
-			peer.responses++
-			peer.consumed = append(peer.consumed, part.text)
+			if complete {
+				peer.responses++
+				peer.consumed = append(peer.consumed, text)
+			}
 		default:
-			peer.refused = append(peer.refused, part.text...)
+			peer.refused = append(peer.refused, text...)
 		}
 	}
-	return nil
+	return err
 }
 
 // observeClosure records bounded client bytes after the adverse command and
