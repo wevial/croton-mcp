@@ -121,13 +121,27 @@ func newIMAPSessionOver(ctx context.Context, transport net.Conn, startTLS bool) 
 	wrapped := &deadlineConn{Conn: transport}
 	guard := &dispatchGuardConn{Conn: wrapped}
 	budget := newReadBudgetConn(guard, maxControlResponseBytes)
-	clientTransport := net.Conn(budget)
+	session := &imapSession{conn: wrapped, budget: budget, guard: guard}
+
+	if err := session.startClient(ctx, budget, startTLS); err != nil {
+		return nil, err
+	}
+
+	return session, nil
+}
+
+// startClient constructs the client over reader, the top of a read stack
+// whose bottom is session.conn, and waits for its greeting and capabilities.
+// After STARTTLS the locally generated greeting is served above reader, so it
+// never carries server bytes past any layer of the stack.
+func (session *imapSession) startClient(ctx context.Context, reader net.Conn, startTLS bool) error {
+	clientTransport := reader
 	if startTLS {
-		clientTransport = &syntheticGreetingConn{Conn: budget, greeting: []byte(syntheticStartTLSGreeting)}
+		clientTransport = &syntheticGreetingConn{Conn: reader, greeting: []byte(syntheticStartTLSGreeting)}
 	}
 
 	client := imapclient.New(clientTransport, nil)
-	session := &imapSession{client: client, conn: wrapped, budget: budget, guard: guard}
+	session.client = client
 	if err := session.withBoundedInput(ctx, maxControlResponseBytes, func() error {
 		if err := client.WaitGreeting(); err != nil {
 			return err
@@ -135,10 +149,10 @@ func newIMAPSessionOver(ctx context.Context, transport net.Conn, startTLS bool) 
 		return waitForCapabilities(client)
 	}); err != nil {
 		_ = client.Close()
-		return nil, err
+		return err
 	}
 
-	return session, nil
+	return nil
 }
 
 func (session *imapSession) Authenticate(ctx context.Context, credentials Credentials) error {
