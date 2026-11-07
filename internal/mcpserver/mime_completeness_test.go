@@ -33,7 +33,7 @@ var (
 		"attachments": true, "references": true, "output": true,
 	}
 	listAttachmentsReasons = map[string]bool{
-		"headers": true, "headerCount": true, "mimeParts": true, "mimeDepth": true, "attachments": true, "output": true,
+		"mimeParts": true, "mimeDepth": true, "attachments": true, "output": true,
 	}
 )
 
@@ -78,12 +78,51 @@ func attachmentPart(filename, sizeParameter, content string) string {
 		base64.StdEncoding.EncodeToString([]byte(content)) + "\r\n"
 }
 
-func completenessSession(t *testing.T, body string) *mcp.ClientSession {
+// completenessSession serves get_message from the raw body and
+// list_attachments from an independently arranged structure result with the
+// same identity, so neither read derives the other's expectations.
+// textDescriptor, octetDescriptor and mixedDescriptor build ordinary typed
+// BODYSTRUCTURE descriptors; declaredSize is the Content-Disposition size
+// parameter text, omitted when empty.
+func textDescriptor() *testkit.BodyPart {
+	return &testkit.BodyPart{Kind: testkit.BodyPartText, Type: "text", Subtype: "plain", Params: []testkit.BodyParam{{Name: "charset", Value: "utf-8"}}, Size: 32, Lines: 1}
+}
+
+func octetDescriptor(filename, declaredSize string) *testkit.BodyPart {
+	disposition := &testkit.BodyDisposition{Value: "attachment", Params: []testkit.BodyParam{{Name: "filename", Value: filename}}}
+	if declaredSize != "" {
+		disposition.Params = append(disposition.Params, testkit.BodyParam{Name: "size", Value: declaredSize})
+	}
+
+	return &testkit.BodyPart{
+		Kind: testkit.BodyPartBasic, Type: "application", Subtype: "octet-stream",
+		Params: []testkit.BodyParam{{Name: "name", Value: filename}}, Encoding: "base64", Size: 64, Disposition: disposition,
+	}
+}
+
+func mixedDescriptor(children ...*testkit.BodyPart) *testkit.BodyPart {
+	return &testkit.BodyPart{Kind: testkit.BodyPartMultipart, Subtype: "mixed", Params: []testkit.BodyParam{{Name: "boundary", Value: "root-boundary"}}, Children: children}
+}
+
+func completenessSession(t *testing.T, body string, truncation bridge.Truncation, attachments ...bridge.AttachmentMetadata) *mcp.ClientSession {
 	t.Helper()
 
 	metadata := bridge.MessageMetadata{ID: "opaque-completeness", Mailbox: completenessTuple.Mailbox, Subject: "Synthetic completeness"}
-	mail := &fakeMail{metadata: withReadIdentity(metadata, completenessTuple.UIDValidity, completenessTuple.UID), body: []byte(body)}
+	structure := selectedStructure("opaque-completeness", completenessTuple, attachments...)
+	structure.Truncation = truncation
+	mail := &structureMail{
+		fakeMail:  &fakeMail{metadata: withReadIdentity(metadata, completenessTuple.UIDValidity, completenessTuple.UID), body: []byte(body)},
+		structure: structure,
+	}
 	return connectTestClient(t, Options{Mail: mail})
+}
+
+// declaredAttachment is arranged octet-stream attachment metadata with an
+// optional declared size.
+func declaredAttachment(filename string, size int64, known bool) bridge.AttachmentMetadata {
+	attachment := octetAttachment(filename)
+	attachment.HasDeclaredSize, attachment.DeclaredSize = known, size
+	return attachment
 }
 
 // selectedReads calls get_message and list_attachments for one message id and
@@ -181,7 +220,13 @@ func TestMIMECompletenessPublic(t *testing.T) {
 			{filename: "negative.bin"},
 		}
 
-		message, listing := selectedReads(t, completenessSession(t, body), "opaque-completeness", completenessTuple)
+		session := completenessSession(t, body, bridge.Truncation{},
+			declaredAttachment("positive.bin", 1234, true),
+			declaredAttachment("zero.bin", 0, true),
+			declaredAttachment("absent.bin", 0, false),
+			declaredAttachment("negative.bin", -7, true),
+		)
+		message, listing := selectedReads(t, session, "opaque-completeness", completenessTuple)
 		requireAttachmentEntries(t, "get_message", message, want)
 		requireAttachmentEntries(t, "list_attachments", listing, want)
 		requireReasons(t, "get_message", message, getMessageReasons)
@@ -231,8 +276,10 @@ func TestMIMECompletenessPublic(t *testing.T) {
 			many = append(many, attachmentPart(fmt.Sprintf("file-%02d.bin", index), "", "many"))
 		}
 		twenty := make([]wantAttachment, 0, 20)
+		arrangedTwenty := make([]bridge.AttachmentMetadata, 0, 20)
 		for index := range 20 {
 			twenty = append(twenty, wantAttachment{filename: fmt.Sprintf("file-%02d.bin", index)})
+			arrangedTwenty = append(arrangedTwenty, octetAttachment(fmt.Sprintf("file-%02d.bin", index)))
 		}
 
 		var references strings.Builder
@@ -241,37 +288,50 @@ func TestMIMECompletenessPublic(t *testing.T) {
 			fmt.Fprintf(&references, " <reference-%d@croton.test>", index)
 		}
 
+		// Each listing is an independently arranged structure result; raw and
+		// structured omissions are not assumed to coincide.
 		for _, tc := range []struct {
-			name           string
-			body           string
-			attachments    []wantAttachment
-			messageReasons []string
-			listReasons    []string
+			name            string
+			body            string
+			attachments     []wantAttachment
+			messageReasons  []string
+			listStructure   []bridge.AttachmentMetadata
+			listTruncation  bridge.Truncation
+			listAttachments []wantAttachment
+			listReasons     []string
 		}{
 			{
 				name:           "mime_parts",
 				body:           multipartMessage("Synthetic parts", manyParts),
 				messageReasons: []string{"mimeParts"},
+				listTruncation: bridge.Truncation{MIMEParts: true},
 				listReasons:    []string{"mimeParts"},
 			},
 			{
 				name:           "mime_depth",
 				body:           completenessHeader("Synthetic depth") + "Content-Type: multipart/mixed; boundary=\"depth-0\"\r\n\r\n" + multipartBody("depth-0", []string{deep}),
 				messageReasons: []string{"mimeDepth"},
+				listTruncation: bridge.Truncation{MIMEDepth: true},
 				listReasons:    []string{"mimeDepth"},
 			},
 			{
-				name:           "header_count",
-				body:           headerCount.String(),
-				messageReasons: []string{"headerCount"},
-				listReasons:    []string{"headerCount"},
+				// The header count hides the attachment from raw parsing,
+				// while the structure still lists it completely.
+				name:            "header_count",
+				body:            headerCount.String(),
+				messageReasons:  []string{"headerCount"},
+				listStructure:   []bridge.AttachmentMetadata{declaredAttachment("hidden.bin", 9, true)},
+				listAttachments: []wantAttachment{{filename: "hidden.bin", size: 9, known: true}},
 			},
 			{
-				name:           "attachments",
-				body:           multipartMessage("Synthetic many", many),
-				attachments:    twenty,
-				messageReasons: []string{"attachments"},
-				listReasons:    []string{"attachments"},
+				name:            "attachments",
+				body:            multipartMessage("Synthetic many", many),
+				attachments:     twenty,
+				messageReasons:  []string{"attachments"},
+				listStructure:   arrangedTwenty,
+				listTruncation:  bridge.Truncation{Attachments: true},
+				listAttachments: twenty,
+				listReasons:     []string{"attachments"},
 			},
 			{
 				// A reference-only limit marks the message but not its
@@ -279,13 +339,15 @@ func TestMIMECompletenessPublic(t *testing.T) {
 				name:           "references",
 				body:           completenessHeader("Synthetic references") + references.String() + "\r\nContent-Type: text/plain\r\n\r\nReferences only.\r\n",
 				messageReasons: []string{"references"},
+				listTruncation: bridge.Truncation{References: true},
 			},
 		} {
-			message, listing := selectedReads(t, completenessSession(t, tc.body), "opaque-completeness", completenessTuple)
+			session := completenessSession(t, tc.body, tc.listTruncation, tc.listStructure...)
+			message, listing := selectedReads(t, session, "opaque-completeness", completenessTuple)
 			if _, present := message["attachments"]; len(tc.attachments) > 0 || present {
 				requireAttachmentEntries(t, tc.name+" get_message", message, tc.attachments)
 			}
-			requireAttachmentEntries(t, tc.name+" list_attachments", listing, tc.attachments)
+			requireAttachmentEntries(t, tc.name+" list_attachments", listing, tc.listAttachments)
 			requireReasons(t, tc.name+" get_message", message, getMessageReasons, tc.messageReasons...)
 			requireReasons(t, tc.name+" list_attachments", listing, listAttachmentsReasons, tc.listReasons...)
 		}
@@ -297,7 +359,7 @@ func TestMIMECompletenessPublic(t *testing.T) {
 		// Latin-1 text doubles when decoded, so the parser's text limit and the
 		// output cap both apply to one public get_message call.
 		latin := completenessHeader("Synthetic output pressure") + "Content-Type: text/plain; charset=iso-8859-1\r\nContent-Transfer-Encoding: 8bit\r\n\r\n" + strings.Repeat("\xe9", 200<<10) + "\r\n"
-		result := callTool(t, completenessSession(t, latin), "get_message", map[string]any{"messageId": "opaque-completeness"})
+		result := callTool(t, completenessSession(t, latin, bridge.Truncation{}), "get_message", map[string]any{"messageId": "opaque-completeness"})
 		text := resultText(t, result)
 		if len(text) > maxToolResultBytes || !utf8.ValidString(text) {
 			t.Fatalf("public output is %d bytes or invalid UTF-8", len(text))
@@ -320,7 +382,7 @@ func TestMIMECompletenessPublic(t *testing.T) {
 		}
 		listing := &listAttachmentsResult{
 			ID: "opaque-completeness", Mailbox: "INBOX", UIDValidity: 4242, UID: 77,
-			Attachments: listPressure, Truncation: attachmentListTruncation{MIMEDepth: true, HeaderCount: true}, Truncated: true,
+			Attachments: listPressure, Truncation: attachmentListTruncation{MIMEDepth: true, Attachments: true}, Truncated: true,
 		}
 		listFallback := &listAttachmentsResult{
 			ID: "opaque-completeness", Mailbox: "INBOX", UIDValidity: 4242, UID: 77,
@@ -334,7 +396,7 @@ func TestMIMECompletenessPublic(t *testing.T) {
 			want    []string
 		}{
 			{"get_message_fallback", fallback, getMessageReasons, []string{"headers", "text", "references", "mimeParts", "output"}},
-			{"list_attachments_shrink", listing, listAttachmentsReasons, []string{"mimeDepth", "headerCount", "output"}},
+			{"list_attachments_shrink", listing, listAttachmentsReasons, []string{"mimeDepth", "attachments", "output"}},
 		} {
 			encoded, truncated, err := encodeBounded(tc.result)
 			if err != nil || !truncated || !utf8.Valid(encoded) {
@@ -374,7 +436,19 @@ func TestMIMECompletenessPublic(t *testing.T) {
 			omitted = append(omitted, attachmentPart(fmt.Sprintf("file-%02d.bin", index), "; size=4", omittedContent))
 		}
 		omission := multipartMessage("Synthetic completeness omission", omitted)
-		server, adapter := startIntegrationAdapterWithOptions(t, testkit.Options{Messages: []string{sizes, omission}})
+
+		// The typed descriptors are written independently of the raw bytes.
+		omittedDescriptors := []*testkit.BodyPart{}
+		for index := range 21 {
+			omittedDescriptors = append(omittedDescriptors, octetDescriptor(fmt.Sprintf("file-%02d.bin", index), "4"))
+		}
+		server, adapter := startIntegrationAdapterWithOptions(t, testkit.Options{
+			Messages: []string{sizes, omission},
+			BodyStructures: []*testkit.BodyPart{
+				mixedDescriptor(textDescriptor(), octetDescriptor("zero.bin", "0"), octetDescriptor("absent.bin", "")),
+				mixedDescriptor(omittedDescriptors...),
+			},
+		})
 		var audit bytes.Buffer
 		session := connectTestClient(t, Options{Mail: adapter, Audit: NewAuditor(&audit)})
 
@@ -426,6 +500,29 @@ func TestMIMECompletenessPublic(t *testing.T) {
 			}
 		}
 
+		// Each listing alone sends a BODYSTRUCTURE fetch and no body or
+		// header fetch; get_message keeps its BODY.PEEK[] retrieval.
+		for subject, id := range ids {
+			listingBefore := len(server.Commands())
+			rawObject(t, callTool(t, session, "list_attachments", map[string]any{"messageId": id}))
+			sawStructure := false
+			for _, command := range server.Commands()[listingBefore:] {
+				upper := strings.ToUpper(command.Raw)
+				if !command.TLS {
+					t.Fatalf("listing command used plaintext transport: %q", command.Raw)
+				}
+				if strings.Contains(upper, "FETCH") && strings.Contains(upper, "BODYSTRUCTURE") {
+					sawStructure = true
+				}
+				if strings.Contains(upper, "FETCH") && (strings.Contains(upper, "BODY.PEEK[") || strings.Contains(upper, "BODY[") || strings.Contains(upper, "RFC822")) {
+					t.Fatalf("%s listing fetched message bytes: %q", subject, command.Raw)
+				}
+			}
+			if !sawStructure {
+				t.Fatalf("%s listing did not request BODYSTRUCTURE", subject)
+			}
+		}
+
 		sawBodyPeek := false
 		for _, command := range server.Commands()[before:] {
 			upper := strings.ToUpper(command.Raw)
@@ -440,7 +537,7 @@ func TestMIMECompletenessPublic(t *testing.T) {
 			}
 		}
 		if !sawBodyPeek {
-			t.Fatal("selected reads did not use the existing BODY.PEEK[] retrieval")
+			t.Fatal("get_message did not use the existing BODY.PEEK[] retrieval")
 		}
 		requireReadOnlyTranscript(t, server)
 		if err := server.AssertNoInsecureAuthentication(); err != nil {
@@ -459,19 +556,26 @@ func TestMIMECompletenessPublic(t *testing.T) {
 			}
 		}
 
-		// Oversized raw MIME or header blocks keep a code-only refusal rather
-		// than an empty complete result.
+		// Oversized raw MIME or header blocks keep get_message's code-only
+		// refusal rather than an empty complete result; the structure-only
+		// listing of the same message is not refused for its raw size.
 		oversizedRaw := completenessHeader("Synthetic oversized raw") + "Content-Type: text/plain\r\n\r\n" + strings.Repeat("r", 300<<10) + "\r\n"
 		oversizedHeader := completenessHeader("Synthetic oversized header") + "X-Synthetic-Filler: " + strings.Repeat("h", 20<<10) + "\r\nContent-Type: text/plain\r\n\r\nBody.\r\n"
 		for _, body := range []string{oversizedRaw, oversizedHeader} {
-			oversizedSession := completenessSession(t, body)
-			for _, tool := range []string{"get_message", "list_attachments"} {
-				result := callTool(t, oversizedSession, tool, map[string]any{"messageId": "opaque-completeness"})
-				if !result.IsError {
-					t.Fatalf("%s returned a normal result for oversized input: %.200s", tool, resultText(t, result))
-				}
-				requireRefusedWithoutTuple(t, result, errInternal)
+			oversizedSession := completenessSession(t, body, bridge.Truncation{}, declaredAttachment("listed.bin", 3, true))
+			result := callTool(t, oversizedSession, "get_message", map[string]any{"messageId": "opaque-completeness"})
+			if !result.IsError {
+				t.Fatalf("get_message returned a normal result for oversized input: %.200s", resultText(t, result))
 			}
+			requireRefusedWithoutTuple(t, result, errInternal)
+
+			listing := rawObject(t, callTool(t, oversizedSession, "list_attachments", map[string]any{"messageId": "opaque-completeness"}))
+			requireClosedKeys(t, "oversized listing", listing, listAttachmentsKeys)
+			if listing["id"] != "opaque-completeness" || flatTuple(t, listing) != completenessTuple {
+				t.Fatalf("oversized listing identity = %v/%+v", listing["id"], flatTuple(t, listing))
+			}
+			requireAttachmentEntries(t, "oversized listing", listing, []wantAttachment{{filename: "listed.bin", size: 3, known: true}})
+			requireReasons(t, "oversized listing", listing, listAttachmentsReasons)
 		}
 	})
 
@@ -479,7 +583,7 @@ func TestMIMECompletenessPublic(t *testing.T) {
 		t.Parallel()
 
 		complete := completenessHeader("Synthetic complete") + "Content-Type: text/plain\r\n\r\nComplete.\r\n"
-		message, listing := selectedReads(t, completenessSession(t, complete), "opaque-completeness", completenessTuple)
+		message, listing := selectedReads(t, completenessSession(t, complete, bridge.Truncation{}), "opaque-completeness", completenessTuple)
 		for label, object := range map[string]map[string]any{"get_message": message, "list_attachments": listing} {
 			truncation, ok := object["truncation"].(map[string]any)
 			if !ok || len(truncation) != 0 {
@@ -510,10 +614,11 @@ func TestMIMECompletenessPublic(t *testing.T) {
 			"not a count of decoded bytes or of the transferred part.",
 			"It is always present and holds only `true` keys, so a complete result has an empty `truncation` object and no `truncated` marker.",
 			"`get_message` reasons are `headers`, `headerCount`, `text`, `mimeParts`, `mimeDepth`, `attachments`, `references` and `output`.",
-			"`list_attachments` reasons are `headers`, `headerCount`, `mimeParts`, `mimeDepth`, `attachments` and `output`;",
+			"`list_attachments` reasons are `mimeParts`, `mimeDepth`, `attachments` and `output`.",
 			"An empty list with any reason is incomplete, not proof that the message has no attachments.",
-			"Listing attachments still fetches and parses the bounded raw MIME message with `BODY.PEEK[]`; it is not a metadata-only transfer and never returns attachment bytes.",
-			"A message whose raw MIME or header block exceeds the parser's bounds may be refused with an error code instead of a result.",
+			"Listing attachments requests UID BODYSTRUCTURE only; it does not fetch or parse the message body.",
+			"`get_message` still fetches and parses the bounded raw MIME message with `BODY.PEEK[]`",
+			"A message whose raw MIME or header block exceeds the parser's bounds may be refused by `get_message` with an error code instead of a result.",
 		} {
 			if !strings.Contains(documentation, statement) {
 				t.Errorf("Mail documentation missing completeness statement: %q", statement)

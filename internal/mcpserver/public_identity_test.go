@@ -307,14 +307,16 @@ func TestPublicReadIdentityFlatMCP(t *testing.T) {
 	t.Run("selected_and_attachment", func(t *testing.T) {
 		t.Parallel()
 
-		server, adapter := startIntegrationAdapterWithOptions(t, testkit.Options{Stateful: publicIdentityStateful()})
-		state, ok := server.MailboxSnapshot("INBOX")
-		if !ok || len(state.Messages) != 2 {
-			t.Fatalf("fixture snapshot = %+v", state)
-		}
-		observed := map[string]readTuple{
-			"Synthetic attachment report":       {Mailbox: "INBOX", UIDValidity: state.UIDValidity, UID: state.Messages[0].UID},
-			"Synthetic attachment-free message": {Mailbox: "INBOX", UIDValidity: state.UIDValidity, UID: state.Messages[1].UID},
+		// Successful listings need explicit BODYSTRUCTURE descriptors, which
+		// require ordinary custom Messages; an independent observer session
+		// reads each fixture tuple.
+		server, adapter := startIntegrationAdapterWithOptions(t, testkit.Options{
+			Messages:       testkit.SyntheticAttachmentMessages(),
+			BodyStructures: syntheticAttachmentDescriptors(),
+		})
+		observed := observeFixtureTuples(t, server, "Subject")
+		if len(observed) != 2 {
+			t.Fatalf("observed fixture tuples = %+v", observed)
 		}
 		var audit bytes.Buffer
 		session := connectTestClient(t, Options{Mail: adapter, Audit: NewAuditor(&audit)})
@@ -510,7 +512,15 @@ func TestPublicReadIdentityFlatMCP(t *testing.T) {
 	t.Run("contract_guards", func(t *testing.T) {
 		t.Parallel()
 
-		server, adapter := startIntegrationAdapterWithMessages(t, testkit.SyntheticLinkedThread())
+		// The successful listing needs one explicit plain-text descriptor
+		// per linked-thread message.
+		plain := func() *testkit.BodyPart {
+			return &testkit.BodyPart{Kind: testkit.BodyPartText, Type: "text", Subtype: "plain", Size: 26, Lines: 1}
+		}
+		server, adapter := startIntegrationAdapterWithOptions(t, testkit.Options{
+			Messages:       testkit.SyntheticLinkedThread(),
+			BodyStructures: []*testkit.BodyPart{plain(), plain(), plain()},
+		})
 		var audit bytes.Buffer
 		session := connectTestClient(t, Options{Mail: adapter, Audit: NewAuditor(&audit)})
 
