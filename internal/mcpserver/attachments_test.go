@@ -164,12 +164,13 @@ func TestListAttachmentsStructureMCP(t *testing.T) {
 		t.Parallel()
 
 		maximum := readTuple{Mailbox: "INBOX", UIDValidity: math.MaxUint32, UID: math.MaxUint32}
-		positive, zero, absent, negative, unflagged := octetAttachment("positive.bin"), octetAttachment("zero.bin"), octetAttachment("absent.bin"), octetAttachment("negative.bin"), octetAttachment("unflagged.bin")
-		positive.HasDeclaredSize, positive.DeclaredSize = true, 1234
-		zero.HasDeclaredSize = true
-		negative.HasDeclaredSize, negative.DeclaredSize = true, -7
-		unflagged.DeclaredSize = 55
-		mail := &structureMail{fakeMail: &fakeMail{}, structure: selectedStructure("opaque-sizes", maximum, positive, zero, absent, negative, unflagged)}
+		mail := &structureMail{fakeMail: &fakeMail{}, structure: selectedStructure("opaque-sizes", maximum,
+			declaredAttachment("positive.bin", 1234, true),
+			declaredAttachment("zero.bin", 0, true),
+			declaredAttachment("absent.bin", 0, false),
+			declaredAttachment("negative.bin", -7, true),
+			declaredAttachment("unflagged.bin", 55, false),
+		)}
 		session := connectTestClient(t, Options{Mail: mail})
 
 		result := callTool(t, session, "list_attachments", map[string]any{"messageId": "opaque-sizes"})

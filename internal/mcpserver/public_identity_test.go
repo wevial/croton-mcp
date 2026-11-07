@@ -514,12 +514,9 @@ func TestPublicReadIdentityFlatMCP(t *testing.T) {
 
 		// The successful listing needs one explicit plain-text descriptor
 		// per linked-thread message.
-		plain := func() *testkit.BodyPart {
-			return &testkit.BodyPart{Kind: testkit.BodyPartText, Type: "text", Subtype: "plain", Size: 26, Lines: 1}
-		}
 		server, adapter := startIntegrationAdapterWithOptions(t, testkit.Options{
 			Messages:       testkit.SyntheticLinkedThread(),
-			BodyStructures: []*testkit.BodyPart{plain(), plain(), plain()},
+			BodyStructures: []*testkit.BodyPart{textDescriptor(), textDescriptor(), textDescriptor()},
 		})
 		var audit bytes.Buffer
 		session := connectTestClient(t, Options{Mail: adapter, Audit: NewAuditor(&audit)})
