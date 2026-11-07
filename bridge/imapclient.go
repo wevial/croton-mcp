@@ -983,6 +983,10 @@ func (session *imapSession) abortFetch(command *imapclient.FetchCommand) {
 // dedicated structure session never imports go-imap itself.
 type bodyStructure = imap.BodyStructure
 
+// singlePartStructure is one leaf of a bodyStructure, named for the same
+// reason.
+type singlePartStructure = imap.BodyStructureSinglePart
+
 // fetchUIDStructure sends one UID FETCH of uid for UID and extended
 // BODYSTRUCTURE. The response must carry that UID and one extended structure,
 // and may carry FLAGS.

@@ -100,13 +100,44 @@ func (connection *operationConn) bound(deadline time.Time) time.Time {
 	return deadline
 }
 
-// readSelectedStructure runs one dedicated session under a single finite
-// operation deadline that covers connect, the credential helper,
-// authentication, selection, the existence check, the structure fetch and
-// close. tap is a private test seam between the quarantine and the
-// decoder-facing layers; production callers pass nil.
+// structureRequest is the selection one dedicated read targets. A non-zero
+// UIDValidity binds the read to that mailbox generation: the session refuses
+// a different generation as stale after selection and before any structure
+// dispatch. Zero leaves the read unbound.
+type structureRequest struct {
+	Mailbox     string
+	UID         uint32
+	UIDValidity uint32
+}
+
+// structureSeams are private test seams of one dedicated read; production
+// callers pass none. transport wraps the established decrypted transport
+// below the quarantine, and tap sits between the quarantine and the
+// decoder-facing layers.
+type structureSeams struct {
+	transport func(net.Conn) net.Conn
+	tap       func(net.Conn) net.Conn
+}
+
+// readSelectedStructure runs one unbound dedicated session. tap is a private
+// test seam between the quarantine and the decoder-facing layers; production
+// callers pass nil.
 func readSelectedStructure(parent context.Context, config ValidatedConfig, mailbox string, uid uint32, tap func(net.Conn) net.Conn) (selectedStructure, error) {
-	if uid == 0 {
+	return readStructure(parent, config, structureRequest{Mailbox: mailbox, UID: uid}, structureSeams{tap: tap})
+}
+
+// readBoundStructure is the production dedicated read of the adapter: one
+// session bound to the request's generation, without seams.
+func readBoundStructure(parent context.Context, config ValidatedConfig, request structureRequest) (selectedStructure, error) {
+	return readStructure(parent, config, request, structureSeams{})
+}
+
+// readStructure runs one dedicated session under a single finite operation
+// deadline that covers connect, the credential helper, authentication,
+// selection, the existence check, the generation check, the structure fetch
+// and close.
+func readStructure(parent context.Context, config ValidatedConfig, request structureRequest, seams structureSeams) (selectedStructure, error) {
+	if request.UID == 0 {
 		return selectedStructure{}, errorCode(CodeInvalidRequest)
 	}
 
@@ -122,13 +153,16 @@ func readSelectedStructure(parent context.Context, config ValidatedConfig, mailb
 	if err != nil {
 		return selectedStructure{}, err
 	}
+	if seams.transport != nil {
+		transport = seams.transport(transport)
+	}
 
-	session, err := newStructureSessionOver(ctx, transport, startTLS, uid, tap)
+	session, err := newStructureSessionOver(ctx, transport, startTLS, request.UID, seams.tap)
 	if err != nil {
 		return selectedStructure{}, err
 	}
 
-	result, err := session.run(ctx, config, mailbox)
+	result, err := session.run(ctx, config, request)
 	if err != nil {
 		err = session.refusal(ctx, err)
 		session.Abort(err)
@@ -141,7 +175,7 @@ func readSelectedStructure(parent context.Context, config ValidatedConfig, mailb
 	return result, nil
 }
 
-func (session *structureSession) run(ctx context.Context, config ValidatedConfig, mailbox string) (selectedStructure, error) {
+func (session *structureSession) run(ctx context.Context, config ValidatedConfig, request structureRequest) (selectedStructure, error) {
 	credentials, err := LoadCredentials(ctx, config.IMAP.CredentialCommand, time.Duration(config.IMAP.CommandTimeoutMs)*time.Millisecond)
 	if err != nil {
 		return selectedStructure{}, err
@@ -150,9 +184,12 @@ func (session *structureSession) run(ctx context.Context, config ValidatedConfig
 		return selectedStructure{}, err
 	}
 
-	snapshot, err := session.Examine(ctx, mailbox)
+	snapshot, err := session.Examine(ctx, request.Mailbox)
 	if err != nil {
 		return selectedStructure{}, err
+	}
+	if request.UIDValidity != 0 && snapshot.UIDValidity != request.UIDValidity {
+		return selectedStructure{}, errorCode(CodeStaleMessageID)
 	}
 
 	structure, err := session.FetchStructure(ctx)
