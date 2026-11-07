@@ -541,28 +541,20 @@ func fragmentRefusal(plan structureRefusalPlan, whole bool) []structurePeerWrite
 	}
 }
 
-func structureTLSModes() []struct {
-	name     string
-	startTLS bool
-	mode     string
-} {
-	return []struct {
-		name     string
-		startTLS bool
-		mode     string
-	}{
-		{name: "starttls_refusal", startTLS: true, mode: TLSModeStartTLS},
-		{name: "implicit_tls_refusal", startTLS: false, mode: TLSModeImplicit},
-	}
-}
-
 func TestStructureSessionTLSRefusal(t *testing.T) {
 	root := t.TempDir()
 	for _, name := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "TMPDIR"} {
 		t.Setenv(name, root)
 	}
 
-	for _, mode := range structureTLSModes() {
+	for _, mode := range []struct {
+		name     string
+		startTLS bool
+		mode     string
+	}{
+		{name: "starttls_refusal", startTLS: true, mode: TLSModeStartTLS},
+		{name: "implicit_tls_refusal", startTLS: false, mode: TLSModeImplicit},
+	} {
 		t.Run(mode.name, func(t *testing.T) {
 			for _, test := range structureRefusalCases() {
 				t.Run(test.name, func(t *testing.T) {

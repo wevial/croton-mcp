@@ -65,24 +65,18 @@ type operationConn struct {
 
 func (connection *operationConn) Read(buffer []byte) (int, error) {
 	count, err := connection.Conn.Read(buffer)
-	if err != nil {
-		if ended := connection.ended(); ended != nil {
-			err = ended
-		}
+	if err == nil {
+		return count, nil
+	}
+
+	if ended := connection.ctx.Err(); ended != nil {
+		return count, ended
+	}
+	if !time.Now().Before(connection.deadline) {
+		return count, context.DeadlineExceeded
 	}
 
 	return count, err
-}
-
-func (connection *operationConn) ended() error {
-	if err := connection.ctx.Err(); err != nil {
-		return err
-	}
-	if !time.Now().Before(connection.deadline) {
-		return context.DeadlineExceeded
-	}
-
-	return nil
 }
 
 func (connection *operationConn) SetDeadline(deadline time.Time) error {
