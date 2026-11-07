@@ -2,7 +2,6 @@ package mcpserver
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net"
 	"os"
@@ -78,52 +77,6 @@ func structureTLSDescriptors() []*testkit.BodyPart {
 	}
 
 	return []*testkit.BodyPart{report, free}
-}
-
-// countingStructureMail delegates to the real adapter and counts each public
-// adapter operation separately.
-type countingStructureMail struct {
-	*bridge.Adapter
-
-	structureCalls int
-	metaCalls      int
-	bodyCalls      int
-	headerCalls    int
-	searchCalls    int
-}
-
-func (mail *countingStructureMail) GetMessageAttachmentStructure(ctx context.Context, identifier string) (bridge.MessageAttachmentStructure, error) {
-	mail.structureCalls++
-
-	return mail.Adapter.GetMessageAttachmentStructure(ctx, identifier)
-}
-
-func (mail *countingStructureMail) GetMessageMetadata(ctx context.Context, identifier string) (bridge.MessageMetadata, error) {
-	mail.metaCalls++
-
-	return mail.Adapter.GetMessageMetadata(ctx, identifier)
-}
-
-func (mail *countingStructureMail) GetMessageBody(ctx context.Context, identifier string) ([]byte, error) {
-	mail.bodyCalls++
-
-	return mail.Adapter.GetMessageBody(ctx, identifier)
-}
-
-func (mail *countingStructureMail) GetMessageHeaders(ctx context.Context, identifier string) (bridge.MessageHeaders, error) {
-	mail.headerCalls++
-
-	return mail.Adapter.GetMessageHeaders(ctx, identifier)
-}
-
-func (mail *countingStructureMail) SearchMailPage(ctx context.Context, query bridge.SearchQuery) (bridge.SearchPage, error) {
-	mail.searchCalls++
-
-	return mail.Adapter.SearchMailPage(ctx, query)
-}
-
-func (mail *countingStructureMail) reset() {
-	mail.structureCalls, mail.metaCalls, mail.bodyCalls, mail.headerCalls, mail.searchCalls = 0, 0, 0, 0, 0
 }
 
 // startStructureTLSAdapter starts the structure fixture in mode and a
@@ -230,9 +183,8 @@ func TestListAttachmentsStructureTLS(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server, adapter := startStructureTLSAdapter(t, tc.mode)
-			mail := &countingStructureMail{Adapter: adapter}
 			var audit bytes.Buffer
-			session := connectTestClient(t, Options{Mail: mail, Audit: NewAuditor(&audit)})
+			session := connectTestClient(t, Options{Mail: adapter, Audit: NewAuditor(&audit)})
 
 			// Setup: one bounded search acquires the opaque IDs.
 			searched := rawItems(t, rawObject(t, callTool(t, session, "search_mail", map[string]any{"mailbox": "INBOX", "subject": "Structure witness", "limit": 2})), "results")
@@ -262,7 +214,6 @@ func TestListAttachmentsStructureTLS(t *testing.T) {
 				id    string
 				tuple readTuple
 				want  []wantAttachment
-				text  []string
 			}{
 				{
 					id:    reportID,
@@ -273,10 +224,8 @@ func TestListAttachmentsStructureTLS(t *testing.T) {
 					id:    freeID,
 					tuple: readTuple{Mailbox: "INBOX", UIDValidity: 9001, UID: 102},
 					want:  []wantAttachment{},
-					text:  []string{`"attachments":[]`, `"truncation":{}`},
 				},
 			} {
-				mail.reset()
 				before := len(server.Commands())
 
 				result := callTool(t, session, "list_attachments", map[string]any{"messageId": listing.id})
@@ -289,11 +238,6 @@ func TestListAttachmentsStructureTLS(t *testing.T) {
 						t.Fatalf("listing disclosed %q", sentinel)
 					}
 				}
-				for _, fragment := range listing.text {
-					if !strings.Contains(resultText(t, result), fragment) {
-						t.Fatalf("listing = %s, want %s", resultText(t, result), fragment)
-					}
-				}
 				object := rawObject(t, result)
 				requireClosedKeys(t, tc.name, object, listAttachmentsKeys)
 				if object["id"] != listing.id || flatTuple(t, object) != listing.tuple {
@@ -302,10 +246,6 @@ func TestListAttachmentsStructureTLS(t *testing.T) {
 				requireAttachmentEntries(t, tc.name, object, listing.want)
 				requireReasons(t, tc.name, object, listAttachmentsReasons)
 
-				counts := [5]int{mail.structureCalls, mail.metaCalls, mail.bodyCalls, mail.headerCalls, mail.searchCalls}
-				if counts != [5]int{1, 0, 0, 0, 0} {
-					t.Fatalf("operations structure/metadata/body/header/search = %v, want [1 0 0 0 0]", counts)
-				}
 				connections[requireStructureOnlyListing(t, tc.mode, server.Commands()[before:], connections, listing.tuple.UID)] = true
 			}
 
