@@ -167,7 +167,7 @@ transport admits only one unambiguous newline-delimited JSON object of at most
 | `search_mail` | Structured, bounded search in one mailbox; returns metadata. |
 | `get_message` | One message by opaque id: headers, normalized text, attachment metadata. |
 | `get_thread` | Local thread resolution with bounded header-only sibling reads. |
-| `list_attachments` | Attachment metadata only; never attachment bytes. |
+| `list_attachments` | Attachment metadata from the message structure only; never attachment or body bytes. |
 | `select_digest_candidates` | Metadata-first digest selection composing STATUS and one bounded search; no body fetches. |
 
 Message identifiers are the bridge's opaque HMAC-bound ids; they are validated
@@ -231,25 +231,40 @@ Both results also carry a `truncation` object that names every limit that
 shaped them. It is always present and holds only `true` keys, so a complete
 result has an empty `truncation` object and no `truncated` marker.
 `get_message` reasons are `headers`, `headerCount`, `text`, `mimeParts`,
-`mimeDepth`, `attachments`, `references` and `output`. `list_attachments`
-reasons are `headers`, `headerCount`, `mimeParts`, `mimeDepth`, `attachments`
-and `output`; text and reference limits do not mark an attachment list
-incomplete. `mimeParts`, `mimeDepth` and `headerCount` mean MIME parts, nested
-entities or header fields beyond the parser's bounds were not examined, so
-attachments may be missing; `attachments` means entries beyond the 20-entry
-cap were omitted or their metadata was shortened. `output` means the
-100 000-byte result cap removed text or whole attachment entries, or replaced
-the result with its identity-only fallback; earlier reasons are kept.
-`truncated` is `true` whenever any listed reason is.
+`mimeDepth`, `attachments`, `references` and `output`.
+`list_attachments` reasons are `mimeParts`, `mimeDepth`, `attachments` and
+`output`. Header, text and reference limits do not apply to a listing and
+never mark it incomplete. `mimeParts` and `mimeDepth` mean MIME parts or
+nested entities beyond the bounds were not examined, so attachments may be
+missing; `headerCount` means the same for header fields, but only
+`get_message` reports it. For a listing, `mimeDepth` also marks an
+embedded message whose contents were not enumerated. `attachments` means
+entries beyond the 20-entry cap were omitted or their metadata was shortened.
+`output` means the 100 000-byte result cap removed text or whole attachment
+entries, or replaced the result with its identity-only fallback; earlier
+reasons are kept. `truncated` is `true` whenever any listed reason is.
 
 An empty `attachments` list with an empty `truncation` object means the
-parsed message declared no attachments. An empty list with any reason is
+message structure declared no attachments. An empty list with any reason is
 incomplete, not proof that the message has no attachments.
 
-Listing attachments still fetches and parses the bounded raw MIME message with
-`BODY.PEEK[]`; it is not a metadata-only transfer and never returns attachment
-bytes. A message whose raw MIME or header block exceeds the parser's bounds
-may be refused with an error code instead of a result.
+Listing attachments requests UID BODYSTRUCTURE only; it does not fetch or
+parse the message body. It never returns attachment bytes, transfer sizes,
+decoded sizes, the message size, body text, headers, read state or per-part
+identifiers. Each attachment listing opens a fresh dedicated TLS session, runs
+the credential helper and logs in again; it does not reuse the pooled session.
+That session confirms the opaque id's UIDVALIDITY generation and UID before
+its one structure FETCH, so a listing still fails with a code-only error when
+the id is stale or missing, when selection, response-frame, token, guard or
+MIME structure bounds are exceeded, or when the session cannot be established.
+A large raw message body alone is not a reason to refuse a listing. A Mail
+surface without the structure read refuses `list_attachments` as
+`unsupported` and never falls back to a body read.
+
+`get_message` still fetches and parses the bounded raw MIME message with
+`BODY.PEEK[]` and never returns attachment bytes. A message whose raw MIME or
+header block exceeds the parser's bounds may be refused by `get_message` with
+an error code instead of a result.
 
 ### Search order and limits
 

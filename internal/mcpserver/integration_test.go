@@ -21,8 +21,12 @@ func TestAttachmentsSyntheticWire(t *testing.T) {
 	t.Parallel()
 
 	// The helper uses only loopback test TLS and the test executable's
-	// synthetic credential helper; all mail is supplied by this named fixture.
-	server, adapter := startIntegrationAdapterWithMessages(t, testkit.SyntheticAttachmentMessages())
+	// synthetic credential helper; all mail is supplied by this named fixture
+	// and its explicit, independently written BODYSTRUCTURE descriptors.
+	server, adapter := startIntegrationAdapterWithOptions(t, testkit.Options{
+		Messages:       testkit.SyntheticAttachmentMessages(),
+		BodyStructures: syntheticAttachmentDescriptors(),
+	})
 	var audit bytes.Buffer
 	session := connectTestClient(t, Options{Mail: adapter, Audit: NewAuditor(&audit)})
 
@@ -97,15 +101,18 @@ func TestAttachmentsSyntheticWire(t *testing.T) {
 				}
 			}
 
-			sawBodyPeek := false
+			sawStructure := false
 			for _, command := range server.Commands()[before:] {
 				upper := strings.ToUpper(command.Raw)
-				if strings.Contains(upper, "UID FETCH") && strings.Contains(upper, "BODY.PEEK[]") {
-					sawBodyPeek = true
+				if strings.Contains(upper, "UID FETCH") && strings.Contains(upper, "BODYSTRUCTURE") {
+					sawStructure = true
+				}
+				if strings.Contains(upper, "FETCH") && (strings.Contains(upper, "BODY.PEEK[") || strings.Contains(upper, "BODY[") || strings.Contains(upper, "RFC822")) {
+					t.Fatalf("attachment listing fetched message bytes: %q", command.Raw)
 				}
 			}
-			if !sawBodyPeek {
-				t.Fatal("attachment MIME retrieval did not use BODY.PEEK[]")
+			if !sawStructure {
+				t.Fatal("attachment listing did not request UID BODYSTRUCTURE")
 			}
 		})
 	}
@@ -144,6 +151,25 @@ func TestAttachmentsSyntheticWire(t *testing.T) {
 // transcript produced through the MCP tool surface.
 var mutatingIMAPCommands = []string{
 	"STORE", "APPEND", "EXPUNGE", "DELETE", "RENAME", "CREATE", "COPY", "MOVE", "SETACL", "SETQUOTA", "SUBSCRIBE", "UNSUBSCRIBE",
+}
+
+// syntheticAttachmentDescriptors are explicit typed BODYSTRUCTURE trees for
+// testkit.SyntheticAttachmentMessages: a multipart report with one PDF
+// attachment, then an attachment-free plain message.
+func syntheticAttachmentDescriptors() []*testkit.BodyPart {
+	text := func() *testkit.BodyPart {
+		return &testkit.BodyPart{Kind: testkit.BodyPartText, Type: "text", Subtype: "plain", Params: []testkit.BodyParam{{Name: "charset", Value: "utf-8"}}, Size: 35, Lines: 1}
+	}
+	report := &testkit.BodyPart{
+		Kind: testkit.BodyPartMultipart, Subtype: "mixed", Params: []testkit.BodyParam{{Name: "boundary", Value: "synthetic-report"}},
+		Children: []*testkit.BodyPart{text(), {
+			Kind: testkit.BodyPartBasic, Type: "application", Subtype: "pdf",
+			Params: []testkit.BodyParam{{Name: "name", Value: "report.pdf"}}, Encoding: "base64", Size: 40,
+			Disposition: &testkit.BodyDisposition{Value: "attachment", Params: []testkit.BodyParam{{Name: "filename", Value: "report.pdf"}}},
+		}},
+	}
+
+	return []*testkit.BodyPart{report, text()}
 }
 
 func startIntegrationAdapter(t *testing.T) (*testkit.Server, *bridge.Adapter) {
@@ -289,7 +315,15 @@ func TestSelectDigestCandidatesComposesOnlyReadOnlyOperationsOnTheWire(t *testin
 func TestAllSixToolsProduceReadOnlyWireTranscript(t *testing.T) {
 	t.Parallel()
 
-	server, adapter := startIntegrationAdapter(t)
+	// The default fixture does not answer BODYSTRUCTURE, so this transcript
+	// uses one custom welcome message with an explicit plain-text descriptor.
+	welcome := "From: Croton Fixture <fixture@croton.test>\r\nTo: Reader <reader@croton.test>\r\n" +
+		"Subject: Welcome to Croton\r\nDate: Thu, 01 Jan 2026 00:00:00 +0000\r\nMessage-ID: <welcome@croton.test>\r\n\r\n" +
+		"Welcome to Croton. This synthetic message exists only for adapter tests.\r\n"
+	server, adapter := startIntegrationAdapterWithOptions(t, testkit.Options{
+		Messages:       []string{welcome},
+		BodyStructures: []*testkit.BodyPart{{Kind: testkit.BodyPartText, Type: "text", Subtype: "plain", Size: 74, Lines: 1}},
+	})
 	session := connectTestClient(t, Options{Mail: adapter})
 
 	callTool(t, session, "list_folders", map[string]any{})
@@ -318,9 +352,14 @@ func TestAllSixToolsProduceReadOnlyWireTranscript(t *testing.T) {
 
 	attachments := callTool(t, session, "list_attachments", map[string]any{"messageId": identifier})
 	var decodedAttachments struct {
+		ID          string             `json:"id"`
 		Attachments []attachmentResult `json:"attachments"`
+		Truncated   bool               `json:"truncated"`
 	}
 	decodeResult(t, attachments, &decodedAttachments)
+	if decodedAttachments.ID != identifier || decodedAttachments.Attachments == nil || len(decodedAttachments.Attachments) != 0 || decodedAttachments.Truncated {
+		t.Fatalf("unexpected attachments: %+v", decodedAttachments)
+	}
 
 	digest := callTool(t, session, "select_digest_candidates", map[string]any{"mailbox": "INBOX", "unreadOnly": false})
 	var decodedDigest digestDecoded

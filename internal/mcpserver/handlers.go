@@ -270,11 +270,10 @@ type messageTruncation struct {
 	Output      bool `json:"output,omitempty"`
 }
 
-// attachmentListTruncation names the limits that can omit or shorten
-// list_attachments entries; text and reference limits do not apply.
+// attachmentListTruncation names the structure and output limits that can
+// omit list_attachments entries; header, text and reference limits do not
+// apply to a structure-only listing.
 type attachmentListTruncation struct {
-	Headers     bool `json:"headers,omitempty"`
-	HeaderCount bool `json:"headerCount,omitempty"`
 	MIMEParts   bool `json:"mimeParts,omitempty"`
 	MIMEDepth   bool `json:"mimeDepth,omitempty"`
 	Attachments bool `json:"attachments,omitempty"`
@@ -282,7 +281,7 @@ type attachmentListTruncation struct {
 }
 
 func (truncation attachmentListTruncation) any() bool {
-	return truncation.Headers || truncation.HeaderCount || truncation.MIMEParts || truncation.MIMEDepth || truncation.Attachments || truncation.Output
+	return truncation.MIMEParts || truncation.MIMEDepth || truncation.Attachments || truncation.Output
 }
 
 type getMessageResult struct {
@@ -307,8 +306,8 @@ func validMessageIdentifier(identifier string) bool {
 	return identifier != "" && len(identifier) <= maxMessageIDArgumentBytes
 }
 
-// fetchNormalizedMessage composes the two read-only adapter operations shared
-// by get_message and list_attachments.
+// fetchNormalizedMessage composes the two read-only adapter operations behind
+// get_message.
 func fetchNormalizedMessage(ctx context.Context, deps Options, identifier string) (bridge.MessageMetadata, bridge.NormalizedMessage, string) {
 	metadata, err := deps.Mail.GetMessageMetadata(ctx, identifier)
 	if err != nil {
@@ -641,6 +640,13 @@ func baseSubject(subject string) string {
 	return trimmed
 }
 
+// MessageAttachmentStructureReader is the optional selected structure-only
+// read beside Mail. list_attachments requires it and refuses as unsupported
+// without falling back to body reads; *bridge.Adapter satisfies it.
+type MessageAttachmentStructureReader interface {
+	GetMessageAttachmentStructure(ctx context.Context, identifier string) (bridge.MessageAttachmentStructure, error)
+}
+
 type listAttachmentsResult struct {
 	ID          string                   `json:"id"`
 	Mailbox     string                   `json:"mailbox"`
@@ -651,34 +657,43 @@ type listAttachmentsResult struct {
 	Truncated   bool                     `json:"truncated,omitempty"`
 }
 
+// runListAttachments projects one selected structure read. It never reads
+// message metadata, headers or the body, and exposes no transfer octets.
 func runListAttachments(ctx context.Context, deps Options, arguments json.RawMessage) (any, string) {
 	var input messageIdentifierInput
 	if !decodeArguments(arguments, &input) || !validMessageIdentifier(input.MessageID) {
 		return nil, errInvalidArgument
 	}
 
-	metadata, normalized, errCode := fetchNormalizedMessage(ctx, deps, input.MessageID)
-	if errCode != "" {
-		return nil, errCode
+	reader, ok := deps.Mail.(MessageAttachmentStructureReader)
+	if !ok {
+		return nil, errUnsupported
 	}
-	if !validReadIdentity(metadata) {
+
+	structure, err := reader.GetMessageAttachmentStructure(ctx, input.MessageID)
+	if err != nil {
+		return nil, mapAdapterError(err)
+	}
+	if structure.ID != input.MessageID || structure.Mailbox == "" || structure.UIDValidity == 0 || structure.UID == 0 {
 		return nil, errUnavailable
 	}
 
+	attachments := make([]bridge.AttachmentMetadata, 0, len(structure.Attachments))
+	for _, entry := range structure.Attachments {
+		attachments = append(attachments, entry.AttachmentMetadata)
+	}
 	truncation := attachmentListTruncation{
-		Headers:     normalized.Truncation.Headers,
-		HeaderCount: normalized.Truncation.HeaderCount,
-		MIMEParts:   normalized.Truncation.MIMEParts,
-		MIMEDepth:   normalized.Truncation.MIMEDepth,
-		Attachments: normalized.Truncation.Attachments,
+		MIMEParts:   structure.Truncation.MIMEParts,
+		MIMEDepth:   structure.Truncation.MIMEDepth,
+		Attachments: structure.Truncation.Attachments,
 	}
 
 	return &listAttachmentsResult{
-		ID:          metadata.ID,
-		Mailbox:     metadata.Mailbox,
-		UIDValidity: metadata.UIDValidity,
-		UID:         metadata.UID,
-		Attachments: attachmentResults(normalized.Attachments),
+		ID:          structure.ID,
+		Mailbox:     structure.Mailbox,
+		UIDValidity: structure.UIDValidity,
+		UID:         structure.UID,
+		Attachments: attachmentResults(attachments),
 		Truncation:  truncation,
 		Truncated:   truncation.any(),
 	}, ""
