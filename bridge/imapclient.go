@@ -121,13 +121,27 @@ func newIMAPSessionOver(ctx context.Context, transport net.Conn, startTLS bool) 
 	wrapped := &deadlineConn{Conn: transport}
 	guard := &dispatchGuardConn{Conn: wrapped}
 	budget := newReadBudgetConn(guard, maxControlResponseBytes)
-	clientTransport := net.Conn(budget)
+	session := &imapSession{conn: wrapped, budget: budget, guard: guard}
+
+	if err := session.startClient(ctx, budget, startTLS); err != nil {
+		return nil, err
+	}
+
+	return session, nil
+}
+
+// startClient constructs the client over reader, the top of a read stack
+// whose bottom is session.conn, and waits for its greeting and capabilities.
+// After STARTTLS the locally generated greeting is served above reader, so it
+// never carries server bytes past any layer of the stack.
+func (session *imapSession) startClient(ctx context.Context, reader net.Conn, startTLS bool) error {
+	clientTransport := reader
 	if startTLS {
-		clientTransport = &syntheticGreetingConn{Conn: budget, greeting: []byte(syntheticStartTLSGreeting)}
+		clientTransport = &syntheticGreetingConn{Conn: reader, greeting: []byte(syntheticStartTLSGreeting)}
 	}
 
 	client := imapclient.New(clientTransport, nil)
-	session := &imapSession{client: client, conn: wrapped, budget: budget, guard: guard}
+	session.client = client
 	if err := session.withBoundedInput(ctx, maxControlResponseBytes, func() error {
 		if err := client.WaitGreeting(); err != nil {
 			return err
@@ -135,10 +149,10 @@ func newIMAPSessionOver(ctx context.Context, transport net.Conn, startTLS bool) 
 		return waitForCapabilities(client)
 	}); err != nil {
 		_ = client.Close()
-		return nil, err
+		return err
 	}
 
-	return session, nil
+	return nil
 }
 
 func (session *imapSession) Authenticate(ctx context.Context, credentials Credentials) error {
@@ -963,6 +977,69 @@ func (session *imapSession) abortFetch(command *imapclient.FetchCommand) {
 		_ = session.conn.Close()
 	}
 	_ = command.Close()
+}
+
+// bodyStructure is go-imap's decoded BODYSTRUCTURE, named here so the
+// dedicated structure session never imports go-imap itself.
+type bodyStructure = imap.BodyStructure
+
+// fetchUIDStructure sends one UID FETCH of uid for UID and extended
+// BODYSTRUCTURE. The response must carry that UID and one extended structure,
+// and may carry FLAGS.
+func (session *imapSession) fetchUIDStructure(ctx context.Context, uid uint32) (bodyStructure, error) {
+	options := &imap.FetchOptions{UID: true, BodyStructure: &imap.FetchItemBodyStructure{Extended: true}}
+	var structure imap.BodyStructure
+	err := session.withBoundedInput(ctx, quarantineSessionBytes, func() (err error) {
+		command := session.client.Fetch(imap.UIDSetNum(imap.UID(uid)), options)
+		defer func() {
+			if err != nil {
+				session.abortFetch(command)
+			}
+		}()
+
+		message := command.Next()
+		if message == nil {
+			if err := command.Close(); err != nil {
+				return err
+			}
+
+			return errorCode(CodeIMAPProtocol)
+		}
+
+		uidItems := 0
+		flagsItems := 0
+		for data := message.Next(); data != nil; data = message.Next() {
+			switch value := data.(type) {
+			case imapclient.FetchItemDataUID:
+				if uidItems != 0 || uint32(value.UID) != uid {
+					return errorCode(CodeIMAPProtocol)
+				}
+				uidItems++
+			case imapclient.FetchItemDataFlags:
+				if flagsItems != 0 {
+					return errorCode(CodeIMAPProtocol)
+				}
+				flagsItems++
+			case imapclient.FetchItemDataBodyStructure:
+				if structure != nil || !value.IsExtended || value.BodyStructure == nil {
+					return errorCode(CodeIMAPProtocol)
+				}
+				structure = value.BodyStructure
+			default:
+				return errorCode(CodeIMAPProtocol)
+			}
+		}
+		if command.Next() != nil || uidItems != 1 || structure == nil {
+			return errorCode(CodeIMAPProtocol)
+		}
+
+		return command.Close()
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return structure, nil
 }
 
 func (session *imapSession) Logout(ctx context.Context) error {
