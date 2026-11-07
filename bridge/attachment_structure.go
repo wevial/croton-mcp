@@ -28,8 +28,6 @@ type AttachmentStructureEntry struct {
 // fresh dedicated session that confirms its UIDVALIDITY generation and UID
 // before the one structure FETCH. It mirrors execute's serialization, closed
 // check and single transport replay without touching the pooled session.
-// The structure is projected by projectAttachmentStructure under the
-// adapter's bounds.
 func (adapter *Adapter) GetMessageAttachmentStructure(ctx context.Context, identifier string) (MessageAttachmentStructure, error) {
 	payload, err := adapter.decodeMessageID(identifier)
 	if err != nil {

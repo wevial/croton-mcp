@@ -246,8 +246,7 @@ func TestAttachmentProjection(t *testing.T) {
 				truncation: Truncation{MIMEDepth: true},
 			},
 			{
-				// message/global unqualified is now omitted visibly, as
-				// rfc822 always was.
+				// An unqualified message/global is omitted visibly, as rfc822 is.
 				name:       "unqualified_global",
 				structure:  projectionMultipart("mixed", nil, projectionText(), projectionMessage("global", 80, nil, hidden)),
 				want:       []attachmentStructureView{},
