@@ -43,12 +43,11 @@ func (conn *structureEarlyCloseConn) Write(buffer []byte) (int, error) {
 		return conn.Conn.Write(buffer)
 	}
 
-	timeout := time.After(structurePeerTimeout)
 	refused := false
 	select {
 	case <-conn.held:
 		refused = true
-	case <-timeout:
+	case <-time.After(structurePeerTimeout):
 	}
 
 	conn.delivered, _ = conn.Conn.Write(buffer[:len(buffer)/2])
@@ -57,7 +56,7 @@ func (conn *structureEarlyCloseConn) Write(buffer []byte) (int, error) {
 	select {
 	case <-conn.observed:
 		conn.early = refused
-	case <-timeout:
+	case <-time.After(structurePeerTimeout):
 	}
 	return conn.delivered, errors.New("structure peer write after client close")
 }
