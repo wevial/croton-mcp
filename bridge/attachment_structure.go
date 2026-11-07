@@ -117,12 +117,10 @@ func plainAttachmentStructure(structure bodyStructure) ([]AttachmentStructureEnt
 	}
 
 	disposition := ""
-	dispositionParameters := map[string]string{}
+	var dispositionParameters map[string]string
 	if value := part.Disposition(); value != nil {
 		disposition = strings.ToLower(value.Value)
-		if value.Params != nil {
-			dispositionParameters = value.Params
-		}
+		dispositionParameters = value.Params
 	}
 	if extendedParameter(part.Params, "name") || extendedParameter(dispositionParameters, "filename") {
 		return nil, errorCode(CodeUnsupported)
@@ -133,9 +131,8 @@ func plainAttachmentStructure(structure bodyStructure) ([]AttachmentStructureEnt
 		filename = part.Params["name"]
 	}
 
-	attachments := []AttachmentStructureEntry{}
-	if !strings.EqualFold(disposition, "attachment") && filename == "" {
-		return attachments, nil
+	if disposition != "attachment" && filename == "" {
+		return []AttachmentStructureEntry{}, nil
 	}
 
 	filename, filenameTruncated := truncateUTF8(filename, defaultMaxFilenameBytes)
@@ -155,7 +152,7 @@ func plainAttachmentStructure(structure bodyStructure) ([]AttachmentStructureEnt
 		entry.HasDeclaredSize = true
 	}
 
-	return append(attachments, entry), nil
+	return []AttachmentStructureEntry{entry}, nil
 }
 
 // extendedParameter reports whether parameters carry an RFC 2231 extended or
