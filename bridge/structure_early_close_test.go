@@ -11,14 +11,17 @@ import (
 )
 
 // structureEarlyCloseConn wraps the peer side of the secured connection. The
-// Write whose bytes equal fault waits until the peer has observed the client
-// close the transport, delivers half of them and returns that count with an
-// error, the result a kernel may give once the client has closed. early
-// reports that the fault waited for the closure rather than the timeout,
-// and delivered how many of its bytes reached the transport.
+// Write whose bytes equal fault waits until the guard has refused, with the
+// client's close held at the decoder-facing tap, so the transport is still
+// open; it then writes half of the bytes, releases the held close, waits
+// until the peer observes the client close the transport and returns the
+// count the transport reported together with an error. early reports that
+// both barriers were reached rather than timed out.
 type structureEarlyCloseConn struct {
 	net.Conn
 	fault    []byte
+	held     <-chan struct{}
+	hold     chan struct{}
 	observed chan struct{}
 	once     sync.Once
 
@@ -40,15 +43,23 @@ func (conn *structureEarlyCloseConn) Write(buffer []byte) (int, error) {
 		return conn.Conn.Write(buffer)
 	}
 
+	timeout := time.After(structurePeerTimeout)
+	refused := false
 	select {
-	case <-conn.observed:
-		conn.early = true
-	case <-time.After(structurePeerTimeout):
+	case <-conn.held:
+		refused = true
+	case <-timeout:
 	}
 
-	sent := len(buffer) / 2
-	conn.delivered, _ = conn.Conn.Write(buffer[:sent])
-	return sent, errors.New("structure peer write after client close")
+	conn.delivered, _ = conn.Conn.Write(buffer[:len(buffer)/2])
+	close(conn.hold)
+
+	select {
+	case <-conn.observed:
+		conn.early = refused
+	case <-timeout:
+	}
+	return conn.delivered, errors.New("structure peer write after client close")
 }
 
 func TestStructureRefusalEarlyClose(t *testing.T) {
@@ -68,7 +79,8 @@ func TestStructureRefusalEarlyClose(t *testing.T) {
 	}
 
 	// The guard refuses within the first refused fragment, so the second
-	// fragment is written only after the client closed the transport.
+	// fragment is written only after the guard refused, and its Write
+	// returns only after the client closed the transport.
 	plan := test.plan(structurePeerRecord{})
 	writes := fragmentRefusal(plan, false)
 	if len(writes) != 3 || len(writes[0].parts[len(writes[0].parts)-1].text) < plan.cut {
@@ -87,19 +99,21 @@ func TestStructureRefusalEarlyClose(t *testing.T) {
 		t.Run(mode.name, func(t *testing.T) {
 			var faulted *structureEarlyCloseConn
 			early := test
+			early.hold, early.held = make(chan struct{}), make(chan struct{})
 			early.wrap = func(connection net.Conn) net.Conn {
-				faulted = &structureEarlyCloseConn{Conn: connection, fault: fault, observed: make(chan struct{})}
+				faulted = &structureEarlyCloseConn{Conn: connection, fault: fault, held: early.held, hold: early.hold, observed: make(chan struct{})}
 				return faulted
 			}
 
 			record := runStructureTLSRefusal(t, mode.startTLS, mode.mode, early)
 
-			// The schedule really ended early: the faulted Write followed
-			// the client close and returned n>0 with an error, the peer
+			// The schedule really ended early: the faulted Write began after
+			// the refusal, returned n>0 with an error only after the client
+			// closed the transport, the peer
 			// recorded exactly the delivered bytes, and the last fragment
 			// was never attempted.
 			if !faulted.early {
-				t.Fatal("the faulted Write did not follow the observed client close")
+				t.Fatal("the faulted Write did not span the refusal and the observed client close")
 			}
 			if faulted.delivered != len(fault)/2 {
 				t.Fatalf("faulted Write delivered %d of %d bytes", faulted.delivered, len(fault))

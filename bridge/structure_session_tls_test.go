@@ -227,6 +227,11 @@ type structureRefusalCase struct {
 	cancel   bool
 	plan     func(sent structurePeerRecord) structureRefusalPlan
 	wrap     func(net.Conn) net.Conn
+
+	// hold and held, when set, make the decoder-facing tap close held at its
+	// first failing Read and hold that Read, and so the client's close of
+	// the transport, until hold closes.
+	hold, held chan struct{}
 }
 
 // structureBoundaryCase is an admitted response at a fixed limit; plan
@@ -591,7 +596,7 @@ func runStructureTLSRefusal(t *testing.T, startTLS bool, mode string, test struc
 	}}
 	peer := startStructureTLSPeer(t, startTLS, structurePeerScript{adverse: adverse, wrap: test.wrap})
 	config := structureTLSConfig(t, peer.listener.Addr().String(), mode, peer.pin)
-	seam, installed := newStructureTapSeam()
+	seam, installed := newHeldStructureTapSeam(test.hold, test.held)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
