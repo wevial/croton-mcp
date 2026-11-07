@@ -1,10 +1,6 @@
 package bridge
 
-import (
-	"context"
-	"strconv"
-	"strings"
-)
+import "context"
 
 // MessageAttachmentStructure is the attachment metadata of one selected
 // message, projected from the extended BODYSTRUCTURE of a fresh dedicated
@@ -32,9 +28,6 @@ type AttachmentStructureEntry struct {
 // fresh dedicated session that confirms its UIDVALIDITY generation and UID
 // before the one structure FETCH. It mirrors execute's serialization, closed
 // check and single transport replay without touching the pooled session.
-//
-// It is an internal first slice: only a plain single-part root is projected,
-// and every other layout or parameter form is refused as unsupported.
 func (adapter *Adapter) GetMessageAttachmentStructure(ctx context.Context, identifier string) (MessageAttachmentStructure, error) {
 	payload, err := adapter.decodeMessageID(identifier)
 	if err != nil {
@@ -61,7 +54,7 @@ func (adapter *Adapter) GetMessageAttachmentStructure(ctx context.Context, ident
 		return MessageAttachmentStructure{}, err
 	}
 
-	attachments, err := plainAttachmentStructure(selected.Structure)
+	attachments, truncation, err := projectAttachmentStructure(selected.Structure, adapter.config.Bounds)
 	if err != nil {
 		return MessageAttachmentStructure{}, err
 	}
@@ -72,6 +65,7 @@ func (adapter *Adapter) GetMessageAttachmentStructure(ctx context.Context, ident
 		UIDValidity: payload.UIDValidity,
 		UID:         payload.UID,
 		Attachments: attachments,
+		Truncation:  truncation,
 	}, nil
 }
 
@@ -94,87 +88,4 @@ func (adapter *Adapter) readStructureAttempts(ctx context.Context, request struc
 	}
 
 	return selectedStructure{}, errorCode(CodeBridgeUnreachable)
-}
-
-// plainAttachmentStructure projects a plain single-part root with the
-// selection rules of NormalizeMessage: a disposition filename before a
-// Content-Type name, and an attachment disposition or any filename makes the
-// part an attachment. A supported non-attachment root, all of whose fields
-// are within the per-field limits, is a complete empty list.
-//
-// Interim restriction: multipart and embedded-message roots, RFC 2231
-// extended or continued filename and name parameters, and values over the
-// per-field limits are refused as unsupported rather than partially listed.
-func plainAttachmentStructure(structure bodyStructure) ([]AttachmentStructureEntry, error) {
-	part, ok := structure.(*singlePartStructure)
-	if !ok || part == nil || part.MessageRFC822 != nil {
-		return nil, errorCode(CodeUnsupported)
-	}
-
-	contentType := part.MediaType()
-	if contentType == "message/rfc822" || contentType == "message/global" {
-		return nil, errorCode(CodeUnsupported)
-	}
-
-	disposition := ""
-	var dispositionParameters map[string]string
-	if value := part.Disposition(); value != nil {
-		disposition = strings.ToLower(value.Value)
-		dispositionParameters = value.Params
-	}
-	if extendedParameter(part.Params, "name") || extendedParameter(dispositionParameters, "filename") {
-		return nil, errorCode(CodeUnsupported)
-	}
-
-	// Both name fields are bounded before one is selected, so a bounded
-	// filename cannot mask an overlong Content-Type name.
-	dispositionFilename, filenameOverlong := boundedStructureField(dispositionParameters["filename"], defaultMaxFilenameBytes)
-	name, nameOverlong := boundedStructureField(part.Params["name"], defaultMaxFilenameBytes)
-	contentType, contentTypeOverlong := boundedStructureField(contentType, defaultMaxContentTypeBytes)
-	disposition, dispositionOverlong := boundedStructureField(disposition, defaultMaxDispositionBytes)
-	if filenameOverlong || nameOverlong || contentTypeOverlong || dispositionOverlong {
-		return nil, errorCode(CodeUnsupported)
-	}
-
-	filename := dispositionFilename
-	if filename == "" {
-		filename = name
-	}
-
-	if disposition != "attachment" && filename == "" {
-		return []AttachmentStructureEntry{}, nil
-	}
-
-	entry := AttachmentStructureEntry{
-		AttachmentMetadata: AttachmentMetadata{Filename: filename, ContentType: contentType, Disposition: disposition},
-		HasTransferOctets:  true,
-		TransferOctets:     part.Size,
-	}
-	if size, err := strconv.ParseInt(dispositionParameters["size"], 10, 64); err == nil && size >= 0 {
-		entry.DeclaredSize = size
-		entry.HasDeclaredSize = true
-	}
-
-	return []AttachmentStructureEntry{entry}, nil
-}
-
-// boundedStructureField repairs invalid UTF-8 the way truncateUTF8 does and
-// reports whether the value exceeds limit either as received or once
-// repaired, since each replaced byte can grow into three.
-func boundedStructureField(value string, limit int) (string, bool) {
-	repaired := strings.ToValidUTF8(value, "\uFFFD")
-
-	return repaired, len(value) > limit || len(repaired) > limit
-}
-
-// extendedParameter reports whether parameters carry an RFC 2231 extended or
-// continued form of name, such as name* or name*0*.
-func extendedParameter(parameters map[string]string, name string) bool {
-	for key := range parameters {
-		if strings.HasPrefix(key, name+"*") {
-			return true
-		}
-	}
-
-	return false
 }

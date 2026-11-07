@@ -3,7 +3,6 @@ package bridge
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"net"
 	"reflect"
@@ -418,68 +417,6 @@ func TestAttachmentStructureAdapter(t *testing.T) {
 		}
 		if err := server.AssertReadOnlyCommands(); err != nil {
 			t.Fatalf("read-only transcript: %v", err)
-		}
-	})
-
-	t.Run("interim_subset", func(t *testing.T) {
-		long := strings.Repeat("l", defaultMaxFilenameBytes+1)
-		cases := []struct {
-			name       string
-			descriptor *testkit.BodyPart
-		}{
-			{name: "multipart", descriptor: &testkit.BodyPart{Kind: testkit.BodyPartMultipart, Subtype: "mixed", Children: []*testkit.BodyPart{
-				{Kind: testkit.BodyPartText, Type: "text", Subtype: "plain", Size: 5, Lines: 1},
-				plainDescriptor(64, nil, attachmentDisposition(testkit.BodyParam{Name: "filename", Value: "child.bin"})),
-			}}},
-			{name: "rfc2231_continued_filename", descriptor: plainDescriptor(8, nil, attachmentDisposition(testkit.BodyParam{Name: "filename*0", Value: "part-one"}, testkit.BodyParam{Name: "filename*1", Value: ".pdf"}))},
-			{name: "rfc2231_extended_continued_name", descriptor: plainDescriptor(8, []testkit.BodyParam{{Name: "name*0*", Value: "utf-8''a%20b"}}, nil)},
-			{name: "rfc2231_name_beside_plain_filename", descriptor: plainDescriptor(8, []testkit.BodyParam{{Name: "name*", Value: "utf-8''n.bin"}}, attachmentDisposition(testkit.BodyParam{Name: "filename", Value: "plain.bin"}))},
-			{name: "long_filename", descriptor: plainDescriptor(8, nil, attachmentDisposition(testkit.BodyParam{Name: "filename", Value: long}))},
-			{name: "long_name", descriptor: plainDescriptor(8, []testkit.BodyParam{{Name: "name", Value: long}}, nil)},
-			// A bounded disposition filename does not mask an overlong
-			// Content-Type name it takes precedence over.
-			{name: "long_name_masked_by_filename", descriptor: plainDescriptor(8, []testkit.BodyParam{{Name: "name", Value: long}}, &testkit.BodyDisposition{Value: "attachment", Params: []testkit.BodyParam{{Name: "filename", Value: "short.bin"}}})},
-			{name: "long_content_type", descriptor: &testkit.BodyPart{Kind: testkit.BodyPartBasic, Type: "application", Subtype: strings.Repeat("s", defaultMaxContentTypeBytes), Size: 8, Disposition: attachmentDisposition()}},
-			{name: "long_disposition", descriptor: plainDescriptor(8, nil, &testkit.BodyDisposition{Value: strings.Repeat("d", defaultMaxDispositionBytes+1), Params: []testkit.BodyParam{{Name: "filename", Value: "x.bin"}}})},
-			// Overlong fields of an unnamed non-attachment are refused, not
-			// listed as a complete empty result.
-			{name: "long_disposition_nonattachment", descriptor: plainDescriptor(8, nil, &testkit.BodyDisposition{Value: strings.Repeat("d", defaultMaxDispositionBytes+1)})},
-			{name: "long_content_type_nonattachment", descriptor: &testkit.BodyPart{Kind: testkit.BodyPartBasic, Type: "application", Subtype: strings.Repeat("s", defaultMaxContentTypeBytes), Size: 8}},
-		}
-
-		messages := make([]string, 0, len(cases))
-		descriptors := make([]*testkit.BodyPart, 0, len(cases))
-		for index := range cases {
-			messages = append(messages, "Subject: interim\r\n\r\nbody\r\n")
-			descriptors = append(descriptors, cases[index].descriptor)
-		}
-		server, adapter := startTLSHeaderAdapter(t, testkit.StartTLS, testkit.Options{Messages: messages, BodyStructures: descriptors})
-
-		for index, testCase := range cases {
-			result, err := callAttachmentStructure(t, context.Background(), adapter, headerTestID(t, adapter, 9001, uint32(101+index)))
-			requireStructureRefusal(t, testCase.name, result, err, CodeUnsupported)
-		}
-		if err := server.AssertReadOnlyCommands(); err != nil {
-			t.Fatalf("read-only transcript: %v", err)
-		}
-
-		// The fixture cannot render an embedded message or invalid UTF-8,
-		// so these are decided on the decoded structure the dedicated
-		// session would return. A 200-byte filename or name of FF 61 pairs
-		// repairs to 400 bytes, over the field limit.
-		repairable := strings.Repeat("\xffa", 100)
-		decoded := []bodyStructure{
-			&imap.BodyStructureSinglePart{Type: "message", Subtype: "rfc822", Size: 90, MessageRFC822: &imap.BodyStructureMessageRFC822{BodyStructure: &imap.BodyStructureSinglePart{Type: "text", Subtype: "plain"}}},
-			&imap.BodyStructureSinglePart{Type: "MESSAGE", Subtype: "GLOBAL", Size: 90},
-			&imap.BodyStructureSinglePart{Type: "message", Subtype: "rfc822", Size: 90, Extended: &imap.BodyStructureSinglePartExt{Disposition: &imap.BodyStructureDisposition{Value: "attachment", Params: map[string]string{"filename": "fwd.eml"}}}},
-			&imap.BodyStructureSinglePart{Type: "application", Subtype: "pdf", Size: 90, Extended: &imap.BodyStructureSinglePartExt{Disposition: &imap.BodyStructureDisposition{Value: "attachment", Params: map[string]string{"filename": repairable}}}},
-			&imap.BodyStructureSinglePart{Type: "application", Subtype: "pdf", Size: 90, Params: map[string]string{"name": repairable}},
-		}
-		for index, structure := range decoded {
-			selection := selectedStructure{Structure: structure}
-			scripted, _ := newScriptedStructureAdapter(t, func(int) (selectedStructure, error) { return selection, nil })
-			result, err := callAttachmentStructure(t, context.Background(), scripted, headerTestID(t, scripted, 9001, 7))
-			requireStructureRefusal(t, fmt.Sprintf("decoded structure %d", index), result, err, CodeUnsupported)
 		}
 	})
 

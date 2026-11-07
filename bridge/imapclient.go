@@ -987,6 +987,10 @@ type bodyStructure = imap.BodyStructure
 // reason.
 type singlePartStructure = imap.BodyStructureSinglePart
 
+// multiPartStructure is one multipart container of a bodyStructure, named
+// for the same reason.
+type multiPartStructure = imap.BodyStructureMultiPart
+
 // fetchUIDStructure sends one UID FETCH of uid for UID and extended
 // BODYSTRUCTURE. The response must carry that UID and one extended structure,
 // and may carry FLAGS.
