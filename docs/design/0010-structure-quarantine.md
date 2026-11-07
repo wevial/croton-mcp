@@ -94,8 +94,8 @@ Controls are whole CRLF lines of at most 4096 bytes and carry no literals:
 | Control | Admitted form |
 | --- | --- |
 | untagged status | `* OK`, `* NO`, `* BAD`, `* BYE`, `* PREAUTH`, optional text |
-| CAPABILITY | `* CAPABILITY` and one or more atoms |
-| FLAGS | `* FLAGS` and a parenthesized list of flag atoms |
+| CAPABILITY | `* CAPABILITY` and one or more atoms, no `{` or `}` |
+| FLAGS | `* FLAGS` and a parenthesized list of flag atoms, no `{` or `}` |
 | EXISTS, RECENT | `* n EXISTS`, `* n RECENT` with n zero or more |
 | EXPUNGE | `* n EXPUNGE` with n positive |
 | SEARCH, ESEARCH | printable ASCII, complete quoted strings, no `{` or `}` even when quoted |

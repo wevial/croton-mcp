@@ -376,6 +376,9 @@ func testQuarantineResourceBounds(t *testing.T) {
 		check    func(*testing.T, *structureQuarantine)
 	}
 	literalAt, _, _ := structureWithLiteral(frameBytes)
+	// After this "{" a frame at depth 2 still needs a digit, "}", CRLF, two
+	// closing parentheses and CRLF: eight bytes, one more than remain.
+	literalOpening := strings.TrimSuffix(structureWithQuoted(frameBytes-5), "\"))\r\n") + "\" {"
 	literalOver, literalOverHead, _ := structureWithLiteral(frameBytes + 1)
 	nested := func(depth int) string {
 		return "* 1 FETCH (UID 7 BODYSTRUCTURE " + strings.Repeat("(", depth-1) + strings.Repeat(")", depth-1) + ")\r\n"
@@ -435,6 +438,7 @@ func testQuarantineResourceBounds(t *testing.T) {
 		{name: "frame bytes with literal value", dispatch: true, input: []string{literalOver}},
 		{name: "literal declaration without payload", dispatch: true, input: []string{literalOverHead}},
 		{name: "literal declaration digits without payload", dispatch: true, input: []string{strings.TrimSuffix(literalOverHead, "}\r\n")}},
+		{name: "literal opening without digit", dispatch: true, input: []string{literalOpening}},
 		{name: "depth", dispatch: true, input: []string{nested(depthLimit + 1)}},
 		{name: "tokens per FETCH", input: []string{flagsFrameWithTokens(fetchTokens - 4)}},
 		{name: "atom", input: []string{"* 2 FETCH (FLAGS (" + strings.Repeat("a", atomBytes+1) + "))\r\n"}},
@@ -587,6 +591,10 @@ func testQuarantineFramingSubset(t *testing.T) {
 		{name: "SEARCH closing brace", input: "* SEARCH }\r\n"},
 		{name: "ESEARCH quoted closing brace", input: "* ESEARCH (TAG \"}\") UID ALL 1\r\n"},
 		{name: "FLAGS control quoted", input: "* FLAGS (\"x\")\r\n"},
+		{name: "CAPABILITY closing brace", input: "* CAPABILITY }\r\n"},
+		{name: "CAPABILITY opening brace", input: "* CAPABILITY IMAP4rev1 X{\r\n"},
+		{name: "FLAGS control closing brace", input: "* FLAGS (})\r\n"},
+		{name: "FLAGS control brace in keyword", input: "* FLAGS (\\Seen a}b)\r\n"},
 		{name: "unclosed status code", input: "* OK [ALERT notice\r\n"},
 		{name: "unclosed continuation code", input: "+ [ALERT notice\r\n"},
 		{name: "continuation without space", input: "+x\r\n"},

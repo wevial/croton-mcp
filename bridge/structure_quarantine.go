@@ -654,7 +654,11 @@ func (quarantine *structureQuarantine) fetchFeasibleLocked() error {
 	case fetchEscape:
 		bytesNeeded += 2
 	case fetchLiteralSize:
+		// A declaration still needs its first digit, then "}" and CRLF.
 		bytesNeeded += 3 + quarantine.literal
+		if quarantine.digits == 0 {
+			bytesNeeded++
+		}
 	case fetchLiteralCR:
 		bytesNeeded += 2 + quarantine.literal
 	case fetchLiteralLF:
@@ -780,7 +784,7 @@ func quarantineControl(line string) bool {
 	case "OK", "NO", "BAD", "BYE", "PREAUTH":
 		return !hasArguments || quarantineText(arguments)
 	case "CAPABILITY":
-		if !hasArguments {
+		if !hasArguments || strings.ContainsAny(arguments, "{}") {
 			return false
 		}
 		for _, capability := range strings.Split(arguments, " ") {
@@ -792,7 +796,7 @@ func quarantineControl(line string) bool {
 	case "FLAGS":
 		list, closed := strings.CutSuffix(arguments, ")")
 		list, opened := strings.CutPrefix(list, "(")
-		if !hasArguments || !closed || !opened {
+		if !hasArguments || !closed || !opened || strings.ContainsAny(list, "{}") {
 			return false
 		}
 		if list == "" {
