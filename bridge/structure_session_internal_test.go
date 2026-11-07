@@ -61,7 +61,7 @@ func runStructureSession(t *testing.T, startTLS bool, script structurePeerScript
 	if err := session.Authenticate(ctx, Credentials{Username: []byte("fixture-user"), Password: []byte("fixture-password")}); err != nil {
 		t.Fatalf("Authenticate() error = %v", err)
 	}
-	snapshot, err := session.Select(ctx, "INBOX")
+	snapshot, err := session.Examine(ctx, "INBOX")
 	if err != nil {
 		t.Fatalf("Select() error = %v", err)
 	}
@@ -83,7 +83,7 @@ func runStructureSession(t *testing.T, startTLS bool, script structurePeerScript
 	if _, err := session.FetchStructure(ctx); CodeOf(err) != CodeIMAPProtocol {
 		t.Fatalf("second FetchStructure() error = %v", err)
 	}
-	if _, err := session.Select(ctx, "INBOX"); CodeOf(err) != CodeIMAPProtocol {
+	if _, err := session.Examine(ctx, "INBOX"); CodeOf(err) != CodeIMAPProtocol {
 		t.Fatalf("second Select() error = %v", err)
 	}
 	if got := len(peer.snapshot().commands); got != commands {

@@ -979,6 +979,69 @@ func (session *imapSession) abortFetch(command *imapclient.FetchCommand) {
 	_ = command.Close()
 }
 
+// bodyStructure is go-imap's decoded BODYSTRUCTURE, named here so the
+// dedicated structure session never imports go-imap itself.
+type bodyStructure = imap.BodyStructure
+
+// fetchUIDStructure sends one UID FETCH of uid for UID and extended
+// BODYSTRUCTURE. The response must carry that UID and one extended structure,
+// and may carry FLAGS.
+func (session *imapSession) fetchUIDStructure(ctx context.Context, uid uint32) (bodyStructure, error) {
+	options := &imap.FetchOptions{UID: true, BodyStructure: &imap.FetchItemBodyStructure{Extended: true}}
+	var structure imap.BodyStructure
+	err := session.withBoundedInput(ctx, quarantineSessionBytes, func() (err error) {
+		command := session.client.Fetch(imap.UIDSetNum(imap.UID(uid)), options)
+		defer func() {
+			if err != nil {
+				session.abortFetch(command)
+			}
+		}()
+
+		message := command.Next()
+		if message == nil {
+			if err := command.Close(); err != nil {
+				return err
+			}
+
+			return errorCode(CodeIMAPProtocol)
+		}
+
+		uidItems := 0
+		flagsItems := 0
+		for data := message.Next(); data != nil; data = message.Next() {
+			switch value := data.(type) {
+			case imapclient.FetchItemDataUID:
+				if uidItems != 0 || uint32(value.UID) != uid {
+					return errorCode(CodeIMAPProtocol)
+				}
+				uidItems++
+			case imapclient.FetchItemDataFlags:
+				if flagsItems != 0 {
+					return errorCode(CodeIMAPProtocol)
+				}
+				flagsItems++
+			case imapclient.FetchItemDataBodyStructure:
+				if structure != nil || !value.IsExtended || value.BodyStructure == nil {
+					return errorCode(CodeIMAPProtocol)
+				}
+				structure = value.BodyStructure
+			default:
+				return errorCode(CodeIMAPProtocol)
+			}
+		}
+		if command.Next() != nil || uidItems != 1 || structure == nil {
+			return errorCode(CodeIMAPProtocol)
+		}
+
+		return command.Close()
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return structure, nil
+}
+
 func (session *imapSession) Logout(ctx context.Context) error {
 	if session == nil || session.client == nil {
 		return nil

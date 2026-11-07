@@ -5,9 +5,6 @@ import (
 	"net"
 	"sync"
 	"time"
-
-	imap "github.com/emersion/go-imap/v2"
-	"github.com/emersion/go-imap/v2/imapclient"
 )
 
 type structureSessionState int
@@ -24,7 +21,7 @@ const (
 // mailbox generation it was read under.
 type selectedStructure struct {
 	Snapshot  mailboxSnapshot
-	Structure imap.BodyStructure
+	Structure bodyStructure
 }
 
 // structureSession is a dedicated, never pooled session that reads the
@@ -105,7 +102,7 @@ func (session *structureSession) run(ctx context.Context, config ValidatedConfig
 		return selectedStructure{}, err
 	}
 
-	snapshot, err := session.Select(ctx, mailbox)
+	snapshot, err := session.Examine(ctx, mailbox)
 	if err != nil {
 		return selectedStructure{}, err
 	}
@@ -169,9 +166,9 @@ func (session *structureSession) Authenticate(ctx context.Context, credentials C
 	return session.refusal(ctx, session.session.Authenticate(ctx, credentials))
 }
 
-// Select examines mailbox read-only and requires the selected UID to exist
+// Examine examines mailbox read-only and requires the selected UID to exist
 // with one exact UID SEARCH before any structure dispatch.
-func (session *structureSession) Select(ctx context.Context, mailbox string) (mailboxSnapshot, error) {
+func (session *structureSession) Examine(ctx context.Context, mailbox string) (mailboxSnapshot, error) {
 	if err := session.advance(structureAuthenticated, structureSelected); err != nil {
 		return mailboxSnapshot{}, err
 	}
@@ -191,7 +188,7 @@ func (session *structureSession) Select(ctx context.Context, mailbox string) (ma
 // selected UID for UID and extended BODYSTRUCTURE. The response must carry
 // that UID and one extended structure, and may carry FLAGS. A second call
 // never dispatches.
-func (session *structureSession) FetchStructure(ctx context.Context) (imap.BodyStructure, error) {
+func (session *structureSession) FetchStructure(ctx context.Context) (bodyStructure, error) {
 	if err := session.advance(structureSelected, structureDispatched); err != nil {
 		return nil, err
 	}
@@ -199,54 +196,7 @@ func (session *structureSession) FetchStructure(ctx context.Context) (imap.BodyS
 		return nil, err
 	}
 
-	options := &imap.FetchOptions{UID: true, BodyStructure: &imap.FetchItemBodyStructure{Extended: true}}
-	var structure imap.BodyStructure
-	err := session.session.withBoundedInput(ctx, quarantineSessionBytes, func() (err error) {
-		command := session.session.client.Fetch(imap.UIDSetNum(imap.UID(session.uid)), options)
-		defer func() {
-			if err != nil {
-				session.session.abortFetch(command)
-			}
-		}()
-
-		message := command.Next()
-		if message == nil {
-			if err := command.Close(); err != nil {
-				return err
-			}
-
-			return errorCode(CodeIMAPProtocol)
-		}
-
-		uidItems := 0
-		flagsItems := 0
-		for data := message.Next(); data != nil; data = message.Next() {
-			switch value := data.(type) {
-			case imapclient.FetchItemDataUID:
-				if uidItems != 0 || uint32(value.UID) != session.uid {
-					return errorCode(CodeIMAPProtocol)
-				}
-				uidItems++
-			case imapclient.FetchItemDataFlags:
-				if flagsItems != 0 {
-					return errorCode(CodeIMAPProtocol)
-				}
-				flagsItems++
-			case imapclient.FetchItemDataBodyStructure:
-				if structure != nil || !value.IsExtended || value.BodyStructure == nil {
-					return errorCode(CodeIMAPProtocol)
-				}
-				structure = value.BodyStructure
-			default:
-				return errorCode(CodeIMAPProtocol)
-			}
-		}
-		if command.Next() != nil || uidItems != 1 || structure == nil {
-			return errorCode(CodeIMAPProtocol)
-		}
-
-		return command.Close()
-	})
+	structure, err := session.session.fetchUIDStructure(ctx, session.uid)
 	if err != nil {
 		return nil, session.refusal(ctx, err)
 	}

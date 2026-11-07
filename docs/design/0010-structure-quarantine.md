@@ -172,7 +172,7 @@ constructs the client and waits for its greeting and capabilities; its
 `readSession` method are unchanged.
 
 The session advances once through authenticate, select and dispatch and then
-closes. Select is a read-only EXAMINE and one exact UID SEARCH for the
+closes. Examine is a read-only EXAMINE and one exact UID SEARCH for the
 selected UID. The dispatch records `beginDispatch` and then sends the
 session's only FETCH, `UID FETCH <uid> (UID BODYSTRUCTURE)`; its response must
 carry that UID once and one extended structure, and may carry FLAGS, in any
