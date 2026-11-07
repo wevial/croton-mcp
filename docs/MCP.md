@@ -416,6 +416,14 @@ whose same-attempt metadata supplies the node's tuple; the message body is
 never fetched, so a large body does not block thread metadata. An adapter
 without the header-only read fails with `unsupported` rather than falling back
 to body reads.
+The first `Subject`, `Message-ID`, `In-Reply-To` and `References` fields of
+that header block are retained independently of the generic header count
+bound, so a threading field after the counted fields still drives subject
+candidate search and reply links. This retention is limited to those four
+fields within the existing header byte, reference and value bounds; other
+omitted fields stay omitted, `headerCount` still reports the omission, and
+thread membership remains the same bounded candidate search rather than a
+complete inventory.
 `maxMessages` bounds the returned nodes and header reads: one target read plus
 at most `maxMessages - 1` attempted sibling reads after one bounded search, and
 failed attempts consume that budget. When matching siblings are omitted

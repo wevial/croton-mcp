@@ -895,7 +895,9 @@ func (session *imapSession) UIDFetchHeaders(ctx context.Context, uid uint32, hea
 // bounded canonical rules as message normalization. A literal whose first
 // blank line is missing or is followed by more data is not a whole header
 // block and is never treated as one. The count limit applies before parsing,
-// so omitted fields cannot make the retained fields unavailable.
+// so omitted fields cannot make the retained fields unavailable. The four
+// threading fields are recovered from fixed slots of the same block instead,
+// so a late Subject or reply link survives generic count omission.
 func selectedHeaderRecord(item MessageMetadata, header []byte, headerLimit int) (MessageHeaders, error) {
 	if headerTerminatorEnd(header) != len(header) {
 		return MessageHeaders{}, errorCode(CodeIMAPProtocol)
@@ -907,12 +909,30 @@ func selectedHeaderRecord(item MessageMetadata, header []byte, headerLimit int) 
 	if err != nil {
 		return MessageHeaders{}, errorCode(CodeIMAPProtocol)
 	}
+	threadBlock := threadFieldBlock(header)
+	threadParsed, err := mail.ReadMessage(bytes.NewReader(threadBlock))
+	if err != nil {
+		return MessageHeaders{}, errorCode(CodeIMAPProtocol)
+	}
 	applyHeaderMetadata(&item, parsed.Header)
+	item.Subject = threadParsed.Header.Get("Subject")
 
 	headers, truncation, err := canonicalHeaders(parsed.Header, bounded, limits)
 	if err != nil {
 		return MessageHeaders{}, err
 	}
+
+	threadHeaders, threadTruncation, err := canonicalHeaders(threadParsed.Header, threadBlock, limits)
+	if err != nil {
+		return MessageHeaders{}, err
+	}
+
+	headers.Subject = threadHeaders.Subject
+	headers.MessageID = threadHeaders.MessageID
+	headers.InReplyTo = threadHeaders.InReplyTo
+	headers.References = threadHeaders.References
+	truncation.Headers = truncation.Headers || threadTruncation.Headers
+	truncation.References = truncation.References || threadTruncation.References
 	truncation.HeaderCount = countTruncated
 
 	return MessageHeaders{Metadata: item, Headers: headers, Truncation: truncation}, nil
