@@ -187,14 +187,13 @@ func requireStructureOnlyListing(t *testing.T, mode testkit.TLSMode, slice []tes
 
 	logins, fetches := 0, 0
 	for _, command := range slice {
-		upper := strings.ToUpper(command.Raw)
 		if command.ConnectionID != connection {
 			t.Fatalf("listing used connections %d and %d", connection, command.ConnectionID)
 		}
 		if !command.TLS && (mode == testkit.ImplicitTLS || command.Name != "CAPABILITY" && command.Name != "STARTTLS") {
 			t.Fatalf("listing command %q ran without TLS", command.Name)
 		}
-		fields := strings.Fields(upper)
+		fields := strings.Fields(strings.ToUpper(command.Raw))
 		verb := strings.Join(fields[1:min(len(fields), 3)], " ")
 		if command.Name != "UID" && len(fields) > 1 {
 			verb = fields[1]
@@ -205,15 +204,11 @@ func requireStructureOnlyListing(t *testing.T, mode testkit.TLSMode, slice []tes
 		case "CAPABILITY", "STARTTLS", "NOOP", "EXAMINE", "UID SEARCH", "LOGOUT":
 		case "UID FETCH":
 			fetches++
+			if strings.Join(fields[1:], " ") != "UID FETCH "+strconv.FormatUint(uint64(wantUID), 10)+" (UID BODYSTRUCTURE)" {
+				t.Fatalf("listing FETCH %q is not a selected UID BODYSTRUCTURE read", command.Raw)
+			}
 		default:
 			t.Fatalf("listing issued %q outside the read-only structure path", command.Raw)
-		}
-		if verb != "UID FETCH" {
-			continue
-		}
-
-		if strings.Join(fields[1:], " ") != "UID FETCH "+strconv.FormatUint(uint64(wantUID), 10)+" (UID BODYSTRUCTURE)" {
-			t.Fatalf("listing FETCH %q is not a selected UID BODYSTRUCTURE read", command.Raw)
 		}
 	}
 	if logins != 1 || fetches != 1 {
