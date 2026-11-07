@@ -3,6 +3,7 @@ package bridge
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"reflect"
@@ -48,7 +49,8 @@ func runStructureSession(t *testing.T, startTLS bool, script structurePeerScript
 	// The quarantine is the reader directly above the transport, below the
 	// tap, the budget layer and any synthetic greeting, before any command.
 	reader, ok := installed().Conn.(*quarantineConn)
-	if !ok || reader.quarantine != session.quarantine || reader.Conn != net.Conn(session.session.conn) || session.session.conn.Conn != client {
+	operation, bounded := session.session.conn.Conn.(*operationConn)
+	if !ok || reader.quarantine != session.quarantine || reader.Conn != net.Conn(session.session.conn) || !bounded || operation.Conn != client {
 		t.Fatal("dedicated stack does not place the quarantine directly on the transport")
 	}
 	if session.session.budget.Conn != net.Conn(installed()) || session.session.guard != nil {
@@ -303,4 +305,446 @@ func deadlineContext(t *testing.T) context.Context {
 	ctx, cancel := context.WithTimeout(context.Background(), structurePeerTimeout)
 	t.Cleanup(cancel)
 	return ctx
+}
+
+// pendingHarness drives one dedicated session over a pipe whose UID FETCH
+// reply is a gated schedule, with taps on both sides of the quarantine.
+type pendingHarness struct {
+	t         *testing.T
+	ctx       context.Context
+	cancel    context.CancelFunc
+	session   *structureSession
+	peer      *structurePeer
+	tap       *structureTap
+	source    *structureSourceTap
+	gates     []chan struct{}
+	writes    [][]structurePeerPart
+	commanded chan struct{}
+	fetched   chan fetchOutcome
+
+	// written and approved are what the peer sent before each released
+	// gate, independently of the quarantine.
+	written  int
+	approved []byte
+}
+
+type fetchOutcome struct {
+	structure bodyStructure
+	err       error
+}
+
+// startPending selects the target and waits until the decoder-facing Read
+// and the quarantine's source Read are both outstanding before the target
+// dispatch, then dispatches it.
+func startPending(t *testing.T, writes [][]structurePeerPart, complete bool) *pendingHarness {
+	t.Helper()
+
+	harness := &pendingHarness{t: t, writes: writes, commanded: make(chan struct{}), fetched: make(chan fetchOutcome, 1)}
+	schedule := make([]structurePeerWrite, len(writes))
+	for index, parts := range writes {
+		gate := make(chan struct{})
+		harness.gates = append(harness.gates, gate)
+		schedule[index] = structurePeerWrite{gate: gate, parts: parts}
+	}
+	adverse := &structurePeerAdverse{complete: complete, commanded: harness.commanded, schedule: func(structurePeerRecord) []structurePeerWrite { return schedule }}
+
+	client, server := net.Pipe()
+	harness.source = &structureSourceTap{Conn: client}
+	harness.peer = newStructurePeer(structurePeerScript{greeting: true, adverse: adverse})
+	go harness.peer.serve(server)
+	harness.ctx, harness.cancel = context.WithTimeout(context.Background(), structurePeerTimeout)
+	t.Cleanup(func() {
+		harness.cancel()
+		_ = client.Close()
+		for _, gate := range harness.gates {
+			select {
+			case <-gate:
+			default:
+				close(gate)
+			}
+		}
+	})
+
+	seam, installed := newStructureTapSeam()
+	session, err := newStructureSessionOver(harness.ctx, harness.source, false, structurePeerUID, seam)
+	if err != nil {
+		t.Fatalf("newStructureSessionOver() error = %v", err)
+	}
+	harness.session, harness.tap = session, installed()
+	if err := session.Authenticate(harness.ctx, Credentials{Username: []byte("fixture-user"), Password: []byte("fixture-password")}); err != nil {
+		t.Fatalf("Authenticate() error = %v", err)
+	}
+	if _, err := session.Examine(harness.ctx, "INBOX"); err != nil {
+		t.Fatalf("Examine() error = %v", err)
+	}
+
+	harness.peer.awaitCommand(t)
+	record := harness.peer.snapshot()
+	harness.written, harness.approved = record.written, record.approved
+	harness.settle()
+	if dispatch := quarantineDispatchState(session.quarantine); dispatch != quarantineIdle {
+		t.Fatalf("dispatch before FetchStructure = %d", dispatch)
+	}
+
+	// The Read that will receive the target reply predates its dispatch.
+	go func() {
+		structure, err := session.FetchStructure(harness.ctx)
+		harness.fetched <- fetchOutcome{structure, err}
+	}()
+	<-harness.commanded
+	return harness
+}
+
+// settle waits until the guard consumed every byte the peer wrote and the
+// decoder holds exactly the complete approved lines, with both Reads
+// outstanding. An approved control the peer has only partly written is
+// withheld.
+func (harness *pendingHarness) settle() {
+	harness.t.Helper()
+
+	harness.source.await(harness.t, "guard input and a pending source Read", func() bool {
+		return len(harness.source.consumed) == harness.written && harness.source.pending > 0
+	})
+	complete := harness.approved[:bytes.LastIndex(harness.approved, []byte("\r\n"))+2]
+	harness.tap.awaitBytes(harness.t, complete)
+}
+
+// release opens the gate of one scheduled write and settles on it.
+func (harness *pendingHarness) release(step int) {
+	harness.t.Helper()
+
+	for _, part := range harness.writes[step] {
+		harness.written += len(part.text)
+	}
+	harness.releaseOnly(step)
+	harness.settle()
+}
+
+// releaseOnly opens a gate without waiting for the guard to settle, for a
+// write the guard is expected to refuse.
+func (harness *pendingHarness) releaseOnly(step int) {
+	for _, part := range harness.writes[step] {
+		if part.kind == peerApproved {
+			harness.approved = append(harness.approved, part.text...)
+		}
+	}
+	close(harness.gates[step])
+}
+
+func (harness *pendingHarness) outcome() fetchOutcome {
+	harness.t.Helper()
+
+	select {
+	case got := <-harness.fetched:
+		return got
+	case <-time.After(structurePeerTimeout):
+		harness.t.Fatal("FetchStructure did not return")
+		return fetchOutcome{}
+	}
+}
+
+// refusedWith requires FetchStructure to fail with code only, the quarantine
+// to hold that category, the decoder to hold only the approved bytes, and
+// the peer to observe an abort without drain, logout or replay.
+func (harness *pendingHarness) refusedWith(code string, trailing string) {
+	harness.t.Helper()
+	t := harness.t
+
+	got := harness.outcome()
+	if got.structure != nil || CodeOf(got.err) != code || got.err.Error() != code {
+		t.Fatalf("FetchStructure() = %v, %v; want %s", got.structure, got.err, code)
+	}
+	harness.session.Abort(got.err)
+	harness.peer.wait(t)
+
+	if err := harness.session.quarantine.terminalError(); CodeOf(err) != code {
+		t.Fatalf("quarantine terminal = %v, want %s", err, code)
+	}
+	if tap := harness.tap.bytes(); !bytes.Equal(tap, harness.approved) {
+		t.Fatalf("decoder-facing tap = %q, want approved %q", tap, harness.approved)
+	}
+	record := harness.peer.snapshot()
+	if record.err != nil || !record.closed || string(record.trailing) != trailing {
+		t.Fatalf("peer err = %v, closed = %t, trailing = %q", record.err, record.closed, record.trailing)
+	}
+}
+
+// withinTimeout fails instead of hanging when call blocks.
+func withinTimeout(t *testing.T, what string, call func() error) error {
+	t.Helper()
+
+	done := make(chan error, 1)
+	go func() { done <- call() }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(structurePeerTimeout):
+		t.Fatalf("%s blocked behind the pending Read", what)
+		return nil
+	}
+}
+
+func TestStructureSessionRefusal(t *testing.T) {
+	const second = "* OK [ALERT] second note\r\n"
+	const refused = "* 1 FETCH (UID 7 BODY[] {6}\r\nsecret BODYSTRUCTURE " + structureSessionTarget + ")\r\n"
+	target := "* 1 FETCH (UID 7 FLAGS (\\Seen) BODYSTRUCTURE " + structureSessionTarget + ")\r\n"
+
+	t.Run("pending_read", func(t *testing.T) {
+		// A control fragmented across writes is withheld until it is
+		// complete; coalesced with a refused prefix it is released alone.
+		// Write and Close of the transport and inspection of the reader
+		// state complete while both Reads are outstanding.
+		t.Run("write", func(t *testing.T) {
+			harness := startPending(t, [][]structurePeerPart{
+				{{kind: peerConsumed, text: structureFlagsFrame}, {kind: peerApproved, text: structureNoteControl[:9]}},
+				{{kind: peerApproved, text: structureNoteControl[9:]}, {kind: peerRefused, text: refused[:12]}},
+				{{kind: peerRefused, text: refused[12:]}},
+			}, false)
+
+			harness.release(0)
+			harness.release(1)
+			if err := withinTimeout(t, "terminal state", func() error { return harness.session.quarantine.terminalError() }); err != nil {
+				t.Fatalf("quarantine terminal = %v before the refusal", err)
+			}
+			if err := withinTimeout(t, "Write", func() error {
+				_, err := harness.tap.Write([]byte("X1 NOOP\r\n"))
+				return err
+			}); err != nil {
+				t.Fatalf("Write() error = %v", err)
+			}
+			harness.releaseOnly(2)
+
+			harness.refusedWith(CodeIMAPProtocol, "X1 NOOP\r\n")
+		})
+
+		t.Run("cancel", func(t *testing.T) {
+			harness := startPending(t, [][]structurePeerPart{
+				{{kind: peerApproved, text: structureNoteControl}, {kind: peerRefused, text: structureIncompleteFetch}},
+			}, false)
+
+			harness.release(0)
+			harness.cancel()
+
+			harness.refusedWith(CodeOperationCanceled, "")
+		})
+
+		t.Run("close", func(t *testing.T) {
+			harness := startPending(t, [][]structurePeerPart{
+				{{kind: peerApproved, text: structureNoteControl}, {kind: peerRefused, text: structureIncompleteFetch}},
+			}, false)
+
+			harness.release(0)
+			if err := withinTimeout(t, "Close", harness.tap.Close); err != nil {
+				t.Fatalf("Close() error = %v", err)
+			}
+
+			harness.refusedWith(CodeIMAPProtocol, "")
+		})
+
+		// The source returns an approved control and an incomplete FETCH
+		// together with an error: the control is released, the FETCH bytes
+		// are not.
+		t.Run("bytes_with_error", func(t *testing.T) {
+			harness := startPending(t, [][]structurePeerPart{
+				{{kind: peerApproved, text: structureNoteControl}},
+				{{kind: peerApproved, text: second}, {kind: peerRefused, text: structureIncompleteFetch}},
+			}, false)
+
+			harness.release(0)
+			harness.source.update(func() { harness.source.fail = errors.New("peer secret text") })
+			harness.releaseOnly(1)
+
+			harness.refusedWith(CodeIMAPProtocol, "")
+		})
+
+		// The Read outstanding since before the dispatch still delivers the
+		// target fragmented after an approved control, exactly once.
+		t.Run("epoch_release", func(t *testing.T) {
+			harness := startPending(t, [][]structurePeerPart{
+				{{kind: peerConsumed, text: structureFlagsFrame}, {kind: peerApproved, text: structureNoteControl}},
+				{{kind: peerApproved, text: target[:20]}},
+				{{kind: peerApproved, text: target[20:]}},
+			}, true)
+
+			harness.release(0)
+			harness.releaseOnly(1)
+			harness.source.await(t, "fragmented target prefix", func() bool {
+				return len(harness.source.consumed) == harness.written+20
+			})
+			if tap := harness.tap.bytes(); !bytes.Equal(tap, harness.approved[:len(harness.approved)-20]) {
+				t.Fatalf("decoder-facing tap holds an unfinished target: %q", tap)
+			}
+			harness.releaseOnly(2)
+
+			got := harness.outcome()
+			if got.err != nil || got.structure == nil {
+				t.Fatalf("FetchStructure() = %v, %v", got.structure, got.err)
+			}
+			if err := harness.session.Close(harness.ctx); err != nil {
+				t.Fatalf("Close() error = %v", err)
+			}
+			harness.peer.wait(t)
+			record := harness.peer.snapshot()
+			if !bytes.Equal(harness.tap.bytes(), record.approved) || record.err != nil {
+				t.Fatalf("decoder-facing tap differs from approved responses, peer err = %v", record.err)
+			}
+		})
+	})
+
+	t.Run("terminal_state", func(t *testing.T) {
+		root := t.TempDir()
+		for _, name := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "TMPDIR"} {
+			t.Setenv(name, root)
+		}
+
+		// A bounds refusal is held at the decoder boundary while the
+		// operation is canceled; the refusal category survives cleanup.
+		t.Run("refusal_then_cancellation", func(t *testing.T) {
+			peer := startStructureTLSPeer(t, false, structurePeerScript{adverse: &structurePeerAdverse{schedule: func(structurePeerRecord) []structurePeerWrite {
+				return []structurePeerWrite{{parts: []structurePeerPart{{kind: peerApproved, text: structureNoteControl}, {kind: peerRefused, text: nestedStructure(depthLimit - 1)}}}}
+			}}})
+			config := structureTLSConfig(t, peer.listener.Addr().String(), TLSModeImplicit, peer.pin)
+			hold, held := make(chan struct{}), make(chan struct{})
+			seam, installed := newHeldStructureTapSeam(hold, held)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			done := make(chan error, 1)
+			go func() {
+				_, err := readSelectedStructure(ctx, config, "INBOX", structurePeerUID, seam)
+				done <- err
+			}()
+			select {
+			case <-held:
+			case <-time.After(structurePeerTimeout):
+				t.Fatal("refusal did not reach the decoder boundary")
+			}
+			cancel()
+			close(hold)
+			err := <-done
+			peer.wait(t)
+
+			if CodeOf(err) != CodeBoundsExceeded || err.Error() != CodeBoundsExceeded {
+				t.Fatalf("readSelectedStructure() error = %v, want %s", err, CodeBoundsExceeded)
+			}
+			quarantine := installed().quarantine(t)
+			if terminal := quarantine.terminalError(); CodeOf(terminal) != CodeBoundsExceeded {
+				t.Fatalf("quarantine terminal = %v", terminal)
+			}
+			if count, readErr := quarantine.Read(make([]byte, 64)); count != 0 || CodeOf(readErr) != CodeBoundsExceeded {
+				t.Fatalf("Read() after refusal = %d, %v", count, readErr)
+			}
+			record := peer.snapshot()
+			if !bytes.Equal(installed().bytes(), record.approved) || !record.closed || len(record.trailing) != 0 {
+				t.Fatalf("tap/peer after refusal: closed = %t, trailing = %q", record.closed, record.trailing)
+			}
+
+			// The refused session is never reused: the same endpoint has no
+			// second connection to give, and a fresh endpoint gets a fresh
+			// guarded connection with its own quarantine.
+			againSeam, again := newStructureTapSeam()
+			if _, err := readSelectedStructure(context.Background(), config, "INBOX", structurePeerUID, againSeam); CodeOf(err) != CodeBridgeUnreachable || again() != nil {
+				t.Fatalf("second read over the refused endpoint = %v", err)
+			}
+			fresh := startStructureTLSPeer(t, false, structurePeerScript{structure: target})
+			freshSeam, freshTap := newStructureTapSeam()
+			if _, err := readSelectedStructure(context.Background(), structureTLSConfig(t, fresh.listener.Addr().String(), TLSModeImplicit, fresh.pin), "INBOX", structurePeerUID, freshSeam); err != nil {
+				t.Fatalf("fresh read error = %v", err)
+			}
+			if freshTap().quarantine(t) == quarantine {
+				t.Fatal("fresh read reused the refused quarantine")
+			}
+		})
+
+		// Abort with an already mapped context category, as the operation
+		// passes it, ends an unrefused reader with that category; a mapped
+		// timeout is never taken for cancellation.
+		for _, cause := range []string{CodeOperationCanceled, CodeCommandTimedOut} {
+			t.Run("abort_"+cause, func(t *testing.T) {
+				harness := startPending(t, [][]structurePeerPart{{{kind: peerApproved, text: structureNoteControl}}}, false)
+
+				harness.session.Abort(errorCode(cause))
+
+				got := harness.outcome()
+				if got.err == nil {
+					t.Fatal("FetchStructure() succeeded after Abort")
+				}
+				harness.peer.wait(t)
+				if err := harness.session.quarantine.terminalError(); CodeOf(err) != cause {
+					t.Fatalf("quarantine terminal = %v, want %s", err, cause)
+				}
+				if record := harness.peer.snapshot(); !record.closed || len(record.trailing) != 0 {
+					t.Fatalf("peer closed = %t, trailing = %q", record.closed, record.trailing)
+				}
+			})
+		}
+
+		// The whole-operation deadline bounds the transport from
+		// construction through close; no stage resets it to none.
+		t.Run("operation_deadline", func(t *testing.T) {
+			client, server := net.Pipe()
+			source := &structureSourceTap{Conn: client}
+			peer := newStructurePeer(structurePeerScript{greeting: true, structure: target})
+			go peer.serve(server)
+			t.Cleanup(func() { _ = client.Close() })
+			ctx := deadlineContext(t)
+			deadline, _ := ctx.Deadline()
+
+			session, err := newStructureSessionOver(ctx, source, false, structurePeerUID, nil)
+			if err != nil {
+				t.Fatalf("newStructureSessionOver() error = %v", err)
+			}
+			if err := session.Authenticate(ctx, Credentials{Username: []byte("fixture-user"), Password: []byte("fixture-password")}); err != nil {
+				t.Fatalf("Authenticate() error = %v", err)
+			}
+			if _, err := session.Examine(ctx, "INBOX"); err != nil {
+				t.Fatalf("Examine() error = %v", err)
+			}
+			if _, err := session.FetchStructure(ctx); err != nil {
+				t.Fatalf("FetchStructure() error = %v", err)
+			}
+			if err := session.Close(ctx); err != nil {
+				t.Fatalf("Close() error = %v", err)
+			}
+			peer.wait(t)
+
+			source.mu.Lock()
+			defer source.mu.Unlock()
+			if len(source.deadlines) == 0 {
+				t.Fatal("transport deadline was never set")
+			}
+			for index, got := range source.deadlines {
+				if !got.Equal(deadline) {
+					t.Fatalf("transport deadline %d = %v, want the operation deadline %v", index, got, deadline)
+				}
+			}
+		})
+	})
+
+	t.Run("negative_control", func(t *testing.T) {
+		schedule := func(structurePeerRecord) []structurePeerWrite {
+			return []structurePeerWrite{{parts: []structurePeerPart{{kind: peerApproved, text: structureNoteControl}, {kind: peerRefused, text: refused}}}}
+		}
+
+		// The same tap below the normal pooled stack records the refused
+		// frame, so the zero-delivery witness observes real input.
+		client, server := net.Pipe()
+		t.Cleanup(func() { _ = client.Close() })
+		peer := newStructurePeer(structurePeerScript{greeting: true, adverse: &structurePeerAdverse{schedule: schedule}})
+		go peer.serve(server)
+		ctx := deadlineContext(t)
+		tap := &structureTap{Conn: client}
+		pooled, err := newIMAPSessionOver(ctx, tap, false)
+		if err != nil {
+			t.Fatalf("newIMAPSessionOver() error = %v", err)
+		}
+		if _, err := pooled.fetchUIDStructure(ctx, structurePeerUID); err == nil {
+			t.Fatal("pooled fetch accepted a BODY[] section")
+		}
+		_ = pooled.Abort()
+		peer.wait(t)
+		if !bytes.Contains(tap.bytes(), []byte(refused)) {
+			t.Fatalf("pooled tap = %q lacks the refused frame", tap.bytes())
+		}
+	})
 }

@@ -53,6 +53,53 @@ func (connection *quarantineConn) Read(buffer []byte) (int, error) {
 	return connection.quarantine.Read(buffer)
 }
 
+// operationConn bounds the transport by the whole operation. No stage can
+// clear or extend its deadline, and a read that fails after the operation
+// ended reports the operation's context error, so cancellation or timeout
+// that came first is the category the quarantine keeps.
+type operationConn struct {
+	net.Conn
+	ctx      context.Context
+	deadline time.Time
+}
+
+func (connection *operationConn) Read(buffer []byte) (int, error) {
+	count, err := connection.Conn.Read(buffer)
+	if err == nil {
+		return count, nil
+	}
+
+	if ended := connection.ctx.Err(); ended != nil {
+		return count, ended
+	}
+	if !time.Now().Before(connection.deadline) {
+		return count, context.DeadlineExceeded
+	}
+
+	return count, err
+}
+
+func (connection *operationConn) SetDeadline(deadline time.Time) error {
+	return connection.Conn.SetDeadline(connection.bound(deadline))
+}
+
+func (connection *operationConn) SetReadDeadline(deadline time.Time) error {
+	return connection.Conn.SetReadDeadline(connection.bound(deadline))
+}
+
+func (connection *operationConn) SetWriteDeadline(deadline time.Time) error {
+	return connection.Conn.SetWriteDeadline(connection.bound(deadline))
+}
+
+// bound replaces no deadline, or a later one, with the operation deadline.
+func (connection *operationConn) bound(deadline time.Time) time.Time {
+	if deadline.IsZero() || deadline.After(connection.deadline) {
+		return connection.deadline
+	}
+
+	return deadline
+}
+
 // readSelectedStructure runs one dedicated session under a single finite
 // operation deadline that covers connect, the credential helper,
 // authentication, selection, the existence check, the structure fetch and
@@ -78,13 +125,14 @@ func readSelectedStructure(parent context.Context, config ValidatedConfig, mailb
 
 	session, err := newStructureSessionOver(ctx, transport, startTLS, uid, tap)
 	if err != nil {
-		return selectedStructure{}, mapIMAPError(ctx, err)
+		return selectedStructure{}, err
 	}
 
 	result, err := session.run(ctx, config, mailbox)
 	if err != nil {
+		err = session.refusal(ctx, err)
 		session.Abort(err)
-		return selectedStructure{}, mapIMAPError(ctx, err)
+		return selectedStructure{}, err
 	}
 
 	if err := session.Close(ctx); err != nil {
@@ -129,7 +177,7 @@ func newStructureSessionOver(ctx context.Context, transport net.Conn, startTLS b
 		return nil, errorCode(CodeInvalidRequest)
 	}
 
-	wrapped := &deadlineConn{Conn: transport}
+	wrapped := &deadlineConn{Conn: &operationConn{Conn: transport, ctx: ctx, deadline: deadline}}
 	quarantine, err := newStructureQuarantine(wrapped, uid)
 	if err != nil {
 		_ = transport.Close()
@@ -256,17 +304,18 @@ func (session *structureSession) finish() bool {
 	return true
 }
 
-// refusal prefers the quarantine's stable refusal over the client error it
-// caused, unless the operation context already ended.
+// refusal prefers the quarantine's first terminal category over the client
+// error it caused, even when the operation context ended later, and
+// otherwise maps err.
 func (session *structureSession) refusal(ctx context.Context, err error) error {
-	if err == nil || ctx.Err() != nil {
-		return err
+	if err == nil {
+		return nil
 	}
 	if terminal := session.quarantine.terminalError(); terminal != nil {
 		return terminal
 	}
 
-	return err
+	return mapIMAPError(ctx, err)
 }
 
 func (quarantine *structureQuarantine) terminalError() error {

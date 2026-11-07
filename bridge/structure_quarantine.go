@@ -178,12 +178,19 @@ func (quarantine *structureQuarantine) abort(cause error) error {
 		return quarantine.terminal
 	}
 
-	if errors.Is(cause, context.Canceled) {
-		quarantine.refuseLocked(errorCode(CodeOperationCanceled))
-	} else {
-		quarantine.refuseLocked(errorCode(CodeCommandTimedOut))
-	}
+	quarantine.abortLocked(cause)
 	return quarantine.terminal
+}
+
+// abortLocked records cancellation, raw or already mapped, as
+// operation_canceled and every other cause as command_timed_out.
+func (quarantine *structureQuarantine) abortLocked(cause error) {
+	if errors.Is(cause, context.Canceled) || CodeOf(cause) == CodeOperationCanceled {
+		quarantine.refuseLocked(errorCode(CodeOperationCanceled))
+		return
+	}
+
+	quarantine.refuseLocked(errorCode(CodeCommandTimedOut))
 }
 
 // Read returns approved bytes before any terminal error, and never returns
@@ -232,15 +239,19 @@ func (quarantine *structureQuarantine) Read(buffer []byte) (int, error) {
 			}
 		}
 		if quarantine.terminal == nil && err != nil {
-			quarantine.sourceFailedLocked()
+			quarantine.sourceFailedLocked(err)
 		}
 	}
 }
 
-// sourceFailedLocked ends the reader on a source error without its text: a
-// partial response is truncated input, and a failure between responses is
-// the existing unreachable category.
-func (quarantine *structureQuarantine) sourceFailedLocked() {
+// sourceFailedLocked ends the reader on a source error without its text. A
+// context error is an abort; otherwise a partial response is truncated input,
+// and a failure between responses is the existing unreachable category.
+func (quarantine *structureQuarantine) sourceFailedLocked(err error) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		quarantine.abortLocked(err)
+		return
+	}
 	if quarantine.mode != quarantineBetween {
 		quarantine.refuseLocked(errorCode(CodeIMAPProtocol))
 		return

@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -14,6 +15,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -31,12 +33,53 @@ const (
 // structurePeerScript is the post-TLS conversation of one dedicated session.
 // Consumed frames are FLAGS-only FETCH responses the quarantine must swallow;
 // structure is the complete target FETCH response, CRLF included, which may
-// carry literals the public testkit cannot render.
+// carry literals the public testkit cannot render. adverse, when set,
+// replaces the reply to one command with a private schedule.
 type structurePeerScript struct {
 	greeting     bool
 	beforeSearch []string
 	duringFetch  []string
 	structure    string
+	adverse      *structurePeerAdverse
+}
+
+// structurePeerKind is what the quarantine must do with one scheduled part.
+type structurePeerKind int
+
+const (
+	peerApproved structurePeerKind = iota
+	peerConsumed
+	peerRefused
+)
+
+// structurePeerPart is one response, or the sent part of one, of an adverse
+// schedule.
+type structurePeerPart struct {
+	kind structurePeerKind
+	text string
+}
+
+// structurePeerWrite is one Write of an adverse schedule; its parts are
+// coalesced into it. gate, when set, must close before the write.
+type structurePeerWrite struct {
+	gate  <-chan struct{}
+	parts []structurePeerPart
+}
+
+// structurePeerAdverse replaces the reply to UID FETCH, or to UID SEARCH when
+// search is set, with a bounded private schedule built from what the peer
+// already sent. With complete set the peer then sends the tagged completion
+// and continues; otherwise it sends nothing more and holds the connection
+// open, or closes it when truncate is set, until it observes the client close
+// the transport. commanded closes when the command arrives and sent after the
+// last write.
+type structurePeerAdverse struct {
+	search    bool
+	complete  bool
+	truncate  bool
+	schedule  func(sent structurePeerRecord) []structurePeerWrite
+	commanded chan struct{}
+	sent      chan struct{}
 }
 
 // structurePeer is a bounded scripted IMAP server for one connection. It
@@ -46,6 +89,11 @@ type structurePeer struct {
 	script structurePeerScript
 	done   chan struct{}
 
+	// waiting counts the command reads the peer has begun, so a test knows
+	// every earlier response was written and recorded.
+	waiting  structureCond
+	awaiting int
+
 	mu sync.Mutex
 	structurePeerRecord
 }
@@ -54,19 +102,84 @@ func newStructurePeer(script structurePeerScript) *structurePeer {
 	return &structurePeer{script: script, done: make(chan struct{})}
 }
 
-// structureTap records every byte the quarantine releases toward the client.
+// structureCond is a broadcast condition for the private taps: await
+// rechecks ready after each change, so tests synchronize on channels and
+// never on sleeps.
+type structureCond struct {
+	mu      sync.Mutex
+	changed chan struct{}
+}
+
+func (cond *structureCond) update(change func()) {
+	cond.mu.Lock()
+	defer cond.mu.Unlock()
+
+	change()
+	if cond.changed != nil {
+		close(cond.changed)
+	}
+	cond.changed = make(chan struct{})
+}
+
+// await returns once ready, called under the lock, reports true. It fails
+// the test after the peer timeout instead of hanging.
+func (cond *structureCond) await(t *testing.T, what string, ready func() bool) {
+	t.Helper()
+
+	timeout := time.After(structurePeerTimeout)
+	for {
+		cond.mu.Lock()
+		if ready() {
+			cond.mu.Unlock()
+			return
+		}
+		if cond.changed == nil {
+			cond.changed = make(chan struct{})
+		}
+		changed := cond.changed
+		cond.mu.Unlock()
+
+		select {
+		case <-changed:
+		case <-timeout:
+			t.Fatalf("timed out waiting for %s", what)
+		}
+	}
+}
+
+// structureTap records every byte the quarantine releases toward the client,
+// including bytes returned with an error, and whether a decoder-facing Read
+// is outstanding. When hold is set, a Read that fails closes held and waits
+// for hold before it returns the failure to the client.
 type structureTap struct {
 	net.Conn
-	mu   sync.Mutex
-	seen []byte
+	structureCond
+	seen    []byte
+	pending int
+	failure error
+
+	hold chan struct{}
+	held chan struct{}
 }
 
 func (tap *structureTap) Read(buffer []byte) (int, error) {
+	tap.update(func() { tap.pending++ })
+
 	count, err := tap.Conn.Read(buffer)
 
-	tap.mu.Lock()
-	tap.seen = append(tap.seen, buffer[:count]...)
-	tap.mu.Unlock()
+	if err != nil && tap.hold != nil {
+		tap.update(func() {
+			if tap.failure == nil {
+				tap.failure = err
+				close(tap.held)
+			}
+		})
+		<-tap.hold
+	}
+	tap.update(func() {
+		tap.pending--
+		tap.seen = append(tap.seen, buffer[:count]...)
+	})
 	return count, err
 }
 
@@ -77,8 +190,82 @@ func (tap *structureTap) bytes() []byte {
 	return append([]byte(nil), tap.seen...)
 }
 
+// awaitBytes waits until the tap has released exactly want with a Read
+// outstanding again, so a later byte can only reach it through that Read.
+func (tap *structureTap) awaitBytes(t *testing.T, want []byte) {
+	t.Helper()
+
+	tap.await(t, "decoder-facing bytes and a pending Read", func() bool {
+		if len(tap.seen) > len(want) || !bytes.Equal(tap.seen, want[:len(tap.seen)]) {
+			t.Fatalf("decoder-facing tap = %q, want a prefix of %q", tap.seen, want)
+		}
+		return len(tap.seen) == len(want) && tap.pending > 0
+	})
+}
+
+// quarantine returns the quarantine below an installed tap.
+func (tap *structureTap) quarantine(t *testing.T) *structureQuarantine {
+	t.Helper()
+
+	reader, ok := tap.Conn.(*quarantineConn)
+	if !ok {
+		t.Fatal("tap is not installed directly above the quarantine")
+	}
+	return reader.quarantine
+}
+
+// structureSourceTap sits below the quarantine on the transport and records
+// every byte the guard consumed and whether a source Read is outstanding.
+// When fail is set, the next Read that returns bytes returns them together
+// with fail.
+type structureSourceTap struct {
+	net.Conn
+	structureCond
+	consumed []byte
+	pending  int
+	fail     error
+
+	deadlines []time.Time
+}
+
+func (tap *structureSourceTap) Read(buffer []byte) (int, error) {
+	tap.update(func() { tap.pending++ })
+
+	count, err := tap.Conn.Read(buffer)
+
+	tap.update(func() {
+		tap.pending--
+		tap.consumed = append(tap.consumed, buffer[:count]...)
+		if count > 0 && err == nil && tap.fail != nil {
+			err, tap.fail = tap.fail, nil
+		}
+	})
+	return count, err
+}
+
+func (tap *structureSourceTap) SetDeadline(deadline time.Time) error {
+	tap.update(func() { tap.deadlines = append(tap.deadlines, deadline) })
+	return tap.Conn.SetDeadline(deadline)
+}
+
+func (tap *structureSourceTap) SetReadDeadline(deadline time.Time) error {
+	tap.update(func() { tap.deadlines = append(tap.deadlines, deadline) })
+	return tap.Conn.SetReadDeadline(deadline)
+}
+
+func (tap *structureSourceTap) SetWriteDeadline(deadline time.Time) error {
+	tap.update(func() { tap.deadlines = append(tap.deadlines, deadline) })
+	return tap.Conn.SetWriteDeadline(deadline)
+}
+
 // newStructureTapSeam returns the private seam and the tap it installs.
 func newStructureTapSeam() (func(net.Conn) net.Conn, func() *structureTap) {
+	return newHeldStructureTapSeam(nil, nil)
+}
+
+// newHeldStructureTapSeam is newStructureTapSeam with a tap that closes held
+// at its first failing Read and holds that Read until hold closes.
+func newHeldStructureTapSeam(hold, held chan struct{}) (func(net.Conn) net.Conn, func() *structureTap) {
 	var mu sync.Mutex
 	var installed *structureTap
 
@@ -86,7 +273,7 @@ func newStructureTapSeam() (func(net.Conn) net.Conn, func() *structureTap) {
 		mu.Lock()
 		defer mu.Unlock()
 
-		installed = &structureTap{Conn: connection}
+		installed = &structureTap{Conn: connection, hold: hold, held: held}
 		return installed
 	}
 	current := func() *structureTap {
@@ -115,6 +302,7 @@ func (peer *structurePeer) converse(reader *bufio.Reader, writer net.Conn) error
 	}
 
 	for count := 0; count < structurePeerCommands; count++ {
+		peer.waiting.update(func() { peer.awaiting++ })
 		line, err := readStructurePeerLine(reader)
 		if err != nil {
 			return err
@@ -144,8 +332,20 @@ func (peer *structurePeer) converse(reader *bufio.Reader, writer net.Conn) error
 			if err := peer.sendConsumed(writer, peer.script.beforeSearch); err != nil {
 				return err
 			}
+			if adverse := peer.script.adverse; adverse != nil && adverse.search {
+				return peer.runAdverse(reader, writer, tag)
+			}
 			responses = []string{fmt.Sprintf("* SEARCH %d\r\n", structurePeerUID)}
 		case strings.HasPrefix(name, "UID FETCH "):
+			if adverse := peer.script.adverse; adverse != nil && !adverse.search {
+				if !adverse.complete {
+					return peer.runAdverse(reader, writer, tag)
+				}
+				if err := peer.writeSchedule(writer, nil); err != nil {
+					return err
+				}
+				break
+			}
 			if err := peer.sendConsumed(writer, peer.script.duringFetch); err != nil {
 				return err
 			}
@@ -170,6 +370,105 @@ func (peer *structurePeer) converse(reader *bufio.Reader, writer net.Conn) error
 	}
 
 	return errors.New("structure peer command limit reached")
+}
+
+// runAdverse writes the adverse schedule while a concurrent reader observes
+// client writes and the closure of the transport, then sends nothing more.
+func (peer *structurePeer) runAdverse(reader *bufio.Reader, writer net.Conn, tag string) error {
+	adverse := peer.script.adverse
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		peer.observeClosure(reader)
+	}()
+
+	// A write the closed transport refuses ends the schedule; it is the
+	// expected outcome of a refusal, not a peer failure.
+	_ = peer.writeSchedule(writer, closed)
+	if adverse.truncate {
+		_ = writer.Close()
+	}
+
+	<-closed
+	return nil
+}
+
+// writeSchedule writes every scheduled Write in order. A gate is abandoned
+// when closed, the observed closure, closes first.
+func (peer *structurePeer) writeSchedule(writer net.Conn, closed <-chan struct{}) error {
+	adverse := peer.script.adverse
+	if adverse.commanded != nil {
+		close(adverse.commanded)
+	}
+	if adverse.sent != nil {
+		defer close(adverse.sent)
+	}
+
+	for _, write := range adverse.schedule(peer.snapshot()) {
+		if write.gate != nil {
+			select {
+			case <-write.gate:
+			case <-closed:
+				return net.ErrClosed
+			}
+		}
+		if err := peer.writeParts(writer, write.parts); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// writeParts coalesces parts into one Write and records each by kind.
+func (peer *structurePeer) writeParts(writer net.Conn, parts []structurePeerPart) error {
+	var output strings.Builder
+	for _, part := range parts {
+		output.WriteString(part.text)
+	}
+	if _, err := writer.Write([]byte(output.String())); err != nil {
+		return err
+	}
+
+	peer.mu.Lock()
+	defer peer.mu.Unlock()
+
+	for _, part := range parts {
+		peer.written += len(part.text)
+		switch part.kind {
+		case peerApproved:
+			peer.responses++
+			peer.approved = append(peer.approved, part.text...)
+		case peerConsumed:
+			peer.responses++
+			peer.consumed = append(peer.consumed, part.text)
+		default:
+			peer.refused = append(peer.refused, part.text...)
+		}
+	}
+	return nil
+}
+
+// observeClosure records bounded client bytes after the adverse command and
+// whether the client closed the transport rather than the peer timing out.
+func (peer *structurePeer) observeClosure(reader *bufio.Reader) {
+	buffer := make([]byte, structurePeerLineBytes)
+	for {
+		count, err := reader.Read(buffer)
+
+		peer.mu.Lock()
+		if len(peer.trailing)+count <= structurePeerLineBytes {
+			peer.trailing = append(peer.trailing, buffer[:count]...)
+		}
+		if err != nil {
+			peer.closed = !errors.Is(err, os.ErrDeadlineExceeded)
+		}
+		peer.mu.Unlock()
+
+		if err != nil {
+			return
+		}
+	}
 }
 
 func (peer *structurePeer) sendConsumed(writer net.Conn, frames []string) error {
@@ -214,6 +513,17 @@ func (peer *structurePeer) fail(err error) {
 	peer.err = err
 }
 
+// awaitCommand waits until the peer has answered every recorded command and
+// is reading the next one.
+func (peer *structurePeer) awaitCommand(t *testing.T) {
+	t.Helper()
+
+	commands := len(peer.snapshot().commands)
+	peer.waiting.await(t, "the peer to finish its responses", func() bool {
+		return peer.awaiting > commands
+	})
+}
+
 // wait returns once the peer closed its connection, bounded by the peer
 // timeout.
 func (peer *structurePeer) wait(t *testing.T) {
@@ -231,6 +541,9 @@ type structurePeerRecord struct {
 	commands  []string
 	approved  []byte
 	consumed  []string
+	refused   []byte
+	trailing  []byte
+	closed    bool
 	written   int
 	responses int
 	err       error
@@ -245,6 +558,8 @@ func (peer *structurePeer) snapshot() structurePeerRecord {
 	record.commands = append([]string(nil), peer.commands...)
 	record.approved = append([]byte(nil), peer.approved...)
 	record.consumed = append([]string(nil), peer.consumed...)
+	record.refused = append([]byte(nil), peer.refused...)
+	record.trailing = append([]byte(nil), peer.trailing...)
 	return record
 }
 
