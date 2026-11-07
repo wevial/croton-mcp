@@ -110,24 +110,33 @@ type structureRequest struct {
 	UIDValidity uint32
 }
 
+// structureSeams are private test seams of one dedicated read; production
+// callers pass none. transport wraps the established decrypted transport
+// below the quarantine, and tap sits between the quarantine and the
+// decoder-facing layers.
+type structureSeams struct {
+	transport func(net.Conn) net.Conn
+	tap       func(net.Conn) net.Conn
+}
+
 // readSelectedStructure runs one unbound dedicated session. tap is a private
 // test seam between the quarantine and the decoder-facing layers; production
 // callers pass nil.
 func readSelectedStructure(parent context.Context, config ValidatedConfig, mailbox string, uid uint32, tap func(net.Conn) net.Conn) (selectedStructure, error) {
-	return readStructure(parent, config, structureRequest{Mailbox: mailbox, UID: uid}, tap)
+	return readStructure(parent, config, structureRequest{Mailbox: mailbox, UID: uid}, structureSeams{tap: tap})
 }
 
 // readBoundStructure is the production dedicated read of the adapter: one
-// session bound to the request's generation, without the tap seam.
+// session bound to the request's generation, without seams.
 func readBoundStructure(parent context.Context, config ValidatedConfig, request structureRequest) (selectedStructure, error) {
-	return readStructure(parent, config, request, nil)
+	return readStructure(parent, config, request, structureSeams{})
 }
 
 // readStructure runs one dedicated session under a single finite operation
 // deadline that covers connect, the credential helper, authentication,
 // selection, the existence check, the generation check, the structure fetch
 // and close.
-func readStructure(parent context.Context, config ValidatedConfig, request structureRequest, tap func(net.Conn) net.Conn) (selectedStructure, error) {
+func readStructure(parent context.Context, config ValidatedConfig, request structureRequest, seams structureSeams) (selectedStructure, error) {
 	if request.UID == 0 {
 		return selectedStructure{}, errorCode(CodeInvalidRequest)
 	}
@@ -144,8 +153,11 @@ func readStructure(parent context.Context, config ValidatedConfig, request struc
 	if err != nil {
 		return selectedStructure{}, err
 	}
+	if seams.transport != nil {
+		transport = seams.transport(transport)
+	}
 
-	session, err := newStructureSessionOver(ctx, transport, startTLS, request.UID, tap)
+	session, err := newStructureSessionOver(ctx, transport, startTLS, request.UID, seams.tap)
 	if err != nil {
 		return selectedStructure{}, err
 	}

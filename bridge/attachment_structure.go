@@ -99,8 +99,8 @@ func (adapter *Adapter) readStructureAttempts(ctx context.Context, request struc
 // plainAttachmentStructure projects a plain single-part root with the
 // selection rules of NormalizeMessage: a disposition filename before a
 // Content-Type name, and an attachment disposition or any filename makes the
-// part an attachment. A supported non-attachment root is a complete empty
-// list.
+// part an attachment. A supported non-attachment root, all of whose fields
+// are within the per-field limits, is a complete empty list.
 //
 // Interim restriction: multipart and embedded-message roots, RFC 2231
 // extended or continued filename and name parameters, and values over the
@@ -131,15 +131,15 @@ func plainAttachmentStructure(structure bodyStructure) ([]AttachmentStructureEnt
 		filename = part.Params["name"]
 	}
 
-	if disposition != "attachment" && filename == "" {
-		return []AttachmentStructureEntry{}, nil
-	}
-
 	filename, filenameTruncated := truncateUTF8(filename, defaultMaxFilenameBytes)
 	contentType, contentTypeTruncated := truncateUTF8(contentType, defaultMaxContentTypeBytes)
 	disposition, dispositionTruncated := truncateUTF8(disposition, defaultMaxDispositionBytes)
 	if filenameTruncated || contentTypeTruncated || dispositionTruncated {
 		return nil, errorCode(CodeUnsupported)
+	}
+
+	if disposition != "attachment" && filename == "" {
+		return []AttachmentStructureEntry{}, nil
 	}
 
 	entry := AttachmentStructureEntry{
