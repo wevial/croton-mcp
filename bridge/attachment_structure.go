@@ -126,16 +126,19 @@ func plainAttachmentStructure(structure bodyStructure) ([]AttachmentStructureEnt
 		return nil, errorCode(CodeUnsupported)
 	}
 
-	filename := dispositionParameters["filename"]
-	if filename == "" {
-		filename = part.Params["name"]
-	}
-
-	filename, filenameTruncated := truncateUTF8(filename, defaultMaxFilenameBytes)
+	// Both name fields are bounded before one is selected, so a bounded
+	// filename cannot mask an overlong Content-Type name.
+	dispositionFilename, filenameTruncated := truncateUTF8(dispositionParameters["filename"], defaultMaxFilenameBytes)
+	name, nameTruncated := truncateUTF8(part.Params["name"], defaultMaxFilenameBytes)
 	contentType, contentTypeTruncated := truncateUTF8(contentType, defaultMaxContentTypeBytes)
 	disposition, dispositionTruncated := truncateUTF8(disposition, defaultMaxDispositionBytes)
-	if filenameTruncated || contentTypeTruncated || dispositionTruncated {
+	if filenameTruncated || nameTruncated || contentTypeTruncated || dispositionTruncated {
 		return nil, errorCode(CodeUnsupported)
+	}
+
+	filename := dispositionFilename
+	if filename == "" {
+		filename = name
 	}
 
 	if disposition != "attachment" && filename == "" {

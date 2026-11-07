@@ -351,6 +351,10 @@ func TestAttachmentStructureAdapter(t *testing.T) {
 			{name: "rfc2231_extended_continued_name", descriptor: plainDescriptor(8, []testkit.BodyParam{{Name: "name*0*", Value: "utf-8''a%20b"}}, nil)},
 			{name: "rfc2231_name_beside_plain_filename", descriptor: plainDescriptor(8, []testkit.BodyParam{{Name: "name*", Value: "utf-8''n.bin"}}, attachmentDisposition(testkit.BodyParam{Name: "filename", Value: "plain.bin"}))},
 			{name: "long_filename", descriptor: plainDescriptor(8, nil, attachmentDisposition(testkit.BodyParam{Name: "filename", Value: long}))},
+			{name: "long_name", descriptor: plainDescriptor(8, []testkit.BodyParam{{Name: "name", Value: long}}, nil)},
+			// A bounded disposition filename does not mask an overlong
+			// Content-Type name it takes precedence over.
+			{name: "long_name_masked_by_filename", descriptor: plainDescriptor(8, []testkit.BodyParam{{Name: "name", Value: long}}, &testkit.BodyDisposition{Value: "attachment", Params: []testkit.BodyParam{{Name: "filename", Value: "short.bin"}}})},
 			{name: "long_content_type", descriptor: &testkit.BodyPart{Kind: testkit.BodyPartBasic, Type: "application", Subtype: strings.Repeat("s", defaultMaxContentTypeBytes), Size: 8, Disposition: attachmentDisposition()}},
 			{name: "long_disposition", descriptor: plainDescriptor(8, nil, &testkit.BodyDisposition{Value: strings.Repeat("d", defaultMaxDispositionBytes+1), Params: []testkit.BodyParam{{Name: "filename", Value: "x.bin"}}})},
 			// Overlong fields of an unnamed non-attachment are refused, not
