@@ -172,7 +172,7 @@ func TestStructureSessionTLS(t *testing.T) {
 			assertStructureCommands(t, record.commands, structurePeerUID)
 			assertNoUnsafeCommand(t, append(record.plaintext, record.commands...))
 
-			// CROTON-31 typed positive through the same production stack.
+			// Typed testkit positive through the same production stack.
 			typed := &testkit.BodyPart{Kind: testkit.BodyPartMultipart, Subtype: "mixed", Children: []*testkit.BodyPart{
 				{Kind: testkit.BodyPartText, Type: "text", Subtype: "plain", Params: []testkit.BodyParam{{Name: "charset", Value: "utf-8"}}, Size: 9, Lines: 1},
 				{Kind: testkit.BodyPartBasic, Type: "application", Subtype: "pdf", Encoding: "base64", Size: 2048, Disposition: &testkit.BodyDisposition{Value: "attachment", Params: []testkit.BodyParam{{Name: "filename", Value: "report.pdf"}}}},

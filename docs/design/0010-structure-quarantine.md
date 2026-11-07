@@ -195,7 +195,7 @@ with the target structure in UID-first and UID-last order.
 actual stack and pinned client over verified STARTTLS and implicit TLS
 against a private bounded peer, with a literal parameter holding fake FETCH
 syntax, CRLF, quotes and parentheses, a quoted parameter over 4096 bytes and
-target-UID FLAGS-only frames before the structure, and against the CROTON-31
+target-UID FLAGS-only frames before the structure, and against the testkit
 typed fixture. The decoder-facing tap equals the approved responses exactly.
 
 These are positive proofs only. Negative, pending-read, write, cancellation,
