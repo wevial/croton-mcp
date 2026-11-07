@@ -656,25 +656,28 @@ func TestStructureSessionRefusal(t *testing.T) {
 			}
 		})
 
-		// Abort with the already mapped cancellation category, as the
-		// operation passes it, ends an unrefused reader with that category.
-		t.Run("abort_"+CodeOperationCanceled, func(t *testing.T) {
-			harness := startPending(t, [][]structurePeerPart{{{kind: peerApproved, text: structureNoteControl}}}, false)
+		// Abort with an already mapped context category, as the operation
+		// passes it, ends an unrefused reader with that category; a mapped
+		// timeout is never taken for cancellation.
+		for _, cause := range []string{CodeOperationCanceled, CodeCommandTimedOut} {
+			t.Run("abort_"+cause, func(t *testing.T) {
+				harness := startPending(t, [][]structurePeerPart{{{kind: peerApproved, text: structureNoteControl}}}, false)
 
-			harness.session.Abort(errorCode(CodeOperationCanceled))
+				harness.session.Abort(errorCode(cause))
 
-			got := harness.outcome()
-			if got.err == nil {
-				t.Fatal("FetchStructure() succeeded after Abort")
-			}
-			harness.peer.wait(t)
-			if err := harness.session.quarantine.terminalError(); CodeOf(err) != CodeOperationCanceled {
-				t.Fatalf("quarantine terminal = %v, want %s", err, CodeOperationCanceled)
-			}
-			if record := harness.peer.snapshot(); !record.closed || len(record.trailing) != 0 {
-				t.Fatalf("peer closed = %t, trailing = %q", record.closed, record.trailing)
-			}
-		})
+				got := harness.outcome()
+				if got.err == nil {
+					t.Fatal("FetchStructure() succeeded after Abort")
+				}
+				harness.peer.wait(t)
+				if err := harness.session.quarantine.terminalError(); CodeOf(err) != cause {
+					t.Fatalf("quarantine terminal = %v, want %s", err, cause)
+				}
+				if record := harness.peer.snapshot(); !record.closed || len(record.trailing) != 0 {
+					t.Fatalf("peer closed = %t, trailing = %q", record.closed, record.trailing)
+				}
+			})
+		}
 
 		// The whole-operation deadline bounds the transport from
 		// construction through close; no stage resets it to none.
