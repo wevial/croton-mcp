@@ -83,9 +83,11 @@ and a truncated literal.
 A FETCH is `* n FETCH (` with a positive canonical uint32 sequence number,
 single spaces between elements and a CRLF right after its closing parenthesis.
 A list may directly follow a closed list only inside a BODYSTRUCTURE. A line
-that starts like a FETCH but fails this grammar, including a missing, zero,
-leading-zero or overflowing sequence number, is a protocol refusal; it never
-falls back to control handling.
+whose second word starts with a digit and whose third word is FETCH is framed
+as a FETCH; if it fails this grammar, including a zero, leading-zero or
+overflowing sequence number, it is a protocol refusal and never falls back to
+control handling. Status prose such as `* OK FETCH completed` is a control,
+and a FETCH without a sequence number is an unknown control and refused.
 
 Controls are whole CRLF lines of at most 4096 bytes and carry no literals:
 
@@ -96,7 +98,7 @@ Controls are whole CRLF lines of at most 4096 bytes and carry no literals:
 | FLAGS | `* FLAGS` and a parenthesized list of flag atoms |
 | EXISTS, RECENT | `* n EXISTS`, `* n RECENT` with n zero or more |
 | EXPUNGE | `* n EXPUNGE` with n positive |
-| SEARCH, ESEARCH | printable ASCII, complete quoted strings, no brace |
+| SEARCH, ESEARCH | printable ASCII, complete quoted strings, no `{` or `}` even when quoted |
 | continuation | `+`, optionally followed by a space and text |
 | tagged status | tag, then `OK`, `NO` or `BAD`, optional text |
 

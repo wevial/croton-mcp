@@ -343,10 +343,12 @@ func (quarantine *structureQuarantine) lineByteLocked(value byte) error {
 }
 
 // fetchPrefix reports whether prefix, "* " and two words each followed by a
-// space, starts a FETCH. A FETCH needs a positive uint32 sequence number.
+// space, starts a FETCH. Only a first word that starts with a digit can be a
+// sequence number, so status prose such as "* OK FETCH completed" stays a
+// control; a FETCH needs a positive uint32 sequence number.
 func fetchPrefix(prefix []byte) (bool, error) {
 	number, name, _ := strings.Cut(string(prefix[2:len(prefix)-1]), " ")
-	if !strings.EqualFold(name, "FETCH") {
+	if number == "" || number[0] < '0' || number[0] > '9' || !strings.EqualFold(name, "FETCH") {
 		return false, nil
 	}
 	if _, ok := quarantineNumber(number, false); !ok {
@@ -819,7 +821,7 @@ func quarantineText(text string) bool {
 }
 
 // quarantineFlat accepts printable ASCII with complete quoted strings and no
-// literal declaration.
+// brace anywhere, quoted or not.
 func quarantineFlat(value string) bool {
 	quoted, escaped := false, false
 	for index := range len(value) {
@@ -836,7 +838,7 @@ func quarantineFlat(value string) bool {
 			escaped = true
 		case character == '"':
 			quoted = !quoted
-		case !quoted && character == '{':
+		case character == '{' || character == '}':
 			return false
 		}
 	}
