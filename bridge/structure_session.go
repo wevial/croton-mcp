@@ -86,7 +86,7 @@ func readSelectedStructure(parent context.Context, config ValidatedConfig, mailb
 
 	result, err := session.run(ctx, config, mailbox)
 	if err != nil {
-		_ = session.Abort(err)
+		session.Abort(err)
 		return selectedStructure{}, mapIMAPError(ctx, err)
 	}
 
@@ -267,17 +267,16 @@ func (session *structureSession) Close(ctx context.Context) error {
 
 // Abort ends the quarantine with cause unless it was already refused, closes
 // the transport without draining it and waits for the client reader.
-func (session *structureSession) Abort(cause error) error {
+func (session *structureSession) Abort(cause error) {
 	if !session.finish() {
-		return nil
+		return
 	}
 	defer session.stop()
 
-	terminal := session.quarantine.abort(cause)
+	_ = session.quarantine.abort(cause)
 
 	_ = session.session.conn.Close()
 	_ = session.session.client.Close()
-	return terminal
 }
 
 // advance moves the session from one state to the next or refuses the call.
