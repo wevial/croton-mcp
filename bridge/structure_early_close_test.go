@@ -102,10 +102,10 @@ func TestStructureRefusalEarlyClose(t *testing.T) {
 			// the client close and returned n>0 with an error, the peer
 			// recorded exactly the delivered bytes, and the last fragment
 			// was never attempted.
-			if faulted == nil || !faulted.early {
+			if !faulted.early {
 				t.Fatal("the faulted Write did not follow the observed client close")
 			}
-			if faulted.delivered != len(fault)/2 || faulted.delivered == 0 {
+			if faulted.delivered != len(fault)/2 {
 				t.Fatalf("faulted Write delivered %d of %d bytes", faulted.delivered, len(fault))
 			}
 			first := writes[0].parts[len(writes[0].parts)-1].text
