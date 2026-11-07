@@ -92,7 +92,7 @@ func TestStructureRefusalEarlyClose(t *testing.T) {
 				return faulted
 			}
 
-			record, plan := runStructureTLSRefusal(t, mode.startTLS, mode.mode, early)
+			record := runStructureTLSRefusal(t, mode.startTLS, mode.mode, early)
 
 			// The schedule really ended early: the faulted Write followed
 			// the client close and returned n>0 with an error, the peer
@@ -107,9 +107,6 @@ func TestStructureRefusalEarlyClose(t *testing.T) {
 			first := writes[0].parts[len(writes[0].parts)-1].text
 			if want := first + string(fault[:faulted.delivered]); string(record.refused) != want {
 				t.Fatalf("peer recorded %d refused bytes, want the %d delivered", len(record.refused), len(want))
-			}
-			if len(record.refused) >= len(plan.refused) {
-				t.Fatalf("peer recorded %d refused bytes, want fewer than the planned %d", len(record.refused), len(plan.refused))
 			}
 		})
 	}

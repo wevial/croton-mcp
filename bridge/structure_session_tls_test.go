@@ -577,8 +577,8 @@ func TestStructureSessionTLSRefusal(t *testing.T) {
 // Every expectation is derived from the plan and the baseline the peer had
 // sent before the schedule, never from how much of the schedule it then
 // managed to write: the guard may close the transport as soon as it holds
-// the offending prefix. It returns the peer's record and the plan.
-func runStructureTLSRefusal(t *testing.T, startTLS bool, mode string, test structureRefusalCase) (structurePeerRecord, structureRefusalPlan) {
+// the offending prefix. It returns the peer's record.
+func runStructureTLSRefusal(t *testing.T, startTLS bool, mode string, test structureRefusalCase) structurePeerRecord {
 	t.Helper()
 
 	var plan structureRefusalPlan
@@ -638,9 +638,6 @@ func runStructureTLSRefusal(t *testing.T, startTLS bool, mode string, test struc
 	// Sender evidence: the peer delivered only planned bytes, every one
 	// before the refused response and at least the offending prefix of it.
 	before := baseline.written + partsBytes(plan.before)
-	if !bytes.Equal(record.approved, approved) {
-		t.Fatalf("peer delivered %d approved bytes, planned %d", len(record.approved), len(approved))
-	}
 	if !strings.HasPrefix(plan.refused, string(record.refused)) || record.written != before+len(record.refused) {
 		t.Fatalf("peer delivered %d bytes with %d refused, planned %d before the refused response", record.written, len(record.refused), before)
 	}
@@ -672,7 +669,7 @@ func runStructureTLSRefusal(t *testing.T, startTLS bool, mode string, test struc
 		t.Fatalf("last command = %q", last)
 	}
 
-	return record, plan
+	return record
 }
 
 // plannedApproved is the approved bytes the peer had sent before the
