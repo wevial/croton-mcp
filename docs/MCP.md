@@ -234,9 +234,10 @@ result has an empty `truncation` object and no `truncated` marker.
 `mimeDepth`, `attachments`, `references` and `output`.
 `list_attachments` reasons are `mimeParts`, `mimeDepth`, `attachments` and
 `output`. Header, text and reference limits do not apply to a listing and
-never mark it incomplete. `mimeParts`, `mimeDepth` and `headerCount` mean MIME
-parts, nested entities or header fields beyond the bounds were not examined,
-so attachments may be missing; for a listing, `mimeDepth` also marks an
+never mark it incomplete. `mimeParts` and `mimeDepth` mean MIME parts or
+nested entities beyond the bounds were not examined, so attachments may be
+missing; `headerCount` means the same for header fields, but only
+`get_message` reports it. For a listing, `mimeDepth` also marks an
 embedded message whose contents were not enumerated. `attachments` means
 entries beyond the 20-entry cap were omitted or their metadata was shortened.
 `output` means the 100 000-byte result cap removed text or whole attachment
