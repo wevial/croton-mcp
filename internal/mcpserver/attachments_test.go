@@ -16,9 +16,8 @@ import (
 	"github.com/wevial/croton-mcp/bridge"
 )
 
-// GetMessageAttachmentStructure arranges a selected structure result from the
-// fixture's original metadata identity and its legacy attachment metadata. It
-// records no metadata, body or header call; the normalization here is only
+// GetMessageAttachmentStructure arranges a structure result from the fixture's
+// metadata identity and normalized body without recording any read; it is
 // fixture arrangement, never evidence of the bridge projector.
 func (mail *fakeMail) GetMessageAttachmentStructure(ctx context.Context, identifier string) (bridge.MessageAttachmentStructure, error) {
 	normalized, err := bridge.NormalizeMessage(bytes.NewReader(mail.body), bridge.NormalizeOptions{})
@@ -90,7 +89,6 @@ func (mail legacyMail) GetMessageBody(ctx context.Context, identifier string) ([
 	return mail.mail.GetMessageBody(ctx, identifier)
 }
 
-// requireNoRawReads fails when any metadata, body or header read ran.
 func requireNoRawReads(t *testing.T, label string, mail *fakeMail) {
 	t.Helper()
 

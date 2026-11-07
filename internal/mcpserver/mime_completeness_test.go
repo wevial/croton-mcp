@@ -78,9 +78,6 @@ func attachmentPart(filename, sizeParameter, content string) string {
 		base64.StdEncoding.EncodeToString([]byte(content)) + "\r\n"
 }
 
-// completenessSession serves get_message from the raw body and
-// list_attachments from an independently arranged structure result with the
-// same identity, so neither read derives the other's expectations.
 // textDescriptor, octetDescriptor and mixedDescriptor build ordinary typed
 // BODYSTRUCTURE descriptors; declaredSize is the Content-Disposition size
 // parameter text, omitted when empty.
@@ -104,6 +101,9 @@ func mixedDescriptor(children ...*testkit.BodyPart) *testkit.BodyPart {
 	return &testkit.BodyPart{Kind: testkit.BodyPartMultipart, Subtype: "mixed", Params: []testkit.BodyParam{{Name: "boundary", Value: "root-boundary"}}, Children: children}
 }
 
+// completenessSession serves get_message from the raw body and
+// list_attachments from an independently arranged structure result with the
+// same identity, so neither read derives the other's expectations.
 func completenessSession(t *testing.T, body string, truncation bridge.Truncation, attachments ...bridge.AttachmentMetadata) *mcp.ClientSession {
 	t.Helper()
 
@@ -117,8 +117,6 @@ func completenessSession(t *testing.T, body string, truncation bridge.Truncation
 	return connectTestClient(t, Options{Mail: mail})
 }
 
-// declaredAttachment is arranged octet-stream attachment metadata with an
-// optional declared size.
 func declaredAttachment(filename string, size int64, known bool) bridge.AttachmentMetadata {
 	attachment := octetAttachment(filename)
 	attachment.HasDeclaredSize, attachment.DeclaredSize = known, size
