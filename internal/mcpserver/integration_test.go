@@ -157,16 +157,19 @@ var mutatingIMAPCommands = []string{
 // testkit.SyntheticAttachmentMessages: a multipart report with one PDF
 // attachment, then an attachment-free plain message.
 func syntheticAttachmentDescriptors() []*testkit.BodyPart {
+	text := func() *testkit.BodyPart {
+		return &testkit.BodyPart{Kind: testkit.BodyPartText, Type: "text", Subtype: "plain", Params: []testkit.BodyParam{{Name: "charset", Value: "utf-8"}}, Size: 35, Lines: 1}
+	}
 	report := &testkit.BodyPart{
 		Kind: testkit.BodyPartMultipart, Subtype: "mixed", Params: []testkit.BodyParam{{Name: "boundary", Value: "synthetic-report"}},
-		Children: []*testkit.BodyPart{textDescriptor(), {
+		Children: []*testkit.BodyPart{text(), {
 			Kind: testkit.BodyPartBasic, Type: "application", Subtype: "pdf",
 			Params: []testkit.BodyParam{{Name: "name", Value: "report.pdf"}}, Encoding: "base64", Size: 40,
 			Disposition: &testkit.BodyDisposition{Value: "attachment", Params: []testkit.BodyParam{{Name: "filename", Value: "report.pdf"}}},
 		}},
 	}
 
-	return []*testkit.BodyPart{report, textDescriptor()}
+	return []*testkit.BodyPart{report, text()}
 }
 
 func startIntegrationAdapter(t *testing.T) (*testkit.Server, *bridge.Adapter) {
@@ -319,7 +322,7 @@ func TestAllSixToolsProduceReadOnlyWireTranscript(t *testing.T) {
 		"Welcome to Croton. This synthetic message exists only for adapter tests.\r\n"
 	server, adapter := startIntegrationAdapterWithOptions(t, testkit.Options{
 		Messages:       []string{welcome},
-		BodyStructures: []*testkit.BodyPart{textDescriptor()},
+		BodyStructures: []*testkit.BodyPart{{Kind: testkit.BodyPartText, Type: "text", Subtype: "plain", Size: 74, Lines: 1}},
 	})
 	session := connectTestClient(t, Options{Mail: adapter})
 
@@ -349,9 +352,14 @@ func TestAllSixToolsProduceReadOnlyWireTranscript(t *testing.T) {
 
 	attachments := callTool(t, session, "list_attachments", map[string]any{"messageId": identifier})
 	var decodedAttachments struct {
+		ID          string             `json:"id"`
 		Attachments []attachmentResult `json:"attachments"`
+		Truncated   bool               `json:"truncated"`
 	}
 	decodeResult(t, attachments, &decodedAttachments)
+	if decodedAttachments.ID != identifier || decodedAttachments.Attachments == nil || len(decodedAttachments.Attachments) != 0 || decodedAttachments.Truncated {
+		t.Fatalf("unexpected attachments: %+v", decodedAttachments)
+	}
 
 	digest := callTool(t, session, "select_digest_candidates", map[string]any{"mailbox": "INBOX", "unreadOnly": false})
 	var decodedDigest digestDecoded
