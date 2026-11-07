@@ -386,6 +386,29 @@ func TestAttachmentProjection(t *testing.T) {
 				want:      []attachmentStructureView{attachmentView("�a.pdf", "application/pdf", "", 10)},
 			},
 			{
+				// truncateUTF8: a raw name within the limit is repaired
+				// without the flag, even when repair grows it past the limit.
+				name:      "invalid_utf8_name_at_limit_repaired",
+				structure: projectionLeaf("application", "pdf", 10, map[string]string{"name": strings.Repeat("\xffn", 5) + strings.Repeat("n", defaultMaxFilenameBytes-10)}, nil),
+				want:      []attachmentStructureView{attachmentView(strings.Repeat("�n", 5)+strings.Repeat("n", defaultMaxFilenameBytes-10), "application/pdf", "", 10)},
+			},
+			{
+				// A longer raw name is cut to the limit first, then trimmed
+				// back until valid UTF-8, and sets the flag.
+				name:       "long_name_cut_then_trimmed",
+				structure:  projectionLeaf("application", "pdf", 10, map[string]string{"name": strings.Repeat("a", 250) + "\xff" + strings.Repeat("b", 5000)}, nil),
+				want:       []attachmentStructureView{attachmentView(strings.Repeat("a", 250), "application/pdf", "", 10)},
+				truncation: Truncation{Attachments: true},
+			},
+			{
+				// Trimming back from the cut removes everything after an early
+				// invalid byte; the part stays listed with the flag.
+				name:       "long_name_early_invalid_trimmed_to_empty",
+				structure:  projectionLeaf("application", "pdf", 10, map[string]string{"name": "\xff" + strings.Repeat("c", 5000)}, nil),
+				want:       []attachmentStructureView{attachmentView("", "application/pdf", "", 10)},
+				truncation: Truncation{Attachments: true},
+			},
+			{
 				name:       "long_content_type_and_disposition",
 				structure:  projectionLeaf("application", exactType+"s", 10, nil, projectionDisposition(exactDisposition+"d", map[string]string{"filename": "x.pdf"})),
 				want:       []attachmentStructureView{attachmentView("x.pdf", "application/"+exactType, exactDisposition, 10)},
