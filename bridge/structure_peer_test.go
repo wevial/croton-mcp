@@ -34,13 +34,15 @@ const (
 // Consumed frames are FLAGS-only FETCH responses the quarantine must swallow;
 // structure is the complete target FETCH response, CRLF included, which may
 // carry literals the public testkit cannot render. adverse, when set,
-// replaces the reply to one command with a private schedule.
+// replaces the reply to one command with a private schedule. wrap, when
+// set, wraps the peer side of the secured connection with a private fault.
 type structurePeerScript struct {
 	greeting     bool
 	beforeSearch []string
 	duringFetch  []string
 	structure    string
 	adverse      *structurePeerAdverse
+	wrap         func(net.Conn) net.Conn
 }
 
 // structurePeerKind is what the quarantine must do with one scheduled part.
@@ -290,6 +292,9 @@ func (peer *structurePeer) serve(connection net.Conn) {
 	defer close(peer.done)
 	defer connection.Close()
 
+	if peer.script.wrap != nil {
+		connection = peer.script.wrap(connection)
+	}
 	_ = connection.SetDeadline(time.Now().Add(structurePeerTimeout))
 	peer.fail(peer.converse(bufio.NewReaderSize(connection, structurePeerLineBytes+1), connection))
 }
