@@ -10,10 +10,6 @@ import (
 	"time"
 )
 
-// errStructureEarlyClose is the injected result of a peer Write that
-// delivered only part of its bytes after the client closed the transport.
-var errStructureEarlyClose = errors.New("structure peer write after client close")
-
 // structureEarlyCloseConn wraps the peer side of the secured connection. The
 // Write whose bytes equal fault waits until the peer has observed the client
 // close the transport, delivers half of them and returns that count with an
@@ -52,7 +48,7 @@ func (conn *structureEarlyCloseConn) Write(buffer []byte) (int, error) {
 
 	sent := len(buffer) / 2
 	conn.delivered, _ = conn.Conn.Write(buffer[:sent])
-	return sent, errStructureEarlyClose
+	return sent, errors.New("structure peer write after client close")
 }
 
 func TestStructureRefusalEarlyClose(t *testing.T) {
