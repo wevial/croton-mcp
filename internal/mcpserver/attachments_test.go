@@ -21,27 +21,7 @@ import (
 // records no metadata, body or header call; the normalization here is only
 // fixture arrangement, never evidence of the bridge projector.
 func (mail *fakeMail) GetMessageAttachmentStructure(ctx context.Context, identifier string) (bridge.MessageAttachmentStructure, error) {
-	if mail.err != nil {
-		return bridge.MessageAttachmentStructure{}, mail.err
-	}
-
-	metadata, raw := mail.metadata, mail.body
-	if mail.metadataByID != nil {
-		found, ok := mail.metadataByID[identifier]
-		if !ok {
-			return bridge.MessageAttachmentStructure{}, &bridge.Error{Code: bridge.CodeStaleMessageID}
-		}
-		metadata = found
-	}
-	if mail.bodyByID != nil {
-		found, ok := mail.bodyByID[identifier]
-		if !ok {
-			return bridge.MessageAttachmentStructure{}, &bridge.Error{Code: bridge.CodeStaleMessageID}
-		}
-		raw = found
-	}
-
-	normalized, err := bridge.NormalizeMessage(bytes.NewReader(raw), bridge.NormalizeOptions{})
+	normalized, err := bridge.NormalizeMessage(bytes.NewReader(mail.body), bridge.NormalizeOptions{})
 	if err != nil {
 		return bridge.MessageAttachmentStructure{}, err
 	}
@@ -52,10 +32,10 @@ func (mail *fakeMail) GetMessageAttachmentStructure(ctx context.Context, identif
 	}
 
 	return bridge.MessageAttachmentStructure{
-		ID:          metadata.ID,
-		Mailbox:     metadata.Mailbox,
-		UIDValidity: metadata.UIDValidity,
-		UID:         metadata.UID,
+		ID:          mail.metadata.ID,
+		Mailbox:     mail.metadata.Mailbox,
+		UIDValidity: mail.metadata.UIDValidity,
+		UID:         mail.metadata.UID,
 		Attachments: attachments,
 		Truncation: bridge.Truncation{
 			MIMEParts:   normalized.Truncation.MIMEParts,
