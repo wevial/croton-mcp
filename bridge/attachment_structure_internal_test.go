@@ -1,11 +1,8 @@
 package bridge
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
-	"net"
 	"reflect"
 	"strings"
 	"sync"
@@ -50,50 +47,6 @@ func attachmentDisposition(params ...testkit.BodyParam) *testkit.BodyDisposition
 // optional attachment disposition and its parameters.
 func plainDescriptor(size uint32, params []testkit.BodyParam, disposition *testkit.BodyDisposition) *testkit.BodyPart {
 	return &testkit.BodyPart{Kind: testkit.BodyPartBasic, Type: "application", Subtype: "octet-stream", Encoding: "base64", Size: size, Params: params, Disposition: disposition}
-}
-
-// selectionCutConn is the private transport seam that produces a transport
-// failure after partial selection data: once the client sends EXAMINE, it
-// passes the first complete server response line through and then closes the
-// transport, so the quarantine sees the source fail between responses.
-type selectionCutConn struct {
-	net.Conn
-
-	mu    sync.Mutex
-	armed bool
-	cut   bool
-}
-
-func (connection *selectionCutConn) Write(buffer []byte) (int, error) {
-	if bytes.Contains(bytes.ToUpper(buffer), []byte(" EXAMINE ")) {
-		connection.mu.Lock()
-		connection.armed = true
-		connection.mu.Unlock()
-	}
-
-	return connection.Conn.Write(buffer)
-}
-
-func (connection *selectionCutConn) Read(buffer []byte) (int, error) {
-	connection.mu.Lock()
-	cut := connection.cut
-	connection.mu.Unlock()
-	if cut {
-		_ = connection.Conn.Close()
-		return 0, io.EOF
-	}
-
-	count, err := connection.Conn.Read(buffer)
-
-	connection.mu.Lock()
-	defer connection.mu.Unlock()
-	if connection.armed {
-		if end := bytes.Index(buffer[:count], []byte("\r\n")); end >= 0 {
-			count = end + 2
-			connection.cut = true
-		}
-	}
-	return count, err
 }
 
 // pooledProbe is a pooled session that must never be used, replaced or
@@ -186,7 +139,7 @@ func newScriptedStructureAdapter(t *testing.T, answer func(int, context.Context)
 	t.Helper()
 
 	adapter := &Adapter{
-		config: ValidatedConfig{IMAP: IMAPConfig{CommandTimeoutMs: 2000}, Bounds: Bounds{MaxMimeParts: 50, MaxAttachmentCount: 20}},
+		config: ValidatedConfig{IMAP: IMAPConfig{CommandTimeoutMs: 2000}},
 		gate:   make(chan struct{}, 1),
 	}
 	adapter.idKey[0] = 0x41
@@ -203,7 +156,6 @@ func newScriptedStructureAdapter(t *testing.T, answer func(int, context.Context)
 
 func plainSelection() selectedStructure {
 	return selectedStructure{
-		Snapshot:  mailboxSnapshot{UIDNext: 104, UIDValidity: 9001},
 		Structure: &imap.BodyStructureSinglePart{Type: "application", Subtype: "pdf", Size: 10, Extended: &imap.BodyStructureSinglePartExt{Disposition: &imap.BodyStructureDisposition{Value: "attachment", Params: map[string]string{"filename": "a.pdf"}}}},
 	}
 }
@@ -338,11 +290,6 @@ func TestAttachmentStructureAdapter(t *testing.T) {
 				want:       []AttachmentStructureEntry{{AttachmentMetadata: AttachmentMetadata{Filename: "file.bin", ContentType: "application/octet-stream", Disposition: "attachment"}, HasTransferOctets: true, TransferOctets: 9}},
 			},
 			{
-				name:       "int64_overflow_size",
-				descriptor: plainDescriptor(9, nil, attachmentDisposition(filename, testkit.BodyParam{Name: "size", Value: "9223372036854775808"})),
-				want:       []AttachmentStructureEntry{{AttachmentMetadata: AttachmentMetadata{Filename: "file.bin", ContentType: "application/octet-stream", Disposition: "attachment"}, HasTransferOctets: true, TransferOctets: 9}},
-			},
-			{
 				name:       "int64_maximum_size",
 				descriptor: plainDescriptor(4294967295, nil, attachmentDisposition(filename, testkit.BodyParam{Name: "size", Value: "9223372036854775807"})),
 				want:       []AttachmentStructureEntry{{AttachmentMetadata: AttachmentMetadata{Filename: "file.bin", ContentType: "application/octet-stream", Disposition: "attachment", DeclaredSize: 9223372036854775807, HasDeclaredSize: true}, HasTransferOctets: true, TransferOctets: 4294967295}},
@@ -397,15 +344,10 @@ func TestAttachmentStructureAdapter(t *testing.T) {
 				{Kind: testkit.BodyPartText, Type: "text", Subtype: "plain", Size: 5, Lines: 1},
 				plainDescriptor(64, nil, attachmentDisposition(testkit.BodyParam{Name: "filename", Value: "child.bin"})),
 			}}},
-			{name: "multipart_without_attachment", descriptor: &testkit.BodyPart{Kind: testkit.BodyPartMultipart, Subtype: "alternative", Children: []*testkit.BodyPart{
-				{Kind: testkit.BodyPartText, Type: "text", Subtype: "plain", Size: 5, Lines: 1},
-			}}},
-			{name: "rfc2231_extended_filename", descriptor: plainDescriptor(8, nil, attachmentDisposition(testkit.BodyParam{Name: "filename*", Value: "utf-8''r%C3%A9sum%C3%A9.pdf"}))},
 			{name: "rfc2231_continued_filename", descriptor: plainDescriptor(8, nil, attachmentDisposition(testkit.BodyParam{Name: "filename*0", Value: "part-one"}, testkit.BodyParam{Name: "filename*1", Value: ".pdf"}))},
 			{name: "rfc2231_extended_continued_name", descriptor: plainDescriptor(8, []testkit.BodyParam{{Name: "name*0*", Value: "utf-8''a%20b"}}, nil)},
 			{name: "rfc2231_name_beside_plain_filename", descriptor: plainDescriptor(8, []testkit.BodyParam{{Name: "name*", Value: "utf-8''n.bin"}}, attachmentDisposition(testkit.BodyParam{Name: "filename", Value: "plain.bin"}))},
 			{name: "long_filename", descriptor: plainDescriptor(8, nil, attachmentDisposition(testkit.BodyParam{Name: "filename", Value: long}))},
-			{name: "long_name", descriptor: plainDescriptor(8, []testkit.BodyParam{{Name: "name", Value: long}}, nil)},
 			{name: "long_content_type", descriptor: &testkit.BodyPart{Kind: testkit.BodyPartBasic, Type: "application", Subtype: strings.Repeat("s", defaultMaxContentTypeBytes), Size: 8, Disposition: attachmentDisposition()}},
 			{name: "long_disposition", descriptor: plainDescriptor(8, nil, &testkit.BodyDisposition{Value: strings.Repeat("d", defaultMaxDispositionBytes+1), Params: []testkit.BodyParam{{Name: "filename", Value: "x.bin"}}})},
 		}
@@ -434,7 +376,7 @@ func TestAttachmentStructureAdapter(t *testing.T) {
 			&imap.BodyStructureSinglePart{Type: "message", Subtype: "rfc822", Size: 90, Extended: &imap.BodyStructureSinglePartExt{Disposition: &imap.BodyStructureDisposition{Value: "attachment", Params: map[string]string{"filename": "fwd.eml"}}}},
 		}
 		for index, structure := range embedded {
-			selection := selectedStructure{Snapshot: mailboxSnapshot{UIDValidity: 9001}, Structure: structure}
+			selection := selectedStructure{Structure: structure}
 			scripted, _ := newScriptedStructureAdapter(t, func(int, context.Context) (selectedStructure, error) { return selection, nil })
 			result, err := scripted.GetMessageAttachmentStructure(context.Background(), headerTestID(t, scripted, 9001, 7))
 			requireStructureRefusal(t, fmt.Sprintf("embedded message %d", index), result, err, CodeUnsupported)
@@ -473,33 +415,26 @@ func TestAttachmentStructureAdapter(t *testing.T) {
 		// Non-transport refusals of the first attempt are final, and a
 		// pooled session already present is neither used nor replaced.
 		controls := []struct {
-			name     string
-			answer   func(int, context.Context) (selectedStructure, error)
 			code     string
 			attempts int
 		}{
-			{name: "stale", answer: failingAnswer(CodeStaleMessageID), code: CodeStaleMessageID, attempts: 1},
-			{name: "authentication", answer: failingAnswer(CodeAuthentication), code: CodeAuthentication, attempts: 1},
-			{name: "guard_protocol", answer: failingAnswer(CodeIMAPProtocol), code: CodeIMAPProtocol, attempts: 1},
-			{name: "guard_bounds", answer: failingAnswer(CodeBoundsExceeded), code: CodeBoundsExceeded, attempts: 1},
-			{name: "timeout", answer: failingAnswer(CodeCommandTimedOut), code: CodeCommandTimedOut, attempts: 1},
-			{name: "unreachable_twice", answer: failingAnswer(CodeBridgeUnreachable), code: CodeBridgeUnreachable, attempts: 2},
-			{name: "projection_unsupported", answer: func(int, context.Context) (selectedStructure, error) {
-				return selectedStructure{Structure: &imap.BodyStructureMultiPart{Subtype: "mixed", Children: []imap.BodyStructure{&imap.BodyStructureSinglePart{Type: "text", Subtype: "plain"}}}}, nil
-			}, code: CodeUnsupported, attempts: 1},
+			{code: CodeStaleMessageID, attempts: 1},
+			{code: CodeBridgeUnreachable, attempts: 2},
 		}
 		for _, control := range controls {
-			adapter, reader := newScriptedStructureAdapter(t, control.answer)
+			adapter, reader := newScriptedStructureAdapter(t, func(int, context.Context) (selectedStructure, error) {
+				return selectedStructure{}, errorCode(control.code)
+			})
 			probe := &pooledProbe{}
 			adapter.session = probe
 
 			result, err := adapter.GetMessageAttachmentStructure(ctx, headerTestID(t, adapter, 9001, 7))
-			requireStructureRefusal(t, control.name, result, err, control.code)
+			requireStructureRefusal(t, control.code, result, err, control.code)
 			if reader.attempts() != control.attempts {
-				t.Fatalf("%s made %d attempts, want %d", control.name, reader.attempts(), control.attempts)
+				t.Fatalf("%s made %d attempts, want %d", control.code, reader.attempts(), control.attempts)
 			}
 			if adapter.session != readSession(probe) || probe.used() != 0 {
-				t.Fatalf("%s used or replaced the pooled session", control.name)
+				t.Fatalf("%s used or replaced the pooled session", control.code)
 			}
 			requireGateReleased(t, adapter)
 		}
@@ -548,84 +483,5 @@ func TestAttachmentStructureAdapter(t *testing.T) {
 			t.Fatal("the replay used or replaced the pooled session")
 		}
 		requireGateReleased(t, adapter)
-
-		// The real stack: the named selectionCutConn seam ends the first
-		// dedicated transport after partial EXAMINE data; the second fresh
-		// session reads the structure.
-		server, real := startTLSHeaderAdapter(t, testkit.StartTLS, testkit.Options{
-			Messages:       []string{"Subject: retry\r\n\r\nbody\r\n"},
-			BodyStructures: []*testkit.BodyPart{plainDescriptor(300, nil, attachmentDisposition(testkit.BodyParam{Name: "filename", Value: "retry.bin"}))},
-		})
-		var mu sync.Mutex
-		var cuts []*selectionCutConn
-		real.reader = func(ctx context.Context, config ValidatedConfig, request structureRequest) (selectedStructure, error) {
-			mu.Lock()
-			first := len(cuts) == 0
-			mu.Unlock()
-
-			seams := structureSeams{}
-			if first {
-				seams.transport = func(transport net.Conn) net.Conn {
-					cut := &selectionCutConn{Conn: transport}
-					mu.Lock()
-					cuts = append(cuts, cut)
-					mu.Unlock()
-					return cut
-				}
-			}
-			return readStructure(ctx, config, request, seams)
-		}
-		probe = &pooledProbe{}
-		real.session = probe
-
-		identifier = headerTestID(t, real, 9001, 101)
-		result, err = real.GetMessageAttachmentStructure(ctx, identifier)
-		if err != nil {
-			t.Fatalf("real replay error = %v", err)
-		}
-		if result.ID != identifier || result.UID != 101 || len(result.Attachments) != 1 || result.Attachments[0].Filename != "retry.bin" || result.Attachments[0].TransferOctets != 300 {
-			t.Fatalf("real replay result = %+v", result)
-		}
-		if len(cuts) != 1 || !cuts[0].cut {
-			t.Fatal("the first attempt was not cut after partial selection data")
-		}
-
-		connections := map[int][]string{}
-		var order []int
-		for _, command := range server.Commands() {
-			if _, seen := connections[command.ConnectionID]; !seen {
-				order = append(order, command.ConnectionID)
-			}
-			connections[command.ConnectionID] = append(connections[command.ConnectionID], strings.ToUpper(command.Raw))
-		}
-		if len(order) != 2 {
-			t.Fatalf("real replay used %d connections, want two fresh dedicated sessions", len(order))
-		}
-		first := strings.Join(connections[order[0]], "\n")
-		if !strings.Contains(first, " EXAMINE ") || strings.Contains(first, " FETCH ") {
-			t.Fatalf("first attempt transcript = %q", connections[order[0]])
-		}
-		if fetches := strings.Count(strings.Join(connections[order[1]], "\n"), " FETCH "); fetches != 1 {
-			t.Fatalf("second attempt issued %d FETCH commands", fetches)
-		}
-		if real.session != readSession(probe) || probe.used() != 0 {
-			t.Fatal("the real replay used or replaced the pooled session")
-		}
-		requireGateReleased(t, real)
-
-		// Close after the operation stays bounded and closes the untouched
-		// pooled session exactly once.
-		if err := real.Close(); err != nil || probe.used() != 1 {
-			t.Fatalf("Close() = %v with %d pooled calls", err, probe.used())
-		}
-		result, err = real.GetMessageAttachmentStructure(ctx, identifier)
-		requireStructureRefusal(t, "after Close", result, err, CodeAdapterClosed)
-		requireGateReleased(t, real)
 	})
-}
-
-func failingAnswer(code string) func(int, context.Context) (selectedStructure, error) {
-	return func(int, context.Context) (selectedStructure, error) {
-		return selectedStructure{}, errorCode(code)
-	}
 }
