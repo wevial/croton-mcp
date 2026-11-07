@@ -215,11 +215,6 @@ func requireStructureOnlyListing(t *testing.T, mode testkit.TLSMode, slice []tes
 		if strings.Join(fields[1:], " ") != "UID FETCH "+strconv.FormatUint(uint64(wantUID), 10)+" (UID BODYSTRUCTURE)" {
 			t.Fatalf("listing FETCH %q is not a selected UID BODYSTRUCTURE read", command.Raw)
 		}
-		for _, item := range []string{"BODY[", "BODY.PEEK", "BINARY", "FLAGS", "RFC822", "ENVELOPE", "HEADER", "TEXT"} {
-			if strings.Contains(upper, item) {
-				t.Fatalf("listing FETCH %q requested %s", command.Raw, item)
-			}
-		}
 	}
 	if logins != 1 || fetches != 1 {
 		t.Fatalf("listing authenticated %d and fetched %d times, want 1 and 1", logins, fetches)
