@@ -46,14 +46,8 @@ type structurePeer struct {
 	script structurePeerScript
 	done   chan struct{}
 
-	mu        sync.Mutex
-	plaintext []string
-	commands  []string
-	approved  []byte
-	consumed  []string
-	written   int
-	responses int
-	err       error
+	mu sync.Mutex
+	structurePeerRecord
 }
 
 func newStructurePeer(script structurePeerScript) *structurePeer {
@@ -246,15 +240,12 @@ func (peer *structurePeer) snapshot() structurePeerRecord {
 	peer.mu.Lock()
 	defer peer.mu.Unlock()
 
-	return structurePeerRecord{
-		plaintext: append([]string(nil), peer.plaintext...),
-		commands:  append([]string(nil), peer.commands...),
-		approved:  append([]byte(nil), peer.approved...),
-		consumed:  append([]string(nil), peer.consumed...),
-		written:   peer.written,
-		responses: peer.responses,
-		err:       peer.err,
-	}
+	record := peer.structurePeerRecord
+	record.plaintext = append([]string(nil), peer.plaintext...)
+	record.commands = append([]string(nil), peer.commands...)
+	record.approved = append([]byte(nil), peer.approved...)
+	record.consumed = append([]string(nil), peer.consumed...)
+	return record
 }
 
 func readStructurePeerLine(reader *bufio.Reader) (string, error) {

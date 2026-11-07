@@ -42,9 +42,7 @@ func runStructureSession(t *testing.T, startTLS bool, script structurePeerScript
 	go peer.serve(server)
 	t.Cleanup(func() { _ = client.Close() })
 
-	ctx, cancel := context.WithTimeout(context.Background(), structurePeerTimeout)
-	defer cancel()
-
+	ctx := deadlineContext(t)
 	seam, installed := newStructureTapSeam()
 	session, err := newStructureSessionOver(ctx, client, startTLS, structurePeerUID, seam)
 	if err != nil {
