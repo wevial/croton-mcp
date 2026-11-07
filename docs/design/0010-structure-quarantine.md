@@ -139,24 +139,28 @@ emerge; zero delivery is per refused frame, and bounded semantic MIME errors
 of an approved structure may still reach the pinned decoder.
 
 `abort` ends an unrefused reader with the existing fixed context category,
-`operation_canceled` for cancellation and `command_timed_out` otherwise, and
-leaves an earlier refusal unchanged. Input that arrives after an abort is
-discarded. A source error inside a response is a protocol refusal and one
-between responses is `bridge_unreachable`. Error values carry only their
-stable code, never raw input or source error text.
+`operation_canceled` for cancellation, raw or already mapped, and
+`command_timed_out` otherwise, and leaves an earlier refusal unchanged. Input
+that arrives after an abort is discarded. A source error that is a context
+error is such an abort. Any other source error inside a response is a
+protocol refusal and one between responses is `bridge_unreachable`. Error
+values carry only their stable code, never raw input or source error text.
 
 ## Dedicated session stack
 
 `newStructureSessionOver` takes the established, verified and decrypted
 transport and builds, from the bottom up:
 
-1. `deadlineConn` over the transport, with the operation deadline set and a
-   context watcher that closes the transport for the whole lifetime;
-2. `quarantineConn`, whose Read is the structure quarantine for the one
+1. `operationConn` over the transport, which turns every cleared or later
+   deadline into the operation deadline and reports a read that fails after
+   the operation ended as its context error;
+2. `deadlineConn` over it, with the operation deadline set and a context
+   watcher that closes the transport for the whole lifetime;
+3. `quarantineConn`, whose Read is the structure quarantine for the one
    selected positive UID;
-3. `readBudgetConn`, the unchanged per-command budget and SEARCH observer;
-4. after STARTTLS only, `syntheticGreetingConn` with the fixed local greeting;
-5. `imapclient.New`, whose reader starts at once.
+4. `readBudgetConn`, the unchanged per-command budget and SEARCH observer;
+5. after STARTTLS only, `syntheticGreetingConn` with the fixed local greeting;
+6. `imapclient.New`, whose reader starts at once.
 
 The quarantine is therefore the only reader of server bytes from before the
 client exists until the transport closes. The synthetic greeting is a
@@ -179,7 +183,9 @@ carry that UID once and one extended structure, and may carry FLAGS, in any
 order. A repeated or out-of-order call is refused before any write. Close is
 one LOGOUT under the operation deadline; Abort ends the quarantine, closes the
 transport without draining it and waits for the client reader. Neither
-retries or falls back to another session. `readSelectedStructure` runs one
+retries or falls back to another session. A failed stage returns the
+quarantine's first terminal category when it has one, even if the operation
+was canceled after it, and otherwise the mapped client error. `readSelectedStructure` runs one
 such session under a single deadline that covers connect, the credential
 helper, authentication, selection, the fetch and close.
 
@@ -198,15 +204,60 @@ syntax, CRLF, quotes and parentheses, a quoted parameter over 4096 bytes and
 target-UID FLAGS-only frames before the structure, and against the testkit
 typed fixture. The decoder-facing tap equals the approved responses exactly.
 
-These are positive proofs only. Negative, pending-read, write, cancellation,
-Close and zero-delivery proofs through the actual client are the guard
-completion that must follow; until it lands this stack is not called
-parser-safe and no public listing may use it.
+`TestStructureSessionRefusal` in `bridge/structure_session_internal_test.go`
+completes the guard with negative lifecycle schedules over a pipe, with taps
+on both sides of the quarantine and channel barriers instead of sleeps:
+
+- `pending_read`: the decoder-facing Read and the quarantine's source Read
+  are both outstanding before the target dispatch. A control fragmented
+  across writes is withheld until complete and, coalesced with a refused
+  prefix, released alone. Write and Close of the transport and inspection of
+  the reader state complete while both Reads are outstanding, then the
+  refused frame, cancellation, Close, or a source Read returning an approved
+  control and an incomplete FETCH together with an error leaves the decoder
+  with exactly the approved bytes. The Read issued before the dispatch still
+  delivers a fragmented target exactly once.
+- `terminal_state`: a bounds refusal held at the decoder boundary while the
+  operation is canceled keeps `bounds_exceeded`; cancellation first keeps
+  `operation_canceled` through later aborts, dispatches and reads; Abort with
+  a mapped category records it; the peer observes the transport close with
+  no LOGOUT, drain or replay; a later read of the same endpoint has no
+  connection to reuse and a fresh endpoint gets a fresh quarantine; and the
+  transport deadline is the operation deadline at every set from
+  construction through close.
+- `negative_control`: the same tap type below the normal pooled stack
+  records the refused frame's bytes, so the zero-delivery witness observes
+  real input.
+
+`TestStructureSessionTLSRefusal` in `bridge/structure_session_tls_test.go`
+runs `readSelectedStructure`, the actual stack and the pinned client over
+verified STARTTLS and implicit TLS against private adverse schedules. Each
+refused response follows a consumed FLAGS-only frame and an approved control
+coalesced with its first fragment, and is otherwise sent in three fragments.
+The cases are wrong, missing and duplicate UID, missing, duplicate, early and
+second structure, duplicate FLAGS, bare BODY, BODY sections, BINARY,
+BINARY.SIZE, an unknown attribute, a late BODY after a FLAGS-only prefix, a
+leading unclosed response-code bracket, malformed FETCH prefixes, truncation,
+cancellation during an incomplete FETCH, and one over the depth, token,
+atom, frame (quoted and literal), control, session byte, response and work
+limits, including a literal declaration sent without payload. For each the
+decoder-facing tap equals the approved responses the peer sent, any accepted
+target included, with zero bytes of the refused response; the quarantine
+consumed exactly the bytes before it plus the offending prefix through the
+threshold derived from the limits above; its first category is the returned
+code; and the peer observes the client close the transport after the refused
+command and nothing more. At-limit responses for depth, tokens, atoms,
+frame-filling quoted and literal values, a control, and whole-session
+responses and work are released byte for byte and decoded.
+
+This evidence is per refused frame over these executed schedules. It is not
+parser equivalence with go-imap and not a MIME-safety claim: earlier
+approved frames, and resource-bounded but semantically invalid structures,
+still reach the pinned decoder.
 
 ## Groundwork and integration boundary
 
-The reader alone is proved in isolation and synchronizes no pending client
-read. The dedicated session above wires it into the client and its lifetime
-with positive proofs only; the actual-client negative and pending-read TLS
-proof completes the guard, and both must land before any public listing uses
-it.
+The reader alone is proved in isolation. The dedicated session above wires
+it into the client and its lifetime, and the refusal proofs above complete
+the guard through the actual client. No public listing uses it yet; that
+consumer is separate work.
