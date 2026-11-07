@@ -657,12 +657,6 @@ type listAttachmentsResult struct {
 	Truncated   bool                     `json:"truncated,omitempty"`
 }
 
-// validStructureIdentity reports whether the structure read answered for the
-// requested opaque id with a positive same-generation tuple.
-func validStructureIdentity(structure bridge.MessageAttachmentStructure, identifier string) bool {
-	return structure.ID == identifier && structure.Mailbox != "" && structure.UIDValidity != 0 && structure.UID != 0
-}
-
 // runListAttachments projects one selected structure read. It never reads
 // message metadata, headers or the body, and exposes no transfer octets.
 func runListAttachments(ctx context.Context, deps Options, arguments json.RawMessage) (any, string) {
@@ -680,7 +674,7 @@ func runListAttachments(ctx context.Context, deps Options, arguments json.RawMes
 	if err != nil {
 		return nil, mapAdapterError(err)
 	}
-	if !validStructureIdentity(structure, input.MessageID) {
+	if structure.ID != input.MessageID || structure.Mailbox == "" || structure.UIDValidity == 0 || structure.UID == 0 {
 		return nil, errUnavailable
 	}
 
