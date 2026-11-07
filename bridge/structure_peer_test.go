@@ -203,7 +203,7 @@ func (tap *structureTap) awaitBytes(t *testing.T, want []byte) {
 	})
 }
 
-// quarantineOf returns the quarantine below an installed tap.
+// quarantine returns the quarantine below an installed tap.
 func (tap *structureTap) quarantine(t *testing.T) *structureQuarantine {
 	t.Helper()
 
