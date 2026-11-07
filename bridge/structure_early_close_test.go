@@ -17,12 +17,17 @@ var errStructureEarlyClose = errors.New("structure peer write after client close
 // structureEarlyCloseConn wraps the peer side of the secured connection. The
 // Write whose bytes equal fault waits until the peer has observed the client
 // close the transport, delivers half of them and returns that count with an
-// error, the result a kernel may give once the client has closed.
+// error, the result a kernel may give once the client has closed. early
+// reports that the fault waited for the closure rather than the timeout,
+// and delivered how many of its bytes reached the transport.
 type structureEarlyCloseConn struct {
 	net.Conn
 	fault    []byte
 	observed chan struct{}
 	once     sync.Once
+
+	early     bool
+	delivered int
 }
 
 func (conn *structureEarlyCloseConn) Read(buffer []byte) (int, error) {
@@ -41,11 +46,12 @@ func (conn *structureEarlyCloseConn) Write(buffer []byte) (int, error) {
 
 	select {
 	case <-conn.observed:
+		conn.early = true
 	case <-time.After(structurePeerTimeout):
 	}
 
 	sent := len(buffer) / 2
-	_, _ = conn.Conn.Write(buffer[:sent])
+	conn.delivered, _ = conn.Conn.Write(buffer[:sent])
 	return sent, errStructureEarlyClose
 }
 
@@ -83,11 +89,32 @@ func TestStructureRefusalEarlyClose(t *testing.T) {
 		{name: "implicit_tls_early_close", startTLS: false, mode: TLSModeImplicit},
 	} {
 		t.Run(mode.name, func(t *testing.T) {
+			var faulted *structureEarlyCloseConn
 			early := test
 			early.wrap = func(connection net.Conn) net.Conn {
-				return &structureEarlyCloseConn{Conn: connection, fault: fault, observed: make(chan struct{})}
+				faulted = &structureEarlyCloseConn{Conn: connection, fault: fault, observed: make(chan struct{})}
+				return faulted
 			}
-			runStructureTLSRefusal(t, mode.startTLS, mode.mode, early)
+
+			record, plan := runStructureTLSRefusal(t, mode.startTLS, mode.mode, early)
+
+			// The schedule really ended early: the faulted Write followed
+			// the client close and returned n>0 with an error, the peer
+			// recorded exactly the delivered bytes, and the last fragment
+			// was never attempted.
+			if faulted == nil || !faulted.early {
+				t.Fatal("the faulted Write did not follow the observed client close")
+			}
+			if faulted.delivered != len(fault)/2 || faulted.delivered == 0 {
+				t.Fatalf("faulted Write delivered %d of %d bytes", faulted.delivered, len(fault))
+			}
+			first := writes[0].parts[len(writes[0].parts)-1].text
+			if want := first + string(fault[:faulted.delivered]); string(record.refused) != want {
+				t.Fatalf("peer recorded %d refused bytes, want the %d delivered", len(record.refused), len(want))
+			}
+			if len(record.refused) >= len(plan.refused) {
+				t.Fatalf("peer recorded %d refused bytes, want fewer than the planned %d", len(record.refused), len(plan.refused))
+			}
 		})
 	}
 }

@@ -425,33 +425,42 @@ func (peer *structurePeer) writeSchedule(writer net.Conn, closed <-chan struct{}
 	return nil
 }
 
-// writeParts coalesces parts into one Write and records each by kind.
+// writeParts coalesces parts into one Write and records by kind exactly the
+// bytes Write reports delivered, even when it also returns an error. A part
+// cut short records only its delivered prefix and counts as no response;
+// attempted bytes past the count are never recorded as sent.
 func (peer *structurePeer) writeParts(writer net.Conn, parts []structurePeerPart) error {
 	var output strings.Builder
 	for _, part := range parts {
 		output.WriteString(part.text)
 	}
-	if _, err := writer.Write([]byte(output.String())); err != nil {
-		return err
-	}
+
+	delivered, err := writer.Write([]byte(output.String()))
 
 	peer.mu.Lock()
 	defer peer.mu.Unlock()
 
 	for _, part := range parts {
-		peer.written += len(part.text)
+		text := part.text[:min(len(part.text), delivered)]
+		delivered -= len(text)
+		peer.written += len(text)
+		complete := len(text) == len(part.text)
 		switch part.kind {
 		case peerApproved:
-			peer.responses++
-			peer.approved = append(peer.approved, part.text...)
+			if complete {
+				peer.responses++
+			}
+			peer.approved = append(peer.approved, text...)
 		case peerConsumed:
-			peer.responses++
-			peer.consumed = append(peer.consumed, part.text)
+			if complete {
+				peer.responses++
+				peer.consumed = append(peer.consumed, text)
+			}
 		default:
-			peer.refused = append(peer.refused, part.text...)
+			peer.refused = append(peer.refused, text...)
 		}
 	}
-	return nil
+	return err
 }
 
 // observeClosure records bounded client bytes after the adverse command and

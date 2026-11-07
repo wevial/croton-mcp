@@ -574,12 +574,18 @@ func TestStructureSessionTLSRefusal(t *testing.T) {
 // runStructureTLSRefusal runs the actual dedicated stack and pinned client
 // over verified TLS against one adverse reply and proves that the decoder saw
 // exactly the approved preceding responses and none of the refused bytes.
-func runStructureTLSRefusal(t *testing.T, startTLS bool, mode string, test structureRefusalCase) {
+// Every expectation is derived from the plan and the baseline the peer had
+// sent before the schedule, never from how much of the schedule it then
+// managed to write: the guard may close the transport as soon as it holds
+// the offending prefix. It returns the peer's record and the plan.
+func runStructureTLSRefusal(t *testing.T, startTLS bool, mode string, test structureRefusalCase) (structurePeerRecord, structureRefusalPlan) {
 	t.Helper()
 
 	var plan structureRefusalPlan
+	var baseline structurePeerRecord
 	sent := make(chan struct{})
 	adverse := &structurePeerAdverse{search: test.search, truncate: test.truncate, sent: sent, schedule: func(record structurePeerRecord) []structurePeerWrite {
+		baseline = record
 		plan = test.plan(record)
 		return fragmentRefusal(plan, test.cancel)
 	}}
@@ -603,7 +609,7 @@ func runStructureTLSRefusal(t *testing.T, startTLS bool, mode string, test struc
 		// so once the decoder holds that predecessor the guard consumed the
 		// incomplete bytes too and the decoder waits on the next Read.
 		<-sent
-		installed().awaitBytes(t, peer.snapshot().approved)
+		installed().awaitBytes(t, plannedApproved(baseline, plan))
 		cancel()
 	}
 	got := <-done
@@ -621,14 +627,22 @@ func runStructureTLSRefusal(t *testing.T, startTLS bool, mode string, test struc
 	}
 
 	// Zero delivery: the decoder-facing tap holds exactly the independently
-	// known approved responses, any accepted target included, and no byte of
-	// the refused response.
+	// planned approved responses, any accepted target included, and no byte
+	// of the refused response.
+	approved := plannedApproved(baseline, plan)
 	tap := installed().bytes()
-	if !bytes.Equal(tap, record.approved) {
-		t.Fatalf("decoder-facing tap (%d bytes) differs from the approved responses (%d bytes)", len(tap), len(record.approved))
+	if !bytes.Equal(tap, approved) {
+		t.Fatalf("decoder-facing tap (%d bytes) differs from the planned approved responses (%d bytes)", len(tap), len(approved))
 	}
-	if string(record.refused) != plan.refused {
-		t.Fatalf("peer sent %d refused bytes, want %d", len(record.refused), len(plan.refused))
+
+	// Sender evidence: the peer delivered only planned bytes, every one
+	// before the refused response and at least the offending prefix of it.
+	before := baseline.written + partsBytes(plan.before)
+	if !bytes.Equal(record.approved, approved) {
+		t.Fatalf("peer delivered %d approved bytes, planned %d", len(record.approved), len(approved))
+	}
+	if !strings.HasPrefix(plan.refused, string(record.refused)) || record.written != before+len(record.refused) {
+		t.Fatalf("peer delivered %d bytes with %d refused, planned %d before the refused response", record.written, len(record.refused), before)
 	}
 
 	// Guard input: the quarantine consumed every byte before the refused
@@ -638,7 +652,7 @@ func runStructureTLSRefusal(t *testing.T, startTLS bool, mode string, test struc
 	quarantine.mu.Lock()
 	consumed, terminal := quarantine.sessionBytes, quarantine.terminal
 	quarantine.mu.Unlock()
-	if want := record.written - len(record.refused) + plan.cut; consumed != want {
+	if want := before + plan.cut; consumed != want {
 		t.Fatalf("guard consumed %d bytes, want %d (%d of %d refused bytes)", consumed, want, plan.cut, len(plan.refused))
 	}
 	if CodeOf(terminal) != test.code {
@@ -657,6 +671,22 @@ func runStructureTLSRefusal(t *testing.T, startTLS bool, mode string, test struc
 	if test.search != strings.Contains(last, " UID SEARCH ") || !test.search && !strings.Contains(last, " UID FETCH ") {
 		t.Fatalf("last command = %q", last)
 	}
+
+	return record, plan
+}
+
+// plannedApproved is the approved bytes the peer had sent before the
+// schedule followed by the approved parts the plan places before the refused
+// response.
+func plannedApproved(baseline structurePeerRecord, plan structureRefusalPlan) []byte {
+	approved := append([]byte(nil), baseline.approved...)
+	for _, part := range plan.before {
+		if part.kind == peerApproved {
+			approved = append(approved, part.text...)
+		}
+	}
+
+	return approved
 }
 
 // runStructureTLSBoundary admits a response at a fixed limit through the
