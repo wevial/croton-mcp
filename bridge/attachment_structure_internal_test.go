@@ -370,6 +370,13 @@ func TestAttachmentStructureAdapter(t *testing.T) {
 				want:       []attachmentStructureView{{Metadata: AttachmentMetadata{Filename: "file.bin", ContentType: "application/octet-stream", Disposition: "attachment"}, HasTransferOctets: true, TransferOctets: 9}},
 			},
 			{
+				// ParseInt saturates to MaxInt64 with ErrRange; the size
+				// stays unknown rather than taking the saturated value.
+				name:       "int64_overflow_size",
+				descriptor: plainDescriptor(9, nil, attachmentDisposition(filename, testkit.BodyParam{Name: "size", Value: "9223372036854775808"})),
+				want:       []attachmentStructureView{{Metadata: AttachmentMetadata{Filename: "file.bin", ContentType: "application/octet-stream", Disposition: "attachment"}, HasTransferOctets: true, TransferOctets: 9}},
+			},
+			{
 				name:       "int64_maximum_size",
 				descriptor: plainDescriptor(4294967295, nil, attachmentDisposition(filename, testkit.BodyParam{Name: "size", Value: "9223372036854775807"})),
 				want:       []attachmentStructureView{{Metadata: AttachmentMetadata{Filename: "file.bin", ContentType: "application/octet-stream", Disposition: "attachment", DeclaredSize: 9223372036854775807, HasDeclaredSize: true}, HasTransferOctets: true, TransferOctets: 4294967295}},
