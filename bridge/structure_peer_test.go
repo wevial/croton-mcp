@@ -427,8 +427,7 @@ func (peer *structurePeer) writeSchedule(writer net.Conn, closed <-chan struct{}
 
 // writeParts coalesces parts into one Write and records by kind exactly the
 // bytes Write reports delivered, even when it also returns an error. A part
-// cut short records only its delivered prefix and counts as no response;
-// attempted bytes past the count are never recorded as sent.
+// cut short records only its delivered prefix and counts as no response.
 func (peer *structurePeer) writeParts(writer net.Conn, parts []structurePeerPart) error {
 	var output strings.Builder
 	for _, part := range parts {
