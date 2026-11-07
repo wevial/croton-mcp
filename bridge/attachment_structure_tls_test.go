@@ -126,13 +126,13 @@ func TestAttachmentStructureTLS(t *testing.T) {
 
 	report := &testkit.BodyPart{Kind: testkit.BodyPartBasic, Type: "application", Subtype: "pdf", Encoding: "base64", Size: 307400, Disposition: &testkit.BodyDisposition{Value: "attachment", Params: []testkit.BodyParam{{Name: "filename", Value: "report.pdf"}, {Name: "size", Value: "224000"}}}}
 	notes := &testkit.BodyPart{Kind: testkit.BodyPartText, Type: "text", Subtype: "plain", Params: []testkit.BodyParam{{Name: "name", Value: "notes.txt"}}, Size: 0, Lines: 0}
-	wantReport := []attachmentStructureView{{
-		Metadata:          AttachmentMetadata{Filename: "report.pdf", ContentType: "application/pdf", Disposition: "attachment", DeclaredSize: 224000, HasDeclaredSize: true},
-		HasTransferOctets: true, TransferOctets: 307400,
+	wantReport := []AttachmentStructureEntry{{
+		AttachmentMetadata: AttachmentMetadata{Filename: "report.pdf", ContentType: "application/pdf", Disposition: "attachment", DeclaredSize: 224000, HasDeclaredSize: true},
+		HasTransferOctets:  true, TransferOctets: 307400,
 	}}
-	wantNotes := []attachmentStructureView{{
-		Metadata:          AttachmentMetadata{Filename: "notes.txt", ContentType: "text/plain"},
-		HasTransferOctets: true,
+	wantNotes := []AttachmentStructureEntry{{
+		AttachmentMetadata: AttachmentMetadata{Filename: "notes.txt", ContentType: "text/plain"},
+		HasTransferOctets:  true,
 	}}
 
 	for _, mode := range modes {
@@ -144,11 +144,11 @@ func TestAttachmentStructureTLS(t *testing.T) {
 			// The production dedicated reader returns the tuple and the plain
 			// metadata of the 300KiB message from one structure FETCH.
 			identifier := headerTestID(t, adapter, 9001, 101)
-			result, err := callAttachmentStructure(t, ctx, adapter, identifier)
+			result, err := adapter.GetMessageAttachmentStructure(ctx, identifier)
 			if err != nil {
 				t.Fatalf("report error = %v", err)
 			}
-			want := attachmentStructureResult{ID: identifier, Mailbox: "INBOX", UIDValidity: 9001, UID: 101, Attachments: wantReport}
+			want := MessageAttachmentStructure{ID: identifier, Mailbox: "INBOX", UIDValidity: 9001, UID: 101, Attachments: wantReport}
 			if !reflect.DeepEqual(result, want) {
 				t.Fatalf("report result = %+v, want %+v", result, want)
 			}
@@ -169,7 +169,7 @@ func TestAttachmentStructureTLS(t *testing.T) {
 
 			// A stale generation is refused on the fresh selection with no
 			// structure FETCH.
-			result, err = callAttachmentStructure(t, ctx, adapter, headerTestID(t, adapter, 9002, 101))
+			result, err = adapter.GetMessageAttachmentStructure(ctx, headerTestID(t, adapter, 9002, 101))
 			requireStructureRefusal(t, "stale generation", result, err, CodeStaleMessageID)
 			assertStructureOnlyTranscript(t, server, 1)
 
@@ -189,14 +189,14 @@ func TestAttachmentStructureTLS(t *testing.T) {
 			}
 			for _, step := range []struct {
 				uid  uint32
-				want []attachmentStructureView
+				want []AttachmentStructureEntry
 			}{{uid: 101, want: wantReport}, {uid: 102, want: wantNotes}} {
 				identifier := headerTestID(t, adapter, 9001, step.uid)
-				result, err := callAttachmentStructure(t, ctx, adapter, identifier)
+				result, err := adapter.GetMessageAttachmentStructure(ctx, identifier)
 				if err != nil {
 					t.Fatalf("UID %d with FLAGS traffic error = %v", step.uid, err)
 				}
-				want := attachmentStructureResult{ID: identifier, Mailbox: "INBOX", UIDValidity: 9001, UID: step.uid, Attachments: step.want}
+				want := MessageAttachmentStructure{ID: identifier, Mailbox: "INBOX", UIDValidity: 9001, UID: step.uid, Attachments: step.want}
 				if !reflect.DeepEqual(result, want) {
 					t.Fatalf("UID %d with FLAGS traffic = %+v, want %+v", step.uid, result, want)
 				}
