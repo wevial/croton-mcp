@@ -132,8 +132,8 @@ func (projector *attachmentProjector) appendAttachment(entity projectedEntity, f
 // its children nor a declared size stands in for them.
 func structureEntity(structure bodyStructure) (projectedEntity, error) {
 	entity := projectedEntity{}
-	mediaType, disposition, hasDisposition := "", "", false
-	var parameters, dispositionParameters map[string]string
+	mediaType := ""
+	var parameters map[string]string
 
 	switch part := structure.(type) {
 	case *singlePartStructure:
@@ -143,9 +143,6 @@ func structureEntity(structure bodyStructure) (projectedEntity, error) {
 
 		mediaType = part.Type + "/" + part.Subtype
 		parameters = part.Params
-		if value := part.Disposition(); value != nil {
-			disposition, dispositionParameters, hasDisposition = value.Value, value.Params, true
-		}
 		entity.hasTransferOctets = true
 		entity.transferOctets = part.Size
 	case *multiPartStructure:
@@ -156,9 +153,6 @@ func structureEntity(structure bodyStructure) (projectedEntity, error) {
 		mediaType = "multipart/" + part.Subtype
 		if part.Extended != nil {
 			parameters = part.Extended.Params
-		}
-		if value := part.Disposition(); value != nil {
-			disposition, dispositionParameters, hasDisposition = value.Value, value.Params, true
 		}
 		entity.children = part.Children
 	default:
@@ -172,8 +166,8 @@ func structureEntity(structure bodyStructure) (projectedEntity, error) {
 	}
 
 	entity.dispositionParameters = map[string]string{}
-	if hasDisposition {
-		entity.disposition, entity.dispositionParameters, err = parseStructureMediaType(disposition, dispositionParameters)
+	if value := structure.Disposition(); value != nil {
+		entity.disposition, entity.dispositionParameters, err = parseStructureMediaType(value.Value, value.Params)
 		if err != nil {
 			return projectedEntity{}, err
 		}
