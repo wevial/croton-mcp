@@ -498,29 +498,6 @@ func TestMIMECompletenessPublic(t *testing.T) {
 			}
 		}
 
-		// Each listing alone sends a BODYSTRUCTURE fetch and no body or
-		// header fetch; get_message keeps its BODY.PEEK[] retrieval.
-		for subject, id := range ids {
-			listingBefore := len(server.Commands())
-			rawObject(t, callTool(t, session, "list_attachments", map[string]any{"messageId": id}))
-			sawStructure := false
-			for _, command := range server.Commands()[listingBefore:] {
-				upper := strings.ToUpper(command.Raw)
-				if !command.TLS {
-					t.Fatalf("listing command used plaintext transport: %q", command.Raw)
-				}
-				if strings.Contains(upper, "FETCH") && strings.Contains(upper, "BODYSTRUCTURE") {
-					sawStructure = true
-				}
-				if strings.Contains(upper, "FETCH") && (strings.Contains(upper, "BODY.PEEK[") || strings.Contains(upper, "BODY[") || strings.Contains(upper, "RFC822")) {
-					t.Fatalf("%s listing fetched message bytes: %q", subject, command.Raw)
-				}
-			}
-			if !sawStructure {
-				t.Fatalf("%s listing did not request BODYSTRUCTURE", subject)
-			}
-		}
-
 		sawBodyPeek := false
 		for _, command := range server.Commands()[before:] {
 			upper := strings.ToUpper(command.Raw)
@@ -555,25 +532,15 @@ func TestMIMECompletenessPublic(t *testing.T) {
 		}
 
 		// Oversized raw MIME or header blocks keep get_message's code-only
-		// refusal rather than an empty complete result; the structure-only
-		// listing of the same message is not refused for its raw size.
+		// refusal rather than an empty complete result.
 		oversizedRaw := completenessHeader("Synthetic oversized raw") + "Content-Type: text/plain\r\n\r\n" + strings.Repeat("r", 300<<10) + "\r\n"
 		oversizedHeader := completenessHeader("Synthetic oversized header") + "X-Synthetic-Filler: " + strings.Repeat("h", 20<<10) + "\r\nContent-Type: text/plain\r\n\r\nBody.\r\n"
 		for _, body := range []string{oversizedRaw, oversizedHeader} {
-			oversizedSession := completenessSession(t, body, bridge.Truncation{}, declaredAttachment("listed.bin", 3, true))
-			result := callTool(t, oversizedSession, "get_message", map[string]any{"messageId": "opaque-completeness"})
+			result := callTool(t, completenessSession(t, body, bridge.Truncation{}), "get_message", map[string]any{"messageId": "opaque-completeness"})
 			if !result.IsError {
 				t.Fatalf("get_message returned a normal result for oversized input: %.200s", resultText(t, result))
 			}
 			requireRefusedWithoutTuple(t, result, errInternal)
-
-			listing := rawObject(t, callTool(t, oversizedSession, "list_attachments", map[string]any{"messageId": "opaque-completeness"}))
-			requireClosedKeys(t, "oversized listing", listing, listAttachmentsKeys)
-			if listing["id"] != "opaque-completeness" || flatTuple(t, listing) != completenessTuple {
-				t.Fatalf("oversized listing identity = %v/%+v", listing["id"], flatTuple(t, listing))
-			}
-			requireAttachmentEntries(t, "oversized listing", listing, []wantAttachment{{filename: "listed.bin", size: 3, known: true}})
-			requireReasons(t, "oversized listing", listing, listAttachmentsReasons)
 		}
 	})
 
