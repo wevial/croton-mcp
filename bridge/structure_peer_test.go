@@ -179,9 +179,6 @@ func (tap *structureTap) Read(buffer []byte) (int, error) {
 	tap.update(func() {
 		tap.pending--
 		tap.seen = append(tap.seen, buffer[:count]...)
-		if err != nil && tap.failure == nil {
-			tap.failure = err
-		}
 	})
 	return count, err
 }

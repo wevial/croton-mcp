@@ -234,7 +234,7 @@ type structureBoundaryCase struct {
 	name    string
 	plan    func(sent structurePeerRecord) []structurePeerPart
 	verify  func(t *testing.T, structure imap.BodyStructure)
-	counted func(t *testing.T, quarantine *structureQuarantine, record structurePeerRecord)
+	counted func(t *testing.T, quarantine *structureQuarantine)
 }
 
 const (
@@ -262,16 +262,6 @@ func staticRefusal(frame string, cut int) func(structurePeerRecord) structureRef
 	return func(structurePeerRecord) structureRefusalPlan {
 		return structureRefusalPlan{before: structureDefaultBefore, refused: frame, cut: cut}
 	}
-}
-
-// through is the length of frame up to and including the end of marker.
-func through(frame, marker string) int {
-	index := strings.Index(frame, marker)
-	if index < 0 {
-		panic("marker not in frame")
-	}
-
-	return index + len(marker)
 }
 
 // nestedStructure is a BODYSTRUCTURE of levels nested one-child multiparts
@@ -397,7 +387,9 @@ func partsWork(parts []structurePeerPart) int {
 }
 
 func structureRefusalCases() []structureRefusalCase {
-	over := literalStructureOver()
+	// The declaration of a literal that would make its frame one byte over,
+	// sent without payload.
+	over, overCut := literalStructure(frameBytes + 1)
 	excessive := structureExtPrefix + "{4294967295}\r\n"
 
 	return []structureRefusalCase{
@@ -435,7 +427,7 @@ func structureRefusalCases() []structureRefusalCase {
 		}},
 		{name: "over_atom", code: CodeBoundsExceeded, plan: staticRefusal(atomStructure(atomBytes+1), len(structureExtPrefix)+atomBytes+1)},
 		{name: "over_frame_quoted", code: CodeBoundsExceeded, plan: staticRefusal(quotedStructure(frameBytes+1), frameBytes+1-len(structureQuotedEnd))},
-		{name: "over_frame_literal", code: CodeBoundsExceeded, plan: staticRefusal(over.declaration, over.cut)},
+		{name: "over_frame_literal", code: CodeBoundsExceeded, plan: staticRefusal(over[:overCut]+"}\r\n", overCut)},
 		{name: "excessive_literal_declaration", code: CodeBoundsExceeded, plan: staticRefusal(excessive, declarationCut(structureExtPrefix, "4294967295", 2))},
 		{name: "over_control", code: CodeBoundsExceeded, plan: staticRefusal("* OK "+strings.Repeat("c", controlBytes+1-len("* OK \r\n"))+"\r\n", controlBytes-1)},
 		{name: "over_session_bytes", code: CodeBoundsExceeded, plan: func(sent structurePeerRecord) structureRefusalPlan {
@@ -465,18 +457,6 @@ func structureRefusalCases() []structureRefusalCase {
 			return structureRefusalPlan{before: before, refused: structureTargetFrame, cut: strings.LastIndex(structureTargetFrame, "NIL") + 1}
 		}},
 	}
-}
-
-type literalOver struct {
-	declaration string
-	cut         int
-}
-
-// literalStructureOver is the declaration of a literal that would make its
-// frame one byte over, sent without payload.
-func literalStructureOver() literalOver {
-	frame, cut := literalStructure(frameBytes + 1)
-	return literalOver{declaration: frame[:cut] + "}\r\n", cut: cut}
 }
 
 func structureBoundaryCases() []structureBoundaryCase {
@@ -523,7 +503,7 @@ func structureBoundaryCases() []structureBoundaryCase {
 				parts = append(parts, structurePeerPart{kind: peerConsumed, text: "* 2 FETCH (FLAGS ())\r\n"})
 			}
 			return append(parts, structurePeerPart{kind: peerApproved, text: structureTargetFrame})
-		}, counted: func(t *testing.T, quarantine *structureQuarantine, _ structurePeerRecord) {
+		}, counted: func(t *testing.T, quarantine *structureQuarantine) {
 			t.Helper()
 			if quarantine.responses != responseLimit {
 				t.Fatalf("responses = %d, want %d", quarantine.responses, responseLimit)
@@ -534,7 +514,7 @@ func structureBoundaryCases() []structureBoundaryCase {
 			fill := tokenFill(workUnits - 3 - total - sentWork(sent) - partsWork(structureDefaultBefore))
 			parts := append(append([]structurePeerPart(nil), structureDefaultBefore...), fill...)
 			return append(parts, structurePeerPart{kind: peerApproved, text: structureTargetFrame})
-		}, counted: func(t *testing.T, quarantine *structureQuarantine, _ structurePeerRecord) {
+		}, counted: func(t *testing.T, quarantine *structureQuarantine) {
 			t.Helper()
 			if quarantine.work != workUnits {
 				t.Fatalf("work = %d, want %d", quarantine.work, workUnits)
@@ -727,7 +707,7 @@ func runStructureTLSBoundary(t *testing.T, startTLS bool, mode string, test stru
 		t.Fatalf("quarantine counted %d bytes/%d responses, peer sent %d/%d", quarantine.sessionBytes, quarantine.responses, record.written, record.responses)
 	}
 	if test.counted != nil {
-		test.counted(t, quarantine, record)
+		test.counted(t, quarantine)
 	}
 	assertStructureCommands(t, record.commands, structurePeerUID)
 }
