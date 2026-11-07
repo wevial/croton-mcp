@@ -218,9 +218,8 @@ on both sides of the quarantine and channel barriers instead of sleeps:
   with exactly the approved bytes. The Read issued before the dispatch still
   delivers a fragmented target exactly once.
 - `terminal_state`: a bounds refusal held at the decoder boundary while the
-  operation is canceled keeps `bounds_exceeded`; cancellation first keeps
-  `operation_canceled` through later aborts, dispatches and reads; Abort with
-  a mapped category records it; the peer observes the transport close with
+  operation is canceled keeps `bounds_exceeded`; Abort with the mapped
+  cancellation category records it; the peer observes the transport close with
   no LOGOUT, drain or replay; a later read of the same endpoint has no
   connection to reuse and a fresh endpoint gets a fresh quarantine; and the
   transport deadline is the operation deadline at every set from

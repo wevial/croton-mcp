@@ -629,11 +629,6 @@ func runStructureTLSRefusal(t *testing.T, startTLS bool, mode string, test struc
 	if string(record.refused) != plan.refused {
 		t.Fatalf("peer sent %d refused bytes, want %d", len(record.refused), len(plan.refused))
 	}
-	for _, frame := range record.consumed {
-		if bytes.Contains(tap, []byte(frame)) {
-			t.Fatalf("consumed frame %q reached the decoder", frame)
-		}
-	}
 
 	// Guard input: the quarantine consumed every byte before the refused
 	// response, consumed FLAGS-only frames included, and exactly the

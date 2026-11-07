@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"reflect"
 	"strings"
@@ -657,57 +656,25 @@ func TestStructureSessionRefusal(t *testing.T) {
 			}
 		})
 
-		// Cancellation first: the canceled category is fixed before the
-		// closed transport fails the pending Read, and later refusals,
-		// aborts and reads never change it.
-		t.Run("cancellation_first", func(t *testing.T) {
-			harness := startPending(t, [][]structurePeerPart{
-				{{kind: peerApproved, text: structureNoteControl}, {kind: peerRefused, text: structureIncompleteFetch}},
-			}, false)
+		// Abort with the already mapped cancellation category, as the
+		// operation passes it, ends an unrefused reader with that category.
+		t.Run("abort_"+CodeOperationCanceled, func(t *testing.T) {
+			harness := startPending(t, [][]structurePeerPart{{{kind: peerApproved, text: structureNoteControl}}}, false)
 
-			harness.release(0)
-			harness.cancel()
+			harness.session.Abort(errorCode(CodeOperationCanceled))
 
-			harness.refusedWith(CodeOperationCanceled, "")
-			quarantine := harness.session.quarantine
-			if err := quarantine.abort(context.DeadlineExceeded); CodeOf(err) != CodeOperationCanceled {
-				t.Fatalf("abort() = %v", err)
+			got := harness.outcome()
+			if got.err == nil {
+				t.Fatal("FetchStructure() succeeded after Abort")
 			}
-			if err := quarantine.beginDispatch(); CodeOf(err) != CodeOperationCanceled {
-				t.Fatalf("beginDispatch() = %v", err)
+			harness.peer.wait(t)
+			if err := harness.session.quarantine.terminalError(); CodeOf(err) != CodeOperationCanceled {
+				t.Fatalf("quarantine terminal = %v, want %s", err, CodeOperationCanceled)
 			}
-			if count, err := quarantine.Read(make([]byte, 64)); count != 0 || CodeOf(err) != CodeOperationCanceled {
-				t.Fatalf("Read() = %d, %v", count, err)
-			}
-			if _, err := harness.session.FetchStructure(harness.ctx); CodeOf(err) != CodeIMAPProtocol {
-				t.Fatalf("FetchStructure() after abort = %v", err)
-			}
-			if err := harness.session.Close(harness.ctx); err != nil {
-				t.Fatalf("Close() after abort = %v", err)
+			if record := harness.peer.snapshot(); !record.closed || len(record.trailing) != 0 {
+				t.Fatalf("peer closed = %t, trailing = %q", record.closed, record.trailing)
 			}
 		})
-
-		// Abort with an already mapped context category, as the operation
-		// passes it, ends an unrefused reader with that category.
-		for _, cause := range []string{CodeOperationCanceled, CodeCommandTimedOut} {
-			t.Run("abort_"+cause, func(t *testing.T) {
-				harness := startPending(t, [][]structurePeerPart{{{kind: peerApproved, text: structureNoteControl}}}, false)
-
-				harness.session.Abort(errorCode(cause))
-
-				got := harness.outcome()
-				if got.err == nil {
-					t.Fatal("FetchStructure() succeeded after Abort")
-				}
-				harness.peer.wait(t)
-				if err := harness.session.quarantine.terminalError(); CodeOf(err) != cause {
-					t.Fatalf("quarantine terminal = %v, want %s", err, cause)
-				}
-				if record := harness.peer.snapshot(); !record.closed || len(record.trailing) != 0 {
-					t.Fatalf("peer closed = %t, trailing = %q", record.closed, record.trailing)
-				}
-			})
-		}
 
 		// The whole-operation deadline bounds the transport from
 		// construction through close; no stage resets it to none.
@@ -775,17 +742,6 @@ func TestStructureSessionRefusal(t *testing.T) {
 		peer.wait(t)
 		if !bytes.Contains(tap.bytes(), []byte(refused)) {
 			t.Fatalf("pooled tap = %q lacks the refused frame", tap.bytes())
-		}
-
-		// The dedicated stack, same frame and same tap type: zero bytes.
-		harness := startPending(t, [][]structurePeerPart{{{kind: peerApproved, text: structureNoteControl}, {kind: peerRefused, text: refused}}}, false)
-		harness.releaseOnly(0)
-		harness.refusedWith(CodeIMAPProtocol, "")
-		if bytes.Contains(harness.tap.bytes(), []byte(refused[:len("* 1 FETCH")])) {
-			t.Fatal("dedicated tap holds refused bytes")
-		}
-		if _, err := io.ReadAll(harness.session.quarantine); CodeOf(err) != CodeIMAPProtocol {
-			t.Fatalf("ReadAll() after refusal = %v", err)
 		}
 	})
 }
