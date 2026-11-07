@@ -119,9 +119,8 @@ type structureSeams struct {
 	tap       func(net.Conn) net.Conn
 }
 
-// readSelectedStructure runs one unbound dedicated session. tap is a private
-// test seam between the quarantine and the decoder-facing layers; production
-// callers pass nil.
+// readSelectedStructure runs one unbound dedicated session with only the tap
+// seam.
 func readSelectedStructure(parent context.Context, config ValidatedConfig, mailbox string, uid uint32, tap func(net.Conn) net.Conn) (selectedStructure, error) {
 	return readStructure(parent, config, structureRequest{Mailbox: mailbox, UID: uid}, structureSeams{tap: tap})
 }
