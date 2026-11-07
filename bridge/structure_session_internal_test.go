@@ -26,10 +26,6 @@ type structureSessionRun struct {
 	work         int
 }
 
-func structureSessionCredentials() Credentials {
-	return Credentials{Username: []byte("fixture-user"), Password: []byte("fixture-password")}
-}
-
 // runStructureSession drives the dedicated constructor and its whole
 // lifetime against the scripted peer and checks the lifetime invariants
 // every run shares.
@@ -62,7 +58,7 @@ func runStructureSession(t *testing.T, startTLS bool, script structurePeerScript
 		t.Fatalf("dispatch after construction = %d", dispatch)
 	}
 
-	if err := session.Authenticate(ctx, structureSessionCredentials()); err != nil {
+	if err := session.Authenticate(ctx, Credentials{Username: []byte("fixture-user"), Password: []byte("fixture-password")}); err != nil {
 		t.Fatalf("Authenticate() error = %v", err)
 	}
 	snapshot, err := session.Select(ctx, "INBOX")
