@@ -82,11 +82,10 @@ func searchTLSHeaderID(t *testing.T, adapter *Adapter, uid uint32) string {
 	t.Helper()
 
 	page, err := adapter.SearchMailPage(context.Background(), SearchQuery{Mailbox: "INBOX"})
-	results := page.Messages
 	if err != nil {
 		t.Fatalf("SearchMailPage: %v", err)
 	}
-	for _, result := range results {
+	for _, result := range page.Messages {
 		if result.UID == uid {
 			return result.ID
 		}
