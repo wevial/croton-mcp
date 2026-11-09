@@ -16,6 +16,7 @@ publishes a GitHub release. A tag containing a hyphen is a prerelease.
 To install published bytes, download the native binary and `SHA256SUMS`:
 
 ```sh
+RELEASE_TAG=vX.Y.Z
 ASSET="croton-mcp-$RELEASE_TAG-$(go env GOHOSTOS)-$(go env GOHOSTARCH)"
 gh release download "$RELEASE_TAG" --repo wevial/croton-mcp --pattern "$ASSET" --pattern SHA256SUMS
 grep " $ASSET\$" SHA256SUMS | sha256sum -c -   # macOS: shasum -a 256 -c -
