@@ -37,54 +37,25 @@ go build ./...
 go vet ./...
 go test -race ./...
 MAIL_CANDIDATE_DIR=/absolute/operator/candidates/mail-reviewed
-python3 scripts/stage_mail_candidate.py --revision "$REVIEWED_REVISION" --output "$MAIL_CANDIDATE_DIR"
+test ! -e "$MAIL_CANDIDATE_DIR"
+mkdir -p "$MAIL_CANDIDATE_DIR"
+go build -trimpath -ldflags "-X github.com/wevial/croton-mcp/internal/mcpserver.version=$RELEASE_TAG" -o "$MAIL_CANDIDATE_DIR/croton-mcp" ./cmd/croton-mcp
 ```
 
 Record the printed full SHA and confirm HEAD equals it. Confirm `go version`
-reports Go 1.26.10, matching the repository's `go.mod` toolchain. Review and
-retain the candidate manifest with its SHA, toolchain, platform, and binary
-SHA-256 locally. Race tests require a supported C compiler.
-
-The local staging helper requires Python 3.12 or newer, a full maintainer-reviewed
-revision equal to HEAD, a clean tracked working tree and index, and an absent
-absolute output directory outside the checkout (with an existing parent).
-It does not fetch or check out revisions. It builds only `./cmd/croton-mcp` with
-`-trimpath` from a temporary Git archive of the selected revision; ignored and
-untracked checkout inputs are excluded. Git archive export attributes apply.
-Only native Linux and macOS targets are supported; cross-compilation is rejected
-before building. The helper selects Go 1.26.10, disables Go workspace and persisted
-Go environment settings, and clears GOFLAGS. Dependency downloads may still occur;
-this is not hermetic reproducibility.
-
-The candidate directory contains `croton-mcp` and `manifest.json`, recording
-`revision`, `toolchain`, `GOOS`, `GOARCH`, `binary` (filename), and `sha256` of the
-actual binary bytes. Existing output is never replaced. Failed builds remove
-temporary staging and do not create final output. After success, review the
-manifest and independently compare the binary's SHA-256 before manual installation
-below. Checksums provide integrity, not signatures or provenance attestation.
-Nothing is published or installed by the helper; it makes no profile or service
-changes and accesses no live accounts. Synthetic subprocess tests verify the
-helper contract only; they are not evidence that a real release was built.
-Actual candidate acceptance remains a separate operator step.
+reports Go 1.26.10, matching the repository's `go.mod` toolchain. Record the
+built binary's SHA-256 locally. Race tests require a supported C compiler.
+The `-X` flag stamps the tag into `serverInfo.version`; an unstamped build
+reports `dev`.
 
 A source build and published-byte acceptance are different paths. Locally
 rebuilt bytes are not assumed equal to a release asset: builds are not
 guaranteed reproducible, so a binary built here from a release tag can hash
-differently from the binary published for that tag. Pilot acceptance requires
-the selected published staged bytes whose SHA-256 matches the release notes, as
-described in the release guide; stage those bytes, not a local rebuild, for the
-pilot. Pilot acceptance installs only the selected published native binary
-asset verified against both the published manifest and release-note SHA-256; a
-local source build is not a pilot artifact. If the platform is unsupported or no
-native asset is published for it, STOP the binary path.
-
-Candidate publication is not atomic. If linking the candidate files fails, the
-helper attempts to remove its linked files and the output directory. Cleanup
-errors can leave partial output; the helper reports incomplete rollback and
-returns nonzero. Inspect the requested output locally, do not install it, and
-remove only artifacts you identify as belonging to the failed attempt before
-retrying with an absent output path. Concurrently created entries are not removed
-by rollback.
+differently from the binary published for that tag. Pilot acceptance installs
+only the published native binary whose SHA-256 matches the release's
+`SHA256SUMS`, as described in the release guide; a local source build is not a
+pilot artifact. If no native asset is published for the platform, STOP the
+binary path.
 
 ## User-owned layout
 
@@ -112,7 +83,7 @@ dangling symlinks); if either is occupied, STOP rather than overwrite it. Create
 the selected directories with mode `0700`, then stage exactly one binary as
 `croton-mcp.candidate` in the selected bin directory, from exactly one entry.
 
-Source-build entry: copy the helper output from Source build, for example:
+Source-build entry: copy the binary built in Source build, for example:
 
 ```sh
 umask 077
@@ -120,22 +91,21 @@ CROTON_BIN_DIR=/absolute/operator/bin
 install -m 0700 "$MAIL_CANDIDATE_DIR/croton-mcp" "$CROTON_BIN_DIR/croton-mcp.candidate"
 ```
 
-Compare the staged binary's SHA-256 with the helper manifest `sha256` using the
-platform's local hash utility.
+Compare the staged binary's SHA-256 with the hash recorded in Source build
+using the platform's local hash utility.
 
 Published-byte entry: for pilot acceptance, skip the source-build copy and copy
-the platform-named asset accepted under Accepting published bytes in the
+the platform-named asset verified against `SHA256SUMS` in the
 [Mail release guide](RELEASE.md) exactly once, for example:
 
 ```sh
 umask 077
 CROTON_BIN_DIR=/absolute/operator/bin
-install -m 0700 "$MAIL_RELEASE_DIR/$MAIL_RELEASE_ASSET" "$CROTON_BIN_DIR/croton-mcp.candidate"
+install -m 0700 "$ASSET" "$CROTON_BIN_DIR/croton-mcp.candidate"
 ```
 
 Hash the staged candidate with `sha256sum` on Linux or `shasum -a 256` on macOS
-and confirm it equals the release-note SHA-256 and the published manifest
-`sha256` before renaming it. Never copy a local rebuild over this candidate. On
+and confirm it equals the asset's line in `SHA256SUMS` before renaming it. Never copy a local rebuild over this candidate. On
 any mismatch, STOP; remove only that candidate and do not edit expected checksums.
 
 For either entry, prepare and verify the config, trust and helper below before
@@ -282,10 +252,10 @@ credentials, protocol captures or unredacted diagnostics to agents or tickets.
    backups local and protected; record the previous source SHA and client
    executable/argument settings. Do not log config or secret contents.
 4. Stage the candidate under a new unused filename in the selected bin directory,
-   copied once from either the Source build helper output or, for published-byte
+   copied once from either the Source build output or, for published-byte
    acceptance, the accepted platform-named asset. Compare its SHA-256 with the
-   helper manifest `sha256`, or with the release-note SHA-256 and the published
-   manifest `sha256` respectively; on mismatch, STOP.
+   hash recorded in Source build, or with its line in `SHA256SUMS`
+   respectively; on mismatch, STOP.
    Stage every required reviewed config, helper and trust change as a regular
    file under a new unused name in its target directory with restrictive
    permissions. Verify staged hashes, ownership and modes, and confirm that
@@ -341,13 +311,13 @@ Never bypass certificate verification to make an update or rollback pass.
 ## Distribution limitations
 
 This is a source-build path from a published release tag, with optional
-acceptance of platform-identified staged binaries published with a matching
+acceptance of the platform-identified binaries published with a matching
 release; see the [Mail release guide](RELEASE.md). This guide does not claim
 that any release has been published, and a tag without a matching published
 non-draft GitHub release means STOP. The repository does not provide supported
 install packages, a release updater, binary signing, installer automation, or
-a validated binary download channel beyond the manual checksum comparison in
-the release guide. No release automation or publishing is performed here.
+a validated binary download channel beyond the `SHA256SUMS` comparison in
+the release guide. This guide publishes nothing.
 Operators select tags, build, stage, update and retain rollback artifacts
 themselves. Compilation on another platform is not proof of supported secure
 configuration loading or client compatibility.

@@ -226,11 +226,11 @@ func TestIndependentStdioCatalog(t *testing.T) {
 }
 
 // buildCrotonBinary builds the production command into a test-owned directory.
-func buildCrotonBinary(t *testing.T) string {
+func buildCrotonBinary(t *testing.T, flags ...string) string {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "croton-mcp")
-	build := exec.Command("go", "build", "-o", path, ".")
+	build := exec.Command("go", append(append([]string{"build"}, flags...), "-o", path, ".")...)
 
 	var stderr bytes.Buffer
 	build.Stderr = &stderr
