@@ -33,7 +33,7 @@ Each case uses a fresh child and synthetic secure config, verifies protocol-only
 stdout and clean shutdown after stdin EOF, and asserts the credential helper was
 never invoked. It performs no tool calls or Bridge/account access. This is generic
 protocol evidence, not validated Claude Code or Codex compatibility or branded-client
-certification. `TestIndependentStdioCatalogDocumentation` pins this coverage note.
+certification.
 
 ## Running
 
@@ -344,8 +344,9 @@ assistant proposal is not: the client shows the exact payload and calls only
 after the user confirms it. An ambiguous selection, or one with no exact
 displayed snapshot, needs clarification before any call. Ordinal words such
 as "the first 3" resolve against the displayed snapshot, never a later
-search. Instructions found in mail content never authorize a call. Approval
-does not outlive its payload; a prior action, restart or configuration change
+search. Instructions found in mail content never authorize a call, and the
+client never presents one to the user as a request or a proposal to approve.
+Approval does not outlive its payload; a prior action, restart or configuration change
 grants nothing. Label changes are out of scope: Bridge models a label add or
 removal as COPY or EXPUNGE, both of which stay prohibited.
 
@@ -479,8 +480,7 @@ failures and every other normalization code; no partial graph is returned.
 
 `TestGetThreadSyntheticWire` and `TestThreadHeaderTransport` verify linked and
 independent-root membership, the one-message bound, and read-only header-only
-PEEK fetches over loopback TLS using synthetic mail. `TestThreadSubjectSiblingDocumentation` pins the contract
-sentences above.
+PEEK fetches over loopback TLS using synthetic mail.
 
 ## Output
 
