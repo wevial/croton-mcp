@@ -8,11 +8,6 @@ network listener, and no MCP resources, prompts, Roots, Sampling, or Logging —
 a fail-closed method allowlist rejects everything except initialization,
 discovery, ping, and the tool methods.
 
-This page covers the Mail server only. The separate Drive executable,
-`croton-drive-mcp`, has its own contract in [docs/DRIVE-MCP.md](DRIVE-MCP.md);
-its bounds, error vocabulary, and always-on audit stream differ from those
-described here, and every claim there names the test that pins it.
-
 Five default-off triage tools sit behind a local `mutations.enabled` file
 opt-in, limited to Seen `UID STORE` and native `UID MOVE`, with approval owned
 by the trusted client. All five are implemented: the Seen tools `mark_read` and `mark_unread`, and the move tools
