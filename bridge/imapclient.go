@@ -1011,8 +1011,7 @@ func closeFlagsOnly(command *imapclient.FetchCommand) error {
 // retryFlagsOnly issues fetch once more after a flags-only reply. A second
 // flags-only reply is returned as imap_protocol.
 func retryFlagsOnly(fetch func() error) error {
-	err := fetch()
-	if err != errFlagsOnly {
+	if err := fetch(); err != errFlagsOnly {
 		return err
 	}
 
