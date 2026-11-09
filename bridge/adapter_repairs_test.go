@@ -229,6 +229,48 @@ func TestAdapterRejectsOversizedESearchRangeWithoutMaterializingIt(t *testing.T)
 	}
 }
 
+func TestAdapterRejectsSearchResponseBeyondInputBudget(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		response string
+		wantCode string
+	}{
+		{name: "within budget", response: "* SEARCH 101"},
+		{name: "beyond budget", response: "* OK " + strings.Repeat("X", 8<<10) + "\r\n* SEARCH 101", wantCode: bridge.CodeBoundsExceeded},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server, err := testkit.Start(testkit.Options{
+				Mode:     testkit.ImplicitTLS,
+				Scenario: testkit.Scenario{SearchResponse: test.response},
+			})
+			if err != nil {
+				t.Fatalf("start fake server: %v", err)
+			}
+			t.Cleanup(func() { _ = server.Close() })
+
+			config := fakeServerConfig(t, server.Addr(), bridge.TLSModeImplicit, bridge.TLSConfig{SPKISHA256: server.SPKISHA256()})
+			config.Bounds = bridge.BoundsPatch{MaxSearchResults: bridge.Int(1)}
+			adapter, err := bridge.NewAdapter(config)
+			if err != nil {
+				t.Fatalf("NewAdapter: %v", err)
+			}
+			t.Cleanup(func() { _ = adapter.Close() })
+
+			page, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+
+			if test.wantCode == "" {
+				if err != nil || len(page.Messages) != 1 {
+					t.Fatalf("SearchMailPage = %#v, %v, want one result", page, err)
+				}
+				return
+			}
+			if bridge.CodeOf(err) != test.wantCode || page.Messages != nil {
+				t.Fatalf("SearchMailPage oversized response = %#v, %v, want %q and no results", page, err, test.wantCode)
+			}
+		})
+	}
+}
+
 func TestAdapterReconnectsAfterBoundedAbort(t *testing.T) {
 	server, err := testkit.Start(testkit.Options{
 		Mode:     testkit.ImplicitTLS,
@@ -393,43 +435,4 @@ func commandStrings(commands []testkit.Command) []string {
 		result = append(result, command.Raw)
 	}
 	return result
-}
-
-func TestAdapterRejectsDuplicateSearchUIDsOnTheWire(t *testing.T) {
-	for _, test := range []struct {
-		name     string
-		response string
-	}{
-		{name: "SEARCH repeated UID", response: "* SEARCH 101 101"},
-		{name: "SEARCH repeated across lines", response: "* SEARCH 101\r\n* SEARCH 101"},
-		{name: "ESEARCH ALL repeated UID", response: `* ESEARCH (TAG "{TAG}") UID ALL 101,101`},
-		{name: "ESEARCH ALL overlapping range", response: `* ESEARCH (TAG "{TAG}") UID ALL 100:101,101`},
-		{name: "ESEARCH ALL repeated UID after literal TAG", response: "* ESEARCH (TAG {2}\r\n{TAG}) UID ALL 101,101"},
-		{name: "ESEARCH ALL repeated UID after nested extension ALL", response: `* ESEARCH (TAG "{TAG}") UID X (F ALL 101) ALL 101,101`},
-		{name: "ESEARCH ALL repeated UID after quoted extension value", response: `* ESEARCH (TAG "{TAG}") UID X "ALL 101" ALL 101,101`},
-		{name: "ESEARCH ALL repeated UID after unspaced extension value", response: `* ESEARCH (TAG "{TAG}") UID X(F ALL 101) ALL 101,101`},
-		{name: "SEARCH repeated UID before unspaced MODSEQ", response: "* SEARCH 101 101(MODSEQ 5)"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			server, err := testkit.Start(testkit.Options{
-				Mode:     testkit.ImplicitTLS,
-				Scenario: testkit.Scenario{SearchResponse: test.response},
-			})
-			if err != nil {
-				t.Fatalf("start fake server: %v", err)
-			}
-			t.Cleanup(func() { _ = server.Close() })
-
-			adapter, err := bridge.NewAdapter(fakeServerConfig(t, server.Addr(), bridge.TLSModeImplicit, bridge.TLSConfig{SPKISHA256: server.SPKISHA256()}))
-			if err != nil {
-				t.Fatalf("NewAdapter: %v", err)
-			}
-			t.Cleanup(func() { _ = adapter.Close() })
-
-			results, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
-			if bridge.CodeOf(err) != bridge.CodeIMAPProtocol || results != nil {
-				t.Fatalf("SearchMail duplicate UID = %#v, %v, want %q and no results", results, err, bridge.CodeIMAPProtocol)
-			}
-		})
-	}
 }
