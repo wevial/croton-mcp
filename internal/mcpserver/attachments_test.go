@@ -119,11 +119,11 @@ func requireNoRawReads(t *testing.T, label string, mail *fakeMail) {
 }
 
 // selectedStructure is an arranged structure result whose attachments carry
-// the given metadata and a private transfer octet count.
+// the given metadata.
 func selectedStructure(id string, tuple readTuple, attachments ...bridge.AttachmentMetadata) bridge.MessageAttachmentStructure {
 	entries := make([]bridge.AttachmentStructureEntry, 0, len(attachments))
 	for _, attachment := range attachments {
-		entries = append(entries, bridge.AttachmentStructureEntry{AttachmentMetadata: attachment, HasTransferOctets: true, TransferOctets: 7654321})
+		entries = append(entries, bridge.AttachmentStructureEntry{AttachmentMetadata: attachment})
 	}
 
 	return bridge.MessageAttachmentStructure{ID: id, Mailbox: tuple.Mailbox, UIDValidity: tuple.UIDValidity, UID: tuple.UID, Attachments: entries}

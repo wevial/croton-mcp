@@ -241,12 +241,13 @@ incomplete, not proof that the message has no attachments.
 Listing attachments requests UID BODYSTRUCTURE only; it does not fetch or
 parse the message body. It never returns attachment bytes, transfer sizes,
 decoded sizes, the message size, body text, headers, read state or per-part
-identifiers. Each attachment listing opens a fresh dedicated TLS session, runs
-the credential helper and logs in again; it does not reuse the pooled session.
-That session confirms the opaque id's UIDVALIDITY generation and UID before
-its one structure FETCH, so a listing still fails with a code-only error when
-the id is stale or missing, when selection, response-frame, token, guard or
-MIME structure bounds are exceeded, or when the session cannot be established.
+identifiers. Each attachment listing runs on the pooled Bridge session like
+every other read, so it opens no new connection, runs no credential helper and
+does not log in again once that session exists. It confirms the opaque id's
+UIDVALIDITY generation and UID before its one structure FETCH, so a listing
+still fails with a code-only error when the id is stale or missing, when the
+structure response exceeds its 128 KiB budget or is malformed, or when the
+session cannot be established.
 A large raw message body alone is not a reason to refuse a listing. A Mail
 surface without the structure read refuses `list_attachments` as
 `unsupported` and never falls back to a body read.

@@ -8,17 +8,12 @@ import (
 
 type sessionFactory func(context.Context) (readSession, error)
 
-// structureReader runs one fresh dedicated structure read. It is never the
-// pooled session.
-type structureReader func(context.Context, ValidatedConfig, structureRequest) (selectedStructure, error)
-
 // Adapter serializes a single authenticated IMAP session. Its only writes are
 // the opt-in, Seen-only SetSeen and native Move; every other operation is
 // read-only.
 type Adapter struct {
 	config  ValidatedConfig
 	factory sessionFactory
-	reader  structureReader
 	gate    chan struct{}
 	idKey   [32]byte
 
@@ -47,7 +42,6 @@ func NewAdapter(input Config) (*Adapter, error) {
 	}
 	adapter.gate <- struct{}{}
 	adapter.factory = adapter.openSession
-	adapter.reader = readBoundStructure
 
 	return adapter, nil
 }

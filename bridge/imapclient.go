@@ -33,6 +33,7 @@ const (
 	maxControlResponseBytes           = 64 << 10
 	maxListResponseBytes              = maxControlResponseBytes
 	fetchResponseOverheadBytes        = 4 << 10
+	maxStructureResponseBytes         = 128 << 10
 )
 
 var errIMAPInputLimit = errors.New("IMAP response exceeds input budget")
@@ -71,6 +72,13 @@ type moveSession interface {
 // metadata and bounded canonical headers from a single header-only FETCH.
 type headerSession interface {
 	UIDFetchHeaders(context.Context, uint32, int) (MessageHeaders, error)
+}
+
+// structureSession is an optional read capability beside readSession. It
+// returns one selected message's extended BODYSTRUCTURE from a single
+// structure-only FETCH.
+type structureSession interface {
+	fetchUIDStructure(context.Context, uint32) (bodyStructure, error)
 }
 
 // listedMailbox is one ordinary LIST entry with its protocol attributes.
@@ -1024,7 +1032,7 @@ func (session *imapSession) abortFetch(command *imapclient.FetchCommand) {
 }
 
 // bodyStructure is go-imap's decoded BODYSTRUCTURE, named here so the
-// dedicated structure session never imports go-imap itself.
+// projection never imports go-imap itself.
 type bodyStructure = imap.BodyStructure
 
 // singlePartStructure is one leaf of a bodyStructure, named for the same
@@ -1090,7 +1098,7 @@ func (session *imapSession) fetchUIDStructure(ctx context.Context, uid uint32) (
 
 		return command.Close()
 	}
-	err := retryFlagsOnly(func() error { return session.withBoundedInput(ctx, quarantineSessionBytes, fetch) })
+	err := retryFlagsOnly(func() error { return session.withBoundedInput(ctx, maxStructureResponseBytes, fetch) })
 	if err != nil {
 		return nil, err
 	}

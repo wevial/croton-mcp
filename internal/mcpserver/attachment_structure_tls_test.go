@@ -123,9 +123,10 @@ func startStructureTLSAdapter(t *testing.T, mode testkit.TLSMode) (*testkit.Serv
 	return server, adapter
 }
 
-// requireStructureOnlyListing requires one listing's transcript slice to be a
-// single fresh connection that authenticates once over TLS and issues exactly
-// one UID FETCH of the wanted UID requesting UID BODYSTRUCTURE only.
+// requireStructureOnlyListing requires one listing's transcript slice to stay
+// on the earlier pooled connection without authenticating again, run over TLS
+// and issue exactly one UID FETCH of the wanted UID requesting UID
+// BODYSTRUCTURE only.
 func requireStructureOnlyListing(t *testing.T, mode testkit.TLSMode, slice []testkit.Command, earlier map[int]bool, wantUID uint32) int {
 	t.Helper()
 
@@ -134,8 +135,8 @@ func requireStructureOnlyListing(t *testing.T, mode testkit.TLSMode, slice []tes
 	}
 
 	connection := slice[0].ConnectionID
-	if earlier[connection] {
-		t.Fatalf("listing reused connection %d", connection)
+	if !earlier[connection] {
+		t.Fatalf("listing opened connection %d instead of reusing the pooled session", connection)
 	}
 
 	logins, fetches := 0, 0
@@ -164,8 +165,8 @@ func requireStructureOnlyListing(t *testing.T, mode testkit.TLSMode, slice []tes
 			t.Fatalf("listing issued %q outside the read-only structure path", command.Raw)
 		}
 	}
-	if logins != 1 || fetches != 1 {
-		t.Fatalf("listing authenticated %d and fetched %d times, want 1 and 1", logins, fetches)
+	if logins != 0 || fetches != 1 {
+		t.Fatalf("listing authenticated %d and fetched %d times, want 0 and 1", logins, fetches)
 	}
 
 	return connection
