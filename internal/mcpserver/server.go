@@ -10,10 +10,13 @@ import (
 )
 
 const (
-	version                = "0.0.0"
 	currentProtocolVersion = "2026-07-28"
 	legacyProtocolVersion  = "2025-11-25"
 )
+
+// version is stamped at release with
+// -ldflags "-X github.com/wevial/croton-mcp/internal/mcpserver.version=<tag>".
+var version = "dev"
 
 var errServerUnavailable = errors.New("server unavailable")
 
