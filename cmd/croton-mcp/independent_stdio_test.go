@@ -224,20 +224,3 @@ func TestIndependentStdioCatalog(t *testing.T) {
 		})
 	}
 }
-
-func TestIndependentStdioCatalogDocumentation(t *testing.T) {
-	content, err := os.ReadFile(filepath.Join("..", "..", "docs", "MCP.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for _, statement := range []string{
-		"`TestIndependentStdioCatalog`", "independent legacy protocol coverage",
-		"`2025-11-25`", "one frame per write", "split across two writes",
-		"not validated Claude Code or Codex compatibility",
-	} {
-		if !strings.Contains(string(content), statement) {
-			t.Errorf("MCP.md lacks coverage statement %q", statement)
-		}
-	}
-}

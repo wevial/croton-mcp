@@ -6,8 +6,7 @@ Croton deliberately does not defend against. It is written from the invariants
 in `AGENTS.md`, the data rules in `SECURITY.md`, the `README.md` platform and
 security sections and the code itself. Every boundary below names the code that
 enforces it so that a reviewer can check a change against this model rather
-than against memory. `scripts/verify_docs_threat_model.py` pins the structure
-and the statements that are easiest to get wrong.
+than against memory.
 
 Croton ships two separate local executables, `cmd/croton-mcp` for Proton Mail
 Bridge and `cmd/croton-drive-mcp` for the Proton Drive CLI. They share no
@@ -84,7 +83,7 @@ usage. `bridge/dial.go` performs the connection and STARTTLS upgrade under a
 byte and time budget, and `bridge/config.go` documents the anchor-versus-pin
 choice. With the default configuration the adapter in `bridge` sends no
 mutating IMAP command, so nothing sent through it can alter the mailbox. The
-default-off triage writes in `docs/design/0005-mail-triage.md` are limited to
+default-off triage writes in `docs/MCP.md` are limited to
 Seen `UID STORE` and native `UID MOVE` over this same boundary, and are sent
 only when `mutations.enabled` is true: `bridge/seen.go` sends one Seen-only
 `UID STORE` per UID, and `bridge/move.go` sends one native `UID MOVE` per UID
@@ -201,8 +200,7 @@ as a tool. The internal confined output opener has no production call site;
 
 ### Planned Drive downloads
 
-Planned downloads follow the accepted [resolution-time download
-boundary](design/0003-download-boundary.md). The confined opener has shipped,
+The confined opener has shipped,
 but download registration and policy enforcement have not shipped.
 
 Operators must configure client-managed per-call confirmation before enabling
@@ -231,9 +229,6 @@ Future download audit lines identify source, destination and outcome, never
 claimed consent, credentials or share passwords; paths can reveal sensitive
 names and activity and require protected log access and retention. This future
 path-logging policy does not change the current audit vocabulary.
-
-Documentation verifiers witness these policy statements structurally, not
-runtime enforcement.
 
 The shipped opener is in `internal/drivefs/confined.go`; `WriteFresh` alone
 does not provide cleanup or publication. Relocation of the allowed root or its

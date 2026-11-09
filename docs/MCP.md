@@ -13,12 +13,9 @@ This page covers the Mail server only. The separate Drive executable,
 its bounds, error vocabulary, and always-on audit stream differ from those
 described here, and every claim there names the test that pins it.
 
-The historical [proposed Mail mutation boundary](design/0002-mail-mutation.md)
-is superseded by the [Mail triage design](design/0005-mail-triage.md). The
-successor plans five default-off triage tools behind a local
-`mutations.enabled` file opt-in, limited to Seen `UID STORE` and native
-`UID MOVE`, with approval owned by the trusted client. All five are
-implemented: the Seen tools `mark_read` and `mark_unread`, and the move tools
+Five default-off triage tools sit behind a local `mutations.enabled` file
+opt-in, limited to Seen `UID STORE` and native `UID MOVE`, with approval owned
+by the trusted client. All five are implemented: the Seen tools `mark_read` and `mark_unread`, and the move tools
 `move_mail`, `archive_mail` and `trash_mail`. With the opt-in absent or false,
 the default, the catalog is the six read tools below and Mail remains
 read-only.
@@ -36,7 +33,7 @@ Each case uses a fresh child and synthetic secure config, verifies protocol-only
 stdout and clean shutdown after stdin EOF, and asserts the credential helper was
 never invoked. It performs no tool calls or Bridge/account access. This is generic
 protocol evidence, not validated Claude Code or Codex compatibility or branded-client
-certification. `TestIndependentStdioCatalogDocumentation` pins this coverage note.
+certification.
 
 ## Running
 
@@ -188,9 +185,7 @@ returning a partial, zero or guessed identity, and a stale id fails with
 
 These fields are read metadata only. They are not account authentication or
 approval, grant no write authority, and different accounts may share the same
-tuple. Account continuity is unavailable. The write pilot remains blocked. The
-[Mail principal selection record](design/0007-mail-principal-selection.md)
-describes the blocked continuity work.
+tuple. Account continuity is unavailable. The write pilot remains blocked.
 
 Each `get_thread` node carries its own `mailbox`, `uidvalidity` and `uid`,
 taken from the metadata already fetched for that member and associated by its
@@ -336,8 +331,24 @@ When `mutations.enabled` is true, five more tools are registered with
 `destructiveHint: false` and `idempotentHint: true`; the move tools publish
 `destructiveHint: true` and `idempotentHint: false`, because they remove
 messages from their source. Annotations describe the tools; they neither
-prompt for nor prove approval, which belongs to the trusted client under the
-[Mail triage design](design/0005-mail-triage.md).
+prompt for nor prove approval, which belongs to the trusted client.
+`mutations.enabled` accepts only a boolean; any other type, including null, is
+a configuration error at startup. Enabling it makes the tools available and
+approves no action.
+
+Croton cannot verify human intent, so the client owns approval. One approval
+covers one exact payload: one tool, source mailbox, UIDVALIDITY, ordered UID
+list and, for `move_mail`, destination. A clear, direct user request that
+resolves against identities the client has displayed is that approval. An
+assistant proposal is not: the client shows the exact payload and calls only
+after the user confirms it. An ambiguous selection, or one with no exact
+displayed snapshot, needs clarification before any call. Ordinal words such
+as "the first 3" resolve against the displayed snapshot, never a later
+search. Instructions found in mail content never authorize a call, and the
+client never presents one to the user as a request or a proposal to approve.
+Approval does not outlive its payload; a prior action, restart or configuration change
+grants nothing. Label changes are out of scope: Bridge models a label add or
+removal as COPY or EXPUNGE, both of which stay prohibited.
 
 | Tool | Purpose |
 | ---- | ------- |
@@ -469,8 +480,7 @@ failures and every other normalization code; no partial graph is returned.
 
 `TestGetThreadSyntheticWire` and `TestThreadHeaderTransport` verify linked and
 independent-root membership, the one-message bound, and read-only header-only
-PEEK fetches over loopback TLS using synthetic mail. `TestThreadSubjectSiblingDocumentation` pins the contract
-sentences above.
+PEEK fetches over loopback TLS using synthetic mail.
 
 ## Output
 

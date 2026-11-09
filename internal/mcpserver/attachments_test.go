@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"os"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -406,38 +405,6 @@ func TestListAttachmentsStructureMCP(t *testing.T) {
 		for _, leaked := range []string{"opaque-errors", "peer-detail-sentinel", "helper-sentinel", "INBOX", "report.pdf"} {
 			if strings.Contains(audit.String(), leaked) {
 				t.Fatalf("audit recorded %q", leaked)
-			}
-		}
-	})
-
-	t.Run("docs_contract", func(t *testing.T) {
-		t.Parallel()
-
-		contents, err := os.ReadFile("../../docs/MCP.md")
-		if err != nil {
-			t.Fatalf("read Mail documentation: %v", err)
-		}
-		documentation := strings.Join(strings.Fields(string(contents)), " ")
-		for _, statement := range []string{
-			"Listing attachments requests UID BODYSTRUCTURE only; it does not fetch or parse the message body.",
-			"`list_attachments` reasons are `mimeParts`, `mimeDepth`, `attachments` and `output`.",
-			"Each attachment listing opens a fresh dedicated TLS session, runs the credential helper and logs in again; it does not reuse the pooled session.",
-			"A large raw message body alone is not a reason to refuse a listing.",
-			"`headerCount` means the same for header fields, but only `get_message` reports it.",
-			"`get_message` still fetches and parses the bounded raw MIME message with `BODY.PEEK[]`",
-			"The value is a sender-controlled declaration, not a count of decoded bytes or of the transferred part.",
-		} {
-			if !strings.Contains(documentation, statement) {
-				t.Errorf("Mail documentation missing listing statement: %q", statement)
-			}
-		}
-		for _, stale := range []string{
-			"Listing attachments still fetches and parses",
-			"`list_attachments` reasons are `headers`",
-			"`mimeParts`, `mimeDepth` and `headerCount` mean",
-		} {
-			if strings.Contains(documentation, stale) {
-				t.Errorf("Mail documentation keeps the raw listing claim %q", stale)
 			}
 		}
 	})

@@ -51,8 +51,7 @@ credential command until the first operation. The connection is loopback-only
 over TLS with explicit trust material; certificate-authority bundles are
 rejected. The six tools are listed in [docs/MCP.md](MCP.md#tools).
 
-Mail triage is specified in the
-[Mail triage design](design/0005-mail-triage.md): five default-off tools behind
+Mail triage is specified in [docs/MCP.md](MCP.md#triage-tools): five default-off tools behind
 the local `mutations.enabled` file opt-in, limited to Seen `UID STORE` and
 native `UID MOVE`. All five are implemented. When the
 opt-in is absent or false, the default, the catalog is the six read tools and

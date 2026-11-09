@@ -10,8 +10,8 @@ import (
 	"sync"
 )
 
-// Limits of the structure quarantine. docs/design/0010-structure-quarantine.md
-// fixes each one; none is reset during a reader's lifetime.
+// Limits of the structure quarantine. None is reset during a reader's
+// lifetime.
 const (
 	quarantineFrameBytes   = 65536
 	quarantineDepth        = 64
@@ -96,9 +96,6 @@ const (
 // the pending client's single delivery for that UID. Every other FETCH, and
 // any input it cannot frame within its budgets, is a sticky refusal that
 // releases none of that frame's bytes.
-//
-// It has no production caller; docs/design/0010-structure-quarantine.md
-// records the integration that must precede one.
 type structureQuarantine struct {
 	source      io.Reader
 	selectedUID uint32

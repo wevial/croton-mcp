@@ -11,9 +11,8 @@ behavior or usability. The pilot exists to observe both on a small set of
 self-sent test messages before anyone considers real-inbox authorization,
 which this runbook does not grant.
 
-The [Mail triage design](design/0005-mail-triage.md) and the
-[MCP contract](MCP.md#triage-tools) remain authoritative for tool behavior.
-The pilot's confirmation rule is intentionally stricter than the design's
+The [MCP contract](MCP.md#triage-tools) remains authoritative for tool behavior.
+The pilot's confirmation rule is intentionally stricter than the contract's
 direct-request rule. All paths, folder names and identities below are role
 placeholders; keep real values private and never paste them into tickets,
 agent conversations or the public evidence template.
@@ -259,9 +258,8 @@ Usability prompts, answered in a sentence each without private data:
 
 ## Structured contract
 
-This block is the machine-checked form of the boundaries above, verified by
-`scripts/verify_docs_mail_triage_pilot.py`. It is a documentation witness and
-does not enforce anything at runtime.
+This block is the structured form of the boundaries above. It does not
+enforce anything at runtime.
 
 <!-- mail-triage-pilot-contract -->
 ```json

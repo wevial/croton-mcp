@@ -19,14 +19,13 @@ configuration allow.
 
 ## Status
 
-Early implementation, read-only by default. The executable supports MCP `2026-07-28` by default and the legacy `2025-11-25` initialization flow for older clients. Its local Bridge adapter supports bounded folder, status, search, metadata, thread, attachment-metadata, and body reads over verified loopback TLS. Unless the configuration file sets `mutations.enabled` to true, it exposes no mail mutation. With that opt-in, the `mark_read` and `mark_unread` tools from the [Mail triage design](docs/design/0005-mail-triage.md) change only the Seen flag, one UID per `UID STORE`, `move_mail` moves messages to one exact, validated existing folder, one UID per native `UID MOVE`, and `archive_mail` and `trash_mail` do the same into the one selectable mailbox the server marks `\Archive` or `\Trash`, never deleting anything; no live account write has been exercised.
+Early implementation, read-only by default. The executable supports MCP `2026-07-28` by default and the legacy `2025-11-25` initialization flow for older clients. Its local Bridge adapter supports bounded folder, status, search, metadata, thread, attachment-metadata, and body reads over verified loopback TLS. Unless the configuration file sets `mutations.enabled` to true, it exposes no mail mutation. With that opt-in, the `mark_read` and `mark_unread` tools change only the Seen flag, one UID per `UID STORE`, `move_mail` moves messages to one exact, validated existing folder, one UID per native `UID MOVE`, and `archive_mail` and `trash_mail` do the same into the one selectable mailbox the server marks `\Archive` or `\Trash`, never deleting anything; no live account write has been exercised.
 
 No release tag exists yet, so the tagged-release steps in the installation and
 release guides cannot be followed until one is cut.
 
-Mail labels are planned, not shipped. The [Mail label design](docs/design/0006-mail-labels.md)
-records a separately gated contract for adding and removing existing labels;
-no label tool is registered and no configuration accepts a label opt-in.
+Mail labels are not shipped: no label tool is registered and no configuration
+accepts a label opt-in.
 
 ## Croton Drive MCP (unofficial)
 
