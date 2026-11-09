@@ -22,15 +22,13 @@ type attachmentProjector struct {
 }
 
 // projectedEntity is the normalized media type, parameters and disposition
-// of one visited entity, and its transfer octets when it is a single part.
+// of one visited entity.
 type projectedEntity struct {
 	mediaType             string
 	parameters            map[string]string
 	disposition           string
 	dispositionParameters map[string]string
 	children              []bodyStructure
-	hasTransferOctets     bool
-	transferOctets        uint32
 }
 
 // projectAttachmentStructure projects the attachment metadata of structure
@@ -116,8 +114,6 @@ func (projector *attachmentProjector) appendAttachment(entity projectedEntity, f
 
 	entry := AttachmentStructureEntry{
 		AttachmentMetadata: AttachmentMetadata{Filename: filename, ContentType: contentType, Disposition: disposition},
-		HasTransferOctets:  entity.hasTransferOctets,
-		TransferOctets:     entity.transferOctets,
 	}
 	if size, err := strconv.ParseInt(entity.dispositionParameters["size"], 10, 64); err == nil && size >= 0 {
 		entry.DeclaredSize = size
@@ -127,9 +123,7 @@ func (projector *attachmentProjector) appendAttachment(entity projectedEntity, f
 	projector.attachments = append(projector.attachments, entry)
 }
 
-// structureEntity normalizes one decoded node. A multipart container has no
-// transfer octets of its own: the server declares none, and neither a sum of
-// its children nor a declared size stands in for them.
+// structureEntity normalizes one decoded node.
 func structureEntity(structure bodyStructure) (projectedEntity, error) {
 	entity := projectedEntity{}
 	mediaType := ""
@@ -143,8 +137,6 @@ func structureEntity(structure bodyStructure) (projectedEntity, error) {
 
 		mediaType = part.Type + "/" + part.Subtype
 		parameters = part.Params
-		entity.hasTransferOctets = true
-		entity.transferOctets = part.Size
 	case *multiPartStructure:
 		if part == nil {
 			return projectedEntity{}, &NormalizeError{Code: errorCodeMalformedMIME}

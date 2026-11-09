@@ -1,7 +1,6 @@
 package bridge
 
 import (
-	"context"
 	"errors"
 	"reflect"
 	"strings"
@@ -40,23 +39,19 @@ func projectionText() *imap.BodyStructureSinglePart {
 	return &imap.BodyStructureSinglePart{Type: "text", Subtype: "plain", Encoding: "7bit", Size: 5, Text: &imap.BodyStructureText{NumLines: 1}}
 }
 
-// projectScripted runs the adapter operation over a dedicated read that
-// returns structure, under bounds.
-func projectScripted(t *testing.T, structure imap.BodyStructure, bounds Bounds) (attachmentStructureResult, error) {
-	t.Helper()
-
-	adapter, attempts := newScriptedStructureAdapter(t, func(int) (selectedStructure, error) {
-		return selectedStructure{Structure: structure}, nil
-	})
-	adapter.config.Bounds = bounds
-
-	result, err := callAttachmentStructure(t, context.Background(), adapter, headerTestID(t, adapter, 9001, 7))
-	if len(attempts()) != 1 {
-		t.Fatalf("projection made %d dedicated reads", len(attempts()))
+// projectViews projects structure under bounds into comparable views.
+func projectViews(structure imap.BodyStructure, bounds Bounds) ([]attachmentStructureView, Truncation, error) {
+	attachments, truncation, err := projectAttachmentStructure(structure, bounds)
+	if err != nil {
+		return nil, Truncation{}, err
 	}
-	requireGateReleased(t, adapter)
 
-	return result, err
+	views := []attachmentStructureView{}
+	for _, attachment := range attachments {
+		views = append(views, attachmentStructureView{Metadata: attachment.AttachmentMetadata})
+	}
+
+	return views, truncation, nil
 }
 
 // projectionCase is one structure and its independently expected outcome.
@@ -73,14 +68,14 @@ func runProjectionCases(t *testing.T, cases []projectionCase) {
 	t.Helper()
 
 	for _, testCase := range cases {
-		result, err := projectScripted(t, testCase.structure, testCase.bounds)
+		attachments, truncation, err := projectViews(testCase.structure, testCase.bounds)
 		if testCase.malformed {
 			var normalizeError *NormalizeError
 			if !errors.As(err, &normalizeError) || normalizeError.Code != errorCodeMalformedMIME || err.Error() != errorCodeMalformedMIME {
 				t.Fatalf("%s error = %v, want the fixed malformed_mime failure", testCase.name, err)
 			}
-			if !reflect.DeepEqual(result, attachmentStructureResult{}) {
-				t.Fatalf("%s returned a result %+v beside its failure", testCase.name, result)
+			if attachments != nil || truncation.Any() {
+				t.Fatalf("%s returned %+v, %+v beside its failure", testCase.name, attachments, truncation)
 			}
 			continue
 		}
@@ -88,21 +83,18 @@ func runProjectionCases(t *testing.T, cases []projectionCase) {
 		if err != nil {
 			t.Fatalf("%s error = %v", testCase.name, err)
 		}
-		if result.UID != 7 || result.UIDValidity != 9001 || result.Mailbox != "INBOX" || result.Attachments == nil {
-			t.Fatalf("%s result = %+v", testCase.name, result)
+		if !reflect.DeepEqual(attachments, testCase.want) {
+			t.Fatalf("%s attachments = %+v, want %+v", testCase.name, attachments, testCase.want)
 		}
-		if !reflect.DeepEqual(result.Attachments, testCase.want) {
-			t.Fatalf("%s attachments = %+v, want %+v", testCase.name, result.Attachments, testCase.want)
-		}
-		if result.Truncation != testCase.truncation {
-			t.Fatalf("%s truncation = %+v, want %+v", testCase.name, result.Truncation, testCase.truncation)
+		if truncation != testCase.truncation {
+			t.Fatalf("%s truncation = %+v, want %+v", testCase.name, truncation, testCase.truncation)
 		}
 	}
 }
 
-// attachmentView is an expected entry with known transfer octets.
-func attachmentView(filename, contentType, disposition string, octets uint32) attachmentStructureView {
-	return attachmentStructureView{Metadata: AttachmentMetadata{Filename: filename, ContentType: contentType, Disposition: disposition}, HasTransferOctets: true, TransferOctets: octets}
+// attachmentView is an expected entry without a declared size.
+func attachmentView(filename, contentType, disposition string) attachmentStructureView {
+	return attachmentStructureView{Metadata: AttachmentMetadata{Filename: filename, ContentType: contentType, Disposition: disposition}}
 }
 
 func TestAttachmentProjection(t *testing.T) {
@@ -120,64 +112,64 @@ func TestAttachmentProjection(t *testing.T) {
 			{
 				name:      "plain_unicode_filename",
 				structure: projectionLeaf("application", "pdf", 40, nil, attachment(map[string]string{"filename": "résumé.pdf"})),
-				want:      []attachmentStructureView{attachmentView("résumé.pdf", "application/pdf", "attachment", 40)},
+				want:      []attachmentStructureView{attachmentView("résumé.pdf", "application/pdf", "attachment")},
 			},
 			{
 				name:      "extended_filename",
 				structure: projectionLeaf("application", "pdf", 40, nil, attachment(map[string]string{"filename*": "utf-8''caf%C3%A9.pdf"})),
-				want:      []attachmentStructureView{attachmentView("café.pdf", "application/pdf", "attachment", 40)},
+				want:      []attachmentStructureView{attachmentView("café.pdf", "application/pdf", "attachment")},
 			},
 			{
 				name:      "extended_name_without_disposition",
 				structure: projectionLeaf("application", "octet-stream", 41, map[string]string{"name*": "UTF-8''r%C3%A9sum%C3%A9.pdf"}, nil),
-				want:      []attachmentStructureView{attachmentView("résumé.pdf", "application/octet-stream", "", 41)},
+				want:      []attachmentStructureView{attachmentView("résumé.pdf", "application/octet-stream", "")},
 			},
 			{
 				name:      "unstarred_continuations",
 				structure: projectionLeaf("application", "pdf", 42, nil, attachment(map[string]string{"filename*0": "part-one", "filename*1": "-part-two", "filename*2": ".pdf"})),
-				want:      []attachmentStructureView{attachmentView("part-one-part-two.pdf", "application/pdf", "attachment", 42)},
+				want:      []attachmentStructureView{attachmentView("part-one-part-two.pdf", "application/pdf", "attachment")},
 			},
 			{
 				name:      "starred_continuations",
 				structure: projectionLeaf("application", "pdf", 43, map[string]string{"name*0*": "utf-8''caf%C3%A9", "name*1*": "%2Epdf"}, nil),
-				want:      []attachmentStructureView{attachmentView("café.pdf", "application/pdf", "", 43)},
+				want:      []attachmentStructureView{attachmentView("café.pdf", "application/pdf", "")},
 			},
 			{
 				name:      "mixed_starred_and_unstarred_continuations",
 				structure: projectionLeaf("application", "pdf", 44, nil, attachment(map[string]string{"filename*0*": "utf-8''r%C3%A9sum%C3%A9", "filename*1": ".pdf"})),
-				want:      []attachmentStructureView{attachmentView("résumé.pdf", "application/pdf", "attachment", 44)},
+				want:      []attachmentStructureView{attachmentView("résumé.pdf", "application/pdf", "attachment")},
 			},
 			{
 				name:      "valid_extended_before_plain",
 				structure: projectionLeaf("application", "pdf", 45, nil, attachment(map[string]string{"filename": "plain.pdf", "filename*": "utf-8''caf%C3%A9.pdf"})),
-				want:      []attachmentStructureView{attachmentView("café.pdf", "application/pdf", "attachment", 45)},
+				want:      []attachmentStructureView{attachmentView("café.pdf", "application/pdf", "attachment")},
 			},
 			{
 				name:      "invalid_extended_keeps_plain",
 				structure: projectionLeaf("application", "pdf", 46, nil, attachment(map[string]string{"filename": "plain.pdf", "filename*": "koi8-r''x.pdf"})),
-				want:      []attachmentStructureView{attachmentView("plain.pdf", "application/pdf", "attachment", 46)},
+				want:      []attachmentStructureView{attachmentView("plain.pdf", "application/pdf", "attachment")},
 			},
 			{
 				name:      "disposition_filename_before_type_name",
 				structure: projectionLeaf("application", "pdf", 47, map[string]string{"name": "type-name.pdf"}, projectionDisposition("INLINE", map[string]string{"filename*": "utf-8''caf%C3%A9.pdf"})),
-				want:      []attachmentStructureView{attachmentView("café.pdf", "application/pdf", "inline", 47)},
+				want:      []attachmentStructureView{attachmentView("café.pdf", "application/pdf", "inline")},
 			},
 			{
 				name:      "extended_type_name_fallback",
 				structure: projectionLeaf("application", "pdf", 48, map[string]string{"name*": "utf-8''r%C3%A9sum%C3%A9.pdf"}, attachment(nil)),
-				want:      []attachmentStructureView{attachmentView("résumé.pdf", "application/pdf", "attachment", 48)},
+				want:      []attachmentStructureView{attachmentView("résumé.pdf", "application/pdf", "attachment")},
 			},
 			{
 				// Quotes, backslashes and separators survive the rebuilt
 				// header exactly.
 				name:      "quoted_specials",
 				structure: projectionLeaf("application", "pdf", 49, nil, attachment(map[string]string{"filename": `a "b"; c\d=e.pdf`})),
-				want:      []attachmentStructureView{attachmentView(`a "b"; c\d=e.pdf`, "application/pdf", "attachment", 49)},
+				want:      []attachmentStructureView{attachmentView(`a "b"; c\d=e.pdf`, "application/pdf", "attachment")},
 			},
 			{
 				name:      "attachment_disposition_without_filename",
 				structure: projectionLeaf("application", "pdf", 50, nil, projectionDisposition("ATTACHMENT", nil)),
-				want:      []attachmentStructureView{attachmentView("", "application/pdf", "attachment", 50)},
+				want:      []attachmentStructureView{attachmentView("", "application/pdf", "attachment")},
 			},
 			{
 				name:      "inline_without_filename",
@@ -237,11 +229,11 @@ func TestAttachmentProjection(t *testing.T) {
 					projectionLeaf("application", "pdf", 4096, nil, attachment("last.pdf")),
 				),
 				want: []attachmentStructureView{
-					attachmentView("logo.png", "image/png", "", 64),
+					attachmentView("logo.png", "image/png", ""),
 					{Metadata: AttachmentMetadata{Filename: "bundle.zip", ContentType: "multipart/alternative", Disposition: "attachment"}},
-					attachmentView("fwd.eml", "message/rfc822", "attachment", 900),
-					attachmentView("", "message/global", "attachment", 0),
-					attachmentView("last.pdf", "application/pdf", "attachment", 4096),
+					attachmentView("fwd.eml", "message/rfc822", "attachment"),
+					attachmentView("", "message/global", "attachment"),
+					attachmentView("last.pdf", "application/pdf", "attachment"),
 				},
 				truncation: Truncation{MIMEDepth: true},
 			},
@@ -261,7 +253,7 @@ func TestAttachmentProjection(t *testing.T) {
 			{
 				name:      "qualified_global_root_by_type_name",
 				structure: &imap.BodyStructureSinglePart{Type: "MESSAGE", Subtype: "GLOBAL", Params: map[string]string{"name*": "utf-8''caf%C3%A9.eml"}, Size: 81, MessageRFC822: &imap.BodyStructureMessageRFC822{BodyStructure: hidden}},
-				want:      []attachmentStructureView{attachmentView("café.eml", "message/global", "", 81)},
+				want:      []attachmentStructureView{attachmentView("café.eml", "message/global", "")},
 			},
 			{
 				// A qualified multipart root is one entry with unknown
@@ -273,7 +265,7 @@ func TestAttachmentProjection(t *testing.T) {
 			{
 				name:      "single_part_root",
 				structure: projectionLeaf("application", "pdf", 0, nil, projectionDisposition("attachment", map[string]string{"filename": "root.pdf", "size": "0"})),
-				want:      []attachmentStructureView{{Metadata: AttachmentMetadata{Filename: "root.pdf", ContentType: "application/pdf", Disposition: "attachment", HasDeclaredSize: true}, HasTransferOctets: true}},
+				want:      []attachmentStructureView{{Metadata: AttachmentMetadata{Filename: "root.pdf", ContentType: "application/pdf", Disposition: "attachment", HasDeclaredSize: true}}},
 			},
 		})
 	})
@@ -301,13 +293,13 @@ func TestAttachmentProjection(t *testing.T) {
 				name:      "parts_exact_boundary",
 				structure: projectionMultipart("mixed", nil, named("a"), named("b")),
 				bounds:    Bounds{MaxMimeParts: 3},
-				want:      []attachmentStructureView{attachmentView("a", "application/pdf", "attachment", 10), attachmentView("b", "application/pdf", "attachment", 10)},
+				want:      []attachmentStructureView{attachmentView("a", "application/pdf", "attachment"), attachmentView("b", "application/pdf", "attachment")},
 			},
 			{
 				name:       "parts_omitted",
 				structure:  projectionMultipart("mixed", nil, named("a"), named("b"), named("c")),
 				bounds:     Bounds{MaxMimeParts: 3},
-				want:       []attachmentStructureView{attachmentView("a", "application/pdf", "attachment", 10), attachmentView("b", "application/pdf", "attachment", 10)},
+				want:       []attachmentStructureView{attachmentView("a", "application/pdf", "attachment"), attachmentView("b", "application/pdf", "attachment")},
 				truncation: Truncation{MIMEParts: true},
 			},
 			{
@@ -315,7 +307,7 @@ func TestAttachmentProjection(t *testing.T) {
 				name:       "parts_containers_counted",
 				structure:  projectionMultipart("mixed", nil, projectionMultipart("mixed", nil, named("a")), named("b")),
 				bounds:     Bounds{MaxMimeParts: 3},
-				want:       []attachmentStructureView{attachmentView("a", "application/pdf", "attachment", 10)},
+				want:       []attachmentStructureView{attachmentView("a", "application/pdf", "attachment")},
 				truncation: Truncation{MIMEParts: true},
 			},
 			{
@@ -330,12 +322,12 @@ func TestAttachmentProjection(t *testing.T) {
 				name:      "hidden_children_not_counted",
 				structure: projectionMultipart("mixed", nil, projectionMessage("rfc822", 300, projectionDisposition("attachment", nil), hiddenWide)),
 				bounds:    Bounds{MaxMimeParts: 2},
-				want:      []attachmentStructureView{attachmentView("", "message/rfc822", "attachment", 300)},
+				want:      []attachmentStructureView{attachmentView("", "message/rfc822", "attachment")},
 			},
 			{
 				name:      "depth_exact_boundary",
 				structure: nested(defaultMaxMIMEDepth, named("deep")),
-				want:      []attachmentStructureView{attachmentView("deep", "application/pdf", "attachment", 10)},
+				want:      []attachmentStructureView{attachmentView("deep", "application/pdf", "attachment")},
 			},
 			{
 				name:       "empty_by_depth_omission",
@@ -347,13 +339,13 @@ func TestAttachmentProjection(t *testing.T) {
 				name:      "attachments_exact_boundary",
 				structure: projectionMultipart("mixed", nil, named("a"), named("b")),
 				bounds:    Bounds{MaxAttachmentCount: 2},
-				want:      []attachmentStructureView{attachmentView("a", "application/pdf", "attachment", 10), attachmentView("b", "application/pdf", "attachment", 10)},
+				want:      []attachmentStructureView{attachmentView("a", "application/pdf", "attachment"), attachmentView("b", "application/pdf", "attachment")},
 			},
 			{
 				name:       "attachments_omitted",
 				structure:  projectionMultipart("mixed", nil, named("a"), named("b"), named("c")),
 				bounds:     Bounds{MaxAttachmentCount: 2},
-				want:       []attachmentStructureView{attachmentView("a", "application/pdf", "attachment", 10), attachmentView("b", "application/pdf", "attachment", 10)},
+				want:       []attachmentStructureView{attachmentView("a", "application/pdf", "attachment"), attachmentView("b", "application/pdf", "attachment")},
 				truncation: Truncation{Attachments: true},
 			},
 			{
@@ -364,40 +356,40 @@ func TestAttachmentProjection(t *testing.T) {
 			{
 				name:      "fields_exact_boundary",
 				structure: projectionLeaf("application", exactType, 10, nil, projectionDisposition(exactDisposition, map[string]string{"filename": exactName})),
-				want:      []attachmentStructureView{attachmentView(exactName, "application/"+exactType, exactDisposition, 10)},
+				want:      []attachmentStructureView{attachmentView(exactName, "application/"+exactType, exactDisposition)},
 			},
 			{
 				// A decoded RFC 2231 name over 4096 bytes is cut on a rune
 				// boundary within 255 bytes, not refused.
 				name:       "long_extended_filename",
 				structure:  projectionLeaf("application", "pdf", 10, nil, projectionDisposition("attachment", map[string]string{"filename*": longEncoded})),
-				want:       []attachmentStructureView{attachmentView(longName[:254], "application/pdf", "attachment", 10)},
+				want:       []attachmentStructureView{attachmentView(longName[:254], "application/pdf", "attachment")},
 				truncation: Truncation{Attachments: true},
 			},
 			{
 				name:       "long_plain_name",
 				structure:  projectionLeaf("application", "pdf", 10, map[string]string{"name": strings.Repeat("x", 5000)}, nil),
-				want:       []attachmentStructureView{attachmentView(strings.Repeat("x", defaultMaxFilenameBytes), "application/pdf", "", 10)},
+				want:       []attachmentStructureView{attachmentView(strings.Repeat("x", defaultMaxFilenameBytes), "application/pdf", "")},
 				truncation: Truncation{Attachments: true},
 			},
 			{
 				name:      "invalid_utf8_name_repaired",
 				structure: projectionLeaf("application", "pdf", 10, map[string]string{"name": "\xffa.pdf"}, nil),
-				want:      []attachmentStructureView{attachmentView("�a.pdf", "application/pdf", "", 10)},
+				want:      []attachmentStructureView{attachmentView("�a.pdf", "application/pdf", "")},
 			},
 			{
 				// truncateUTF8: a raw name within the limit is repaired
 				// without the flag, even when repair grows it past the limit.
 				name:      "invalid_utf8_name_at_limit_repaired",
 				structure: projectionLeaf("application", "pdf", 10, map[string]string{"name": strings.Repeat("\xffn", 5) + strings.Repeat("n", defaultMaxFilenameBytes-10)}, nil),
-				want:      []attachmentStructureView{attachmentView(strings.Repeat("�n", 5)+strings.Repeat("n", defaultMaxFilenameBytes-10), "application/pdf", "", 10)},
+				want:      []attachmentStructureView{attachmentView(strings.Repeat("�n", 5)+strings.Repeat("n", defaultMaxFilenameBytes-10), "application/pdf", "")},
 			},
 			{
 				// A longer raw name is cut to the limit first, then trimmed
 				// back until valid UTF-8, and sets the flag.
 				name:       "long_name_cut_then_trimmed",
 				structure:  projectionLeaf("application", "pdf", 10, map[string]string{"name": strings.Repeat("a", 250) + "\xff" + strings.Repeat("b", 5000)}, nil),
-				want:       []attachmentStructureView{attachmentView(strings.Repeat("a", 250), "application/pdf", "", 10)},
+				want:       []attachmentStructureView{attachmentView(strings.Repeat("a", 250), "application/pdf", "")},
 				truncation: Truncation{Attachments: true},
 			},
 			{
@@ -405,13 +397,13 @@ func TestAttachmentProjection(t *testing.T) {
 				// invalid byte; the part stays listed with the flag.
 				name:       "long_name_early_invalid_trimmed_to_empty",
 				structure:  projectionLeaf("application", "pdf", 10, map[string]string{"name": "\xff" + strings.Repeat("c", 5000)}, nil),
-				want:       []attachmentStructureView{attachmentView("", "application/pdf", "", 10)},
+				want:       []attachmentStructureView{attachmentView("", "application/pdf", "")},
 				truncation: Truncation{Attachments: true},
 			},
 			{
 				name:       "long_content_type_and_disposition",
 				structure:  projectionLeaf("application", exactType+"s", 10, nil, projectionDisposition(exactDisposition+"d", map[string]string{"filename": "x.pdf"})),
-				want:       []attachmentStructureView{attachmentView("x.pdf", "application/"+exactType, exactDisposition, 10)},
+				want:       []attachmentStructureView{attachmentView("x.pdf", "application/"+exactType, exactDisposition)},
 				truncation: Truncation{Attachments: true},
 			},
 			{
@@ -425,8 +417,7 @@ func TestAttachmentProjection(t *testing.T) {
 				want: []attachmentStructureView{},
 			},
 			{
-				// Single-part transfer octets stay separate from declared
-				// sizes; a multipart has neither a sum nor a stand-in.
+				// Declared sizes come only from the disposition parameter.
 				name: "sizes",
 				structure: projectionMultipart("mixed", nil,
 					projectionLeaf("application", "pdf", 0, nil, projectionDisposition("attachment", map[string]string{"filename": "zero.pdf", "size": "0"})),
@@ -435,25 +426,12 @@ func TestAttachmentProjection(t *testing.T) {
 					projectionMultipart("mixed", projectionDisposition("attachment", map[string]string{"filename": "box.zip"}), named("in-box")),
 				),
 				want: []attachmentStructureView{
-					{Metadata: AttachmentMetadata{Filename: "zero.pdf", ContentType: "application/pdf", Disposition: "attachment", HasDeclaredSize: true}, HasTransferOctets: true},
-					{Metadata: AttachmentMetadata{Filename: "max.pdf", ContentType: "application/pdf", Disposition: "attachment", DeclaredSize: 9223372036854775807, HasDeclaredSize: true}, HasTransferOctets: true, TransferOctets: 4294967295},
-					attachmentView("bad.pdf", "application/pdf", "attachment", 77),
+					{Metadata: AttachmentMetadata{Filename: "zero.pdf", ContentType: "application/pdf", Disposition: "attachment", HasDeclaredSize: true}},
+					{Metadata: AttachmentMetadata{Filename: "max.pdf", ContentType: "application/pdf", Disposition: "attachment", DeclaredSize: 9223372036854775807, HasDeclaredSize: true}},
+					attachmentView("bad.pdf", "application/pdf", "attachment"),
 					{Metadata: AttachmentMetadata{Filename: "box.zip", ContentType: "multipart/mixed", Disposition: "attachment"}},
 				},
 			},
 		})
-
-		// A valid tree deeper than the unchanged wire guard allows is refused
-		// as bounds before any projection, through the real dedicated read.
-		for _, mode := range []struct {
-			startTLS bool
-			mode     string
-		}{{startTLS: true, mode: TLSModeStartTLS}, {startTLS: false, mode: TLSModeImplicit}} {
-			peer := startStructureTLSPeer(t, mode.startTLS, structurePeerScript{structure: nestedStructure(quarantineDepth + 6)})
-			adapter := structurePeerAdapter(t, peer, mode.mode)
-			result, err := callAttachmentStructure(t, context.Background(), adapter, headerTestID(t, adapter, 9001, structurePeerUID))
-			requireStructureRefusal(t, "guard-refused tree", result, err, CodeBoundsExceeded)
-			peer.wait(t)
-		}
 	})
 }

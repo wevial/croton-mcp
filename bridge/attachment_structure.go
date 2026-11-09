@@ -3,9 +3,9 @@ package bridge
 import "context"
 
 // MessageAttachmentStructure is the attachment metadata of one selected
-// message, projected from the extended BODYSTRUCTURE of a fresh dedicated
-// session bound to the opaque ID's generation. It never carries body bytes,
-// message size or read state.
+// message, projected from its extended BODYSTRUCTURE after the opaque ID's
+// generation is confirmed. It never carries body bytes, message size or read
+// state.
 type MessageAttachmentStructure struct {
 	ID          string
 	Mailbox     string
@@ -15,46 +15,48 @@ type MessageAttachmentStructure struct {
 	Truncation  Truncation
 }
 
-// AttachmentStructureEntry is one attachment's metadata and the transfer
-// octets the server declares for its part, which are neither its decoded size
-// nor the message size.
+// AttachmentStructureEntry is one attachment's metadata.
 type AttachmentStructureEntry struct {
 	AttachmentMetadata
-	HasTransferOctets bool
-	TransferOctets    uint32
 }
 
-// GetMessageAttachmentStructure resolves an opaque message identifier on a
-// fresh dedicated session that confirms its UIDVALIDITY generation and UID
-// before the one structure FETCH. It mirrors execute's serialization, closed
-// check and single transport replay without touching the pooled session.
+// GetMessageAttachmentStructure resolves an opaque message identifier after a
+// fresh read-only EXAMINE confirms its UIDVALIDITY generation and UID, then
+// projects the structure of one bounded UID FETCH. A session without the
+// optional structure capability is refused; the body is never read as a
+// fallback.
 func (adapter *Adapter) GetMessageAttachmentStructure(ctx context.Context, identifier string) (MessageAttachmentStructure, error) {
 	payload, err := adapter.decodeMessageID(identifier)
 	if err != nil {
 		return MessageAttachmentStructure{}, err
 	}
 
-	if err := adapter.acquire(ctx); err != nil {
-		return MessageAttachmentStructure{}, err
-	}
-	defer func() { adapter.gate <- struct{}{} }()
+	var structure bodyStructure
+	err = adapter.execute(ctx, func(operationContext context.Context, session readSession) error {
+		reader, ok := session.(structureSession)
+		if !ok {
+			return errorCode(CodeUnsupported)
+		}
 
-	adapter.mu.Lock()
-	closed := adapter.closed
-	adapter.mu.Unlock()
-	if closed {
-		return MessageAttachmentStructure{}, errorCode(CodeAdapterClosed)
-	}
+		snapshot, err := session.Examine(operationContext, payload.Mailbox)
+		if err != nil {
+			return err
+		}
+		if snapshot.UIDValidity != payload.UIDValidity {
+			return errorCode(CodeStaleMessageID)
+		}
+		if err := requireMessageUID(operationContext, session, payload.UID); err != nil {
+			return err
+		}
 
-	operationContext, cancel := adapter.operationContext(ctx)
-	defer cancel()
-
-	selected, err := adapter.readStructureAttempts(operationContext, structureRequest{Mailbox: payload.Mailbox, UID: payload.UID, UIDValidity: payload.UIDValidity})
+		structure, err = reader.fetchUIDStructure(operationContext, payload.UID)
+		return err
+	})
 	if err != nil {
 		return MessageAttachmentStructure{}, err
 	}
 
-	attachments, truncation, err := projectAttachmentStructure(selected.Structure, adapter.config.Bounds)
+	attachments, truncation, err := projectAttachmentStructure(structure, adapter.config.Bounds)
 	if err != nil {
 		return MessageAttachmentStructure{}, err
 	}
@@ -67,25 +69,4 @@ func (adapter *Adapter) GetMessageAttachmentStructure(ctx context.Context, ident
 		Attachments: attachments,
 		Truncation:  truncation,
 	}, nil
-}
-
-// readStructureAttempts runs at most two fresh dedicated reads under ctx.
-// Only a first-attempt transport failure is replayed, and nothing of that
-// attempt is kept.
-func (adapter *Adapter) readStructureAttempts(ctx context.Context, request structureRequest) (selectedStructure, error) {
-	for attempt := 0; attempt < 2; attempt++ {
-		selected, err := adapter.reader(ctx, adapter.config, request)
-		if err == nil {
-			return selected, nil
-		}
-
-		err = mapIMAPError(ctx, err)
-		if attempt == 0 && adapter.canReplay(ctx, err) {
-			continue
-		}
-
-		return selectedStructure{}, err
-	}
-
-	return selectedStructure{}, errorCode(CodeBridgeUnreachable)
 }
