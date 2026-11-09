@@ -1,6 +1,6 @@
 # Croton Agent Guide
 
-Croton ships two local, read-only MCP servers: `croton-mcp` for Proton Mail Bridge and `croton-drive-mcp` for Proton Drive.
+Croton ships one local, read-only MCP server: `croton-mcp` for Proton Mail Bridge.
 
 ## Invariants
 

@@ -44,7 +44,6 @@ Record the printed full SHA and confirm HEAD equals it. Confirm `go version`
 reports Go 1.26.10, matching the repository's `go.mod` toolchain. Review and
 retain the candidate manifest with its SHA, toolchain, platform, and binary
 SHA-256 locally. Race tests require a supported C compiler.
-Build only the Mail executable for installation; Drive has a separate setup.
 
 The local staging helper requires Python 3.12 or newer, a full maintainer-reviewed
 revision equal to HEAD, a clean tracked working tree and index, and an absent

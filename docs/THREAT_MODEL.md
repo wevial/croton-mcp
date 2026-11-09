@@ -8,14 +8,8 @@ security sections and the code itself. Every boundary below names the code that
 enforces it so that a reviewer can check a change against this model rather
 than against memory.
 
-Croton ships two separate local executables, `cmd/croton-mcp` for Proton Mail
-Bridge and `cmd/croton-drive-mcp` for the Proton Drive CLI. They share no
-process, configuration file or credential, which is the first boundary of the
-model. The separation is one of code and configuration, not of privilege: both
-executables, and every child they spawn, run as the person invoking them, so a
-compromised Drive CLI holds the same operating-system access as that person,
-including access to the Mail configuration file. Croton does not enforce
-compromise isolation between the two surfaces.
+Croton ships one local executable, `cmd/croton-mcp`, for Proton Mail Bridge.
+It and every child it spawns run as the person invoking it.
 
 ## Assets
 
@@ -27,13 +21,9 @@ What Croton is trusted with, in decreasing order of sensitivity:
   afterwards.
 - **Mailbox content and metadata.** Message bodies, headers, subjects, folder
   names, attachment names and the opaque identifiers Croton mints for them.
-- **Drive content, sharing members and public links.** Node names, paths,
-  sizes, the members a node is shared with and the existence and settings of a
-  public link. Croton never returns a public link's password.
-- **The configuration file.** The Mail file names the Bridge endpoint, the
-  TLS trust anchor or pin and the credential helper command; the Drive file
-  names the CLI binary and its reserved download and write policy. Whoever can
-  rewrite either file controls what Croton connects to and executes.
+- **The configuration file.** The file names the Bridge endpoint, the
+  TLS trust anchor or pin and the credential helper command. Whoever can
+  rewrite it controls what Croton connects to and executes.
 - **The audit and diagnostic stream.** Stderr output that an operator may
   retain. It must never carry any of the assets above.
 
@@ -50,13 +40,9 @@ Croton assumes the following adversaries, each holding a specific position:
   Someone sharing the machine who can create a symlink or substitute a file at
   or above the path passed with `--config`, hoping Croton follows it or accepts
   a world-readable copy.
-- **A hostile or malformed Bridge or CLI process.** The loopback IMAP peer or
-  the Drive CLI child may be a different program than expected, may return
-  malformed or unbounded output, or may hang. Croton treats both as untrusted
-  input sources.
-- **A swapped CLI binary.** The executable at the configured Drive
-  `binaryPath` may have been replaced with something that reproduces the
-  expected version banner.
+- **A hostile or malformed Bridge process.** The loopback IMAP peer may be a
+  different program than expected, may return malformed or unbounded output,
+  or may hang. Croton treats it as an untrusted input source.
 
 Croton does not assume a trustworthy consuming assistant; it limits what any
 client can obtain. It does assume the operating system, the user account
@@ -138,7 +124,7 @@ idempotent.
 
 ### Configuration opener
 
-**What crosses it.** The bytes of the Mail or Drive configuration file, read
+**What crosses it.** The bytes of the configuration file, read
 from the path given with `--config`.
 
 **What enforces it.** `internal/config/open_unix.go` opens the path one
@@ -148,8 +134,7 @@ traversed and there is no check-then-open race. `internal/config/config.go`
 then requires, on the descriptor already held, a regular file owned by the
 current user with no group or world permission bits and at most 64 KiB, and
 decodes it with `internal/strictjson` so unknown fields and duplicate keys are
-rejected. `internal/config/drive.go` applies the same loader to the separate
-Drive schema. `internal/config/open_other.go` is the implementation for every
+rejected. `internal/config/open_other.go` is the implementation for every
 platform other than Linux and macOS: it refuses to open anything.
 
 **How it fails closed.** A symlink anywhere on the path, a FIFO or device, a
@@ -164,114 +149,39 @@ protect against a user who legitimately owns the file being tricked into
 editing it, and it does not detect a malicious file with correct ownership and
 mode.
 
-### Drive CLI subprocess
-
-**What crosses it.** Command lines from Croton to the Proton Drive CLI, and the
-CLI's standard output back.
-
-**What enforces it.** `internal/drivecli/client.go` pins one exact CLI version:
-`Handshake` runs the version command and accepts only a first stdout line that
-parses to the pinned version. Every later invocation is checked by
-`internal/drivecli/commands.go` against a frozen allowlist of command lines,
-element by element, before it runs. `internal/drivecli/exec.go` builds a
-scrubbed environment containing only a fixed PATH, a handful of locale and home
-variables and the two Drive-specific cache and credential-store variables; the
-child runs from a neutral working directory with a capped output buffer and a
-deadline. `internal/drivemcp/gate.go` refuses every data tool until the
-handshake has succeeded, and `internal/drivemcp/path.go` validates each Drive
-path argument before it can become an operand. Croton never holds a Proton
-password on the Drive side: the CLI keeps its own session, and the Drive server
-never reads a credential.
-
-**How it fails closed.** A missing binary, a banner that does not parse or
-names another version, an argument vector outside the allowlist, output over
-the cap, a child that exceeds its deadline or output that is not the expected
-JSON each map to a fixed error code and return nothing else to the client.
-
-**What it does not guarantee.** Version negotiation checks compatibility, not
-provenance. The handshake proves that the program at the configured path
-printed the expected banner; it does not prove which binary is running, that it
-is unmodified, or that it is confined. Nothing in Croton sandboxes the child
-beyond the scrubbed environment, the neutral working directory and the output
-and time caps. The client's `Download` method remains present, but
-`filesystem download` is rejected by the CLI allowlist and is not registered
-as a tool. The internal confined output opener has no production call site;
-`allowedDownloadDirectories` remains reserved in the current configuration.
-
-### Planned Drive downloads
-
-The confined opener has shipped,
-but download registration and policy enforcement have not shipped.
-
-Operators must configure client-managed per-call confirmation before enabling
-downloads. Croton accepts `tools/call` from the configured client and cannot
-verify that a human confirmed. Croton never prompts for confirmation itself.
-The annotations `readOnlyHint false` and `destructiveHint false` do not force a
-client prompt or prove confirmation. An auto-approving client permits
-unattended local writes inside the allowed root.
-
-The `download.enabled` setting defaults to false. While disabled, no
-download tool is registered. Explicit operator opt-in accepts the
-configured-client trust boundary. Until the registration implementation ships,
-`download.enabled` true must fail startup rather than enable a partial
-capability. The current config schema accepts `download.enabled`,
-`download.maxBytes` and `download.timeoutSeconds`, but rejects enabled downloads with a static
-`ErrConfigInvalid` before CLI startup, regardless of allowed roots.
-Omitted limits default to 256 MiB and 120 seconds. Explicit limits must be
-positive signed-64-bit integers; timeout conversion to `time.Duration` must
-not overflow. Invalid limits are rejected, never clamped.
-
-Registration requires later integration proof of a supported descriptor-bound
-writer and temporary-publication path, cleanup and runtime controls without
-reopening the validated destination pathname.
-
-Future download audit lines identify source, destination and outcome, never
-claimed consent, credentials or share passwords; paths can reveal sensitive
-names and activity and require protected log access and retention. This future
-path-logging policy does not change the current audit vocabulary.
-
-The shipped opener is in `internal/drivefs/confined.go`; `WriteFresh` alone
-does not provide cleanup or publication. Relocation of the allowed root or its
-ancestors after opening remains the operator's responsibility, outside the
-threat model.
-
 ### MCP stdio surface
 
 **What crosses it.** JSON-RPC frames between the consuming assistant and
-either executable, over standard input and standard output only. Neither
-executable listens on a socket.
+the executable, over standard input and standard output only. It never
+listens on a socket.
 
-**What enforces it.** Both servers register only read-only tools by default
-(Mail adds its Seen and move triage tools only when `mutations.enabled` is true) and install an
-allowlist middleware, `internal/mcpserver/tools.go` for Mail and
-`internal/drivemcp/tools.go` for Drive, that rejects every method outside a
+**What enforces it.** The server registers only read-only tools by default
+(it adds its Seen and move triage tools only when `mutations.enabled` is true) and installs an
+allowlist middleware, `internal/mcpserver/tools.go`, that rejects every method outside a
 fixed set. Tool arguments are capped at 24 KiB and decoded strictly
-(`internal/mcpserver/handlers.go`, `internal/drivemcp/tools.go`); serialized
+(`internal/mcpserver/handlers.go`); serialized
 results are capped at 100 000 bytes and truncated structurally so the output is
-always valid JSON (`internal/mcpserver/output.go`,
-`internal/drivemcp/output.go`). Errors map to a fixed vocabulary and audit
+always valid JSON (`internal/mcpserver/output.go`). Errors map to a fixed vocabulary and audit
 lines use a fixed vocabulary; `docs/MCP.md` states the Mail output, error and
 audit contracts and this document does not restate them.
 
-Inbound frame size is bounded identically in both executables. The shared
+Inbound frame size is bounded. The
 limiter in `internal/stdioframe/stdioframe.go` wraps standard input in a
 bounded frame reader with a 64 KiB limit that is installed before the SDK sees
 a byte, requires each frame to be one strictly decoded JSON object, and rejects
-frames whose protocol fields alias one another by case. Mail installs it
-through `internal/mcpserver/stdio.go` and Drive through
-`internal/drivemcp/server.go`; neither executable hands the SDK a plain
+frames whose protocol fields alias one another by case. The server installs it
+through `internal/mcpserver/stdio.go` and never hands the SDK a plain
 `IOTransport` over raw standard input.
 
 **How it fails closed.** An unlisted method, oversize arguments, an argument
-object with unknown or duplicated fields, or a frame over the bound in either
-executable, produce a fixed error or close the transport; no partial result and
+object with unknown or duplicated fields, or a frame over the bound produce a fixed error or close the transport; no partial result and
 no underlying error text reach standard output.
 
 **What it does not guarantee.** The surface limits what a client can request
 and how much it receives. It does not make the client trustworthy: anything a
 tool legitimately returns is disclosed to that client. The frame bound limits
 one frame at a time; it does not rate-limit a client that sends many valid
-frames, and neither executable throttles tool calls.
+frames, and the executable does not throttle tool calls.
 
 ### Audit and diagnostic stream
 
@@ -279,8 +189,7 @@ frames, and neither executable throttles tool calls.
 startup diagnostics, all written to standard error.
 
 **What enforces it.** Standard output is reserved for protocol frames; every
-diagnostic goes to stderr. `internal/mcpserver/audit.go` and
-`internal/drivemcp/audit.go` emit only the allowlisted fields and re-validate
+diagnostic goes to stderr. `internal/mcpserver/audit.go` emits only the allowlisted fields and re-validates
 the tool name, outcome and error code against fixed sets before writing, so a
 value that did not originate in Croton's own vocabulary is replaced rather than
 logged.
@@ -290,7 +199,7 @@ rewritten to a neutral placeholder. Caller inputs, folder names, identifiers,
 subjects, addresses and error text have no field to land in.
 
 **What it does not guarantee.** The stream proves that Croton's own records are
-secret-free. It does not control what the Bridge, the Drive CLI or the
+secret-free. It does not control what the Bridge or the
 consuming assistant write to their own logs, and it does not protect stderr
 once an operator redirects it somewhere shared.
 
@@ -304,15 +213,9 @@ Risks the code already admits and this model records rather than hides:
 - **go-imap is a pre-release dependency.** `docs/DEPENDENCIES.md` records why it
   was adopted and the constraints on its use. Its parser sits behind the Bridge
   boundary and processes untrusted peer output.
-- **The frame bound is the only inbound rate control.** Both executables
-  install the shared 64 KiB frame guard, but nothing limits how many valid
+- **The frame bound is the only inbound rate control.** The executable
+  installs the 64 KiB frame guard, but nothing limits how many valid
   frames a client sends or how fast, so a client can keep the process busy.
-- **The version banner does not authenticate a swapped executable.** A
-  replaced CLI that prints the pinned banner passes the handshake.
-- **Drive download and write tools are not shipped.** The current
-  configuration reserves an allowed-directory list and a disabled write policy.
-  Download policies are decided in record 0003, but their runtime controls
-  remain future work; client confirmation is an operator trust boundary.
 - **Mail triage relies on the trusted client for approval.** Record 0005
   plans default-off Seen and move writes behind a local file opt-in. Croton
   cannot verify that a human approved a call, so once enabled, an
@@ -341,6 +244,6 @@ Croton does not defend against the following, by design:
   needs, not that the disclosed content stays on the machine.
 - **Physical access.** Anyone with the machine can read process memory, the
   configuration file and the credential helper's inputs.
-- **Windows.** Both executables compile but refuse to load a configuration
-  file, so nothing runs. Support is fail-closed by design until a
-  descriptor-relative, no-follow opener exists for that platform.
+- **Windows.** The `croton-mcp` executable compiles but refuses to load a
+  configuration file, so nothing runs. Support is fail-closed by design until
+  a descriptor-relative, no-follow opener exists for that platform.

@@ -8,8 +8,7 @@ Croton makes Proton usable by AI assistants without handing them unrestricted ac
 
 An assistant connected to Croton reaches Proton only through a small set of
 named tools served by a local process on your machine. Mail goes through Proton
-Mail Bridge over loopback, and Drive is a separate server with its own
-configuration. The same approach can extend to other Proton services where a
+Mail Bridge over loopback. The same approach can extend to other Proton services where a
 supported local interface exists; this README describes only what ships today.
 Tools return metadata first and read message bodies only on request, within
 fixed bounds, and credentials are kept out of every tool response. Croton's own
@@ -27,27 +26,11 @@ release guides cannot be followed until one is cut.
 Mail labels are not shipped: no label tool is registered and no configuration
 accepts a label opt-in.
 
-## Croton Drive MCP (unofficial)
+## Unofficial project
 
-`croton-drive-mcp` is a separate stdio executable wrapping an
-operator-installed Proton Drive CLI with three read-only tools:
-`list_drive_entries`, `get_drive_metadata`, and `get_drive_sharing_status`.
-The sharing-status tool reports shares without changing them and never
-returns a public link's password. Every data command is gated behind a
-successful exact-version CLI handshake and fails closed otherwise.
-The tool contract, bounds, error codes, and audit line are documented in
-[docs/DRIVE-MCP.md](docs/DRIVE-MCP.md).
 Croton is an unofficial community project: it is not affiliated with or
 endorsed by Proton AG. It does not use Proton logos or imitate Proton
 branding.
-
-Drive uses its own `--config` file, process, and MCP server. Its strict JSON
-schema requires an absolute CLI `binaryPath` and reserves an
-`allowedDownloadDirectories` allowlist and a `writes.enabled` policy that is
-disabled by default. Until a write capability exists, a configuration that
-sets `writes.enabled` to true is refused at startup rather than ignored: the
-server exits with a static diagnostic before executing the CLI. The server
-never accesses credentials and registers no write-capable tools.
 
 ## Requirements
 
@@ -123,18 +106,13 @@ for prerequisites, verification, the exact tool names, and removal.
 ## Layout
 
 - `cmd/croton-mcp`: Mail stdio executable
-- `cmd/croton-drive-mcp`: Drive stdio executable
 - `bridge`: IMAP adapter over Proton Mail Bridge, read-only except the opt-in Seen and move writes
-- `internal/config`: secure configuration opener for the separate Mail and Drive schemas
+- `internal/config`: secure configuration opener for the Mail schema
 - `internal/mcpserver`: Mail MCP server
-- `internal/drivemcp`: Drive MCP server
-- `internal/drivecli`: bounded Drive CLI subprocess adapter
-- `internal/drivefs`: internal confined-output primitives (confined opening, transactional publication, bounded copying) that no registered Drive tool uses; Drive downloads are not shipped
-- `internal/stdioframe`: the bounded newline-framed stdio reader both servers share
+- `internal/stdioframe`: the bounded newline-framed stdio reader the server uses
 - `internal/strictjson`: strict JSON decoding
-- `internal/testkit`: synthetic loopback IMAP server, opt-in stateful mailbox, synthetic label views and faults, and fake-Drive builder for tests
-- `internal/testkit/fakedrive`: the fake Proton Drive CLI executable for tests
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): the two servers, the packages behind them, and where the product vision lives in the tree
+- `internal/testkit`: synthetic loopback IMAP server, opt-in stateful mailbox, and synthetic label views and faults for tests
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): the server, the packages behind it, and where the product vision lives in the tree
 - `docs/DEPENDENCIES.md`: reviewed dependency choices and adoption constraints
 
 ## Security and privacy
