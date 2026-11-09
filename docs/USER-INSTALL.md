@@ -238,15 +238,6 @@ not provide or execute a helper script, enroll secrets, or read private helpers.
 
 ## Verification and stdio registration
 
-First run the offline documentation checks from the repository:
-
-```sh
-python3 scripts/verify_docs_user_install.py --self-test
-python3 scripts/verify_docs_user_install.py
-```
-
-These checks inspect repository text and synthetic fixtures only; they do not
-start Croton, run a helper, connect to Bridge or validate a live installation.
 Check artifact types, ownership, modes, canonical paths and binary hashes locally
 without publishing private paths or config contents.
 

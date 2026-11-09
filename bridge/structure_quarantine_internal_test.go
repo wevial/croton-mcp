@@ -13,8 +13,8 @@ import (
 
 const quarantineTestUID = 7
 
-// The fixed contract of docs/design/0010-structure-quarantine.md, restated
-// so a changed limit in the reader fails these tests.
+// The fixed quarantine limits, restated so a changed limit in the reader
+// fails these tests.
 const (
 	frameBytes    = 65536
 	depthLimit    = 64

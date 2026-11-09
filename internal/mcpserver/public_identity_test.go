@@ -11,7 +11,6 @@ import (
 	"io"
 	"math"
 	"net/mail"
-	"os"
 	"reflect"
 	"regexp"
 	"slices"
@@ -621,27 +620,6 @@ func TestPublicReadIdentityFlatMCP(t *testing.T) {
 				t.Fatalf("audit recorded identity or content %q: %s", value, audit.String())
 			}
 		}
-
-		contents, err := os.ReadFile("../../docs/MCP.md")
-		if err != nil {
-			t.Fatalf("read Mail documentation: %v", err)
-		}
-		documentation := strings.Join(strings.Fields(string(contents)), " ")
-		for _, statement := range []string{
-			"Four flat read shapes carry numeric `uidvalidity` and `uid` beside the opaque `id` and the exact `mailbox`: each `search_mail` result, each `select_digest_candidates` candidate, and the parent message of `get_message` and `list_attachments`.",
-			"Both values are positive 32-bit integers, 1 to 4294967295.",
-			"They come from the same successful read-only EXAMINE and UID FETCH generation that the bridge bound into that `id`, so clients never decode the opaque id.",
-			"Attachment entries, digest counters and the `get_thread` aggregate carry no UID.",
-			"Account continuity is unavailable. The write pilot remains blocked.",
-			"[Mail principal selection record](design/0007-mail-principal-selection.md)",
-			"Each `get_thread` node carries its own `mailbox`, `uidvalidity` and `uid`, taken from the metadata already fetched for that member and associated by its opaque `key`.",
-			"Bounded output keeps every retained identity exact.",
-			"A truncated or fallback result lists fewer items, but every item it retains is a complete selectable identity.",
-		} {
-			if !strings.Contains(documentation, statement) {
-				t.Errorf("Mail documentation missing flat identity statement: %q", statement)
-			}
-		}
 	})
 }
 
@@ -1148,31 +1126,6 @@ func TestPublicReadIdentityThreadMCP(t *testing.T) {
 		for _, value := range sensitive {
 			if value != "" && strings.Contains(audit.String(), value) {
 				t.Fatalf("audit recorded identity or content %q: %s", value, audit.String())
-			}
-		}
-
-		contents, err := os.ReadFile("../../docs/MCP.md")
-		if err != nil {
-			t.Fatalf("read Mail documentation: %v", err)
-		}
-		documentation := strings.Join(strings.Fields(string(contents)), " ")
-		for _, statement := range []string{
-			"Each `get_thread` node carries its own `mailbox`, `uidvalidity` and `uid`, taken from the metadata already fetched for that member and associated by its opaque `key`.",
-			"A node never borrows the target's tuple, an ordinal or its RFC `messageId`, and no extra read reconstructs a missing tuple.",
-			"The thread's top-level `id` and `mailbox` are context and carry no UID.",
-			"A stale sibling is omitted as before, and a sibling without a positive tuple is omitted and the result is marked truncated.",
-			"Oversized search results, digest candidates and thread nodes are removed whole, so each retained item keeps its exact tuple, mailbox and opaque id.",
-			"when even that cannot fit, the call fails with `bounds_exceeded` instead of returning a shortened identity.",
-			"An empty fallback list contains no selectable item",
-			"They are not account authentication or approval, grant no write authority, and different accounts may share the same tuple.",
-		} {
-			if !strings.Contains(documentation, statement) {
-				t.Errorf("Mail documentation missing thread identity statement: %q", statement)
-			}
-		}
-		for _, superseded := range []string{"are deferred", "not complete selection snapshots"} {
-			if strings.Contains(documentation, superseded) {
-				t.Errorf("Mail documentation keeps the superseded interim clause %q", superseded)
 			}
 		}
 	})

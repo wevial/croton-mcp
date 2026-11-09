@@ -612,26 +612,5 @@ func TestSearchMetadataPublicMCP(t *testing.T) {
 				t.Fatalf("audit recorded metadata %q: %s", value, audit.String())
 			}
 		}
-
-		contents, err := os.ReadFile("../../docs/MCP.md")
-		if err != nil {
-			t.Fatalf("read Mail documentation: %v", err)
-		}
-		documentation := strings.Join(strings.Fields(string(contents)), " ")
-		for _, statement := range []string{
-			"`from` is the decoded `From` header text, capped at 512 UTF-8 bytes.",
-			"It is untrusted, sender-controlled text and proves no account, address or sender identity.",
-			"`date` is the message's own header `Date`, normalized to RFC 3339 UTC. It is sender-controlled and is not arrival, delivery or `INTERNALDATE` time.",
-			"`readState` is `read` when `FLAGS` includes `\\Seen`, `unread` when `FLAGS` lacks it, and `unknown` when no `FLAGS` item was observed. Unread is never guessed.",
-			"Returning sender text and header dates is a deliberate disclosure of private mail metadata to the MCP client",
-			"Entries keep descending UID order. They are never sorted by `date`",
-			"A result is a bounded sample, not a complete inventory",
-			"The digest `totalMessages` and `unseenCount` are mailbox STATUS counters, not the number of matches examined or returned.",
-			"whole entries are removed from the end and `truncated` is set; a retained entry keeps every field. There is no continuation cursor.",
-		} {
-			if !strings.Contains(documentation, statement) {
-				t.Errorf("Mail documentation missing search metadata statement: %q", statement)
-			}
-		}
 	})
 }

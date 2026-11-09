@@ -148,13 +148,3 @@ authority to install, enable mutations or make a live `tools/call`; each needs
 separate explicit operator approval. Keep the prior accepted release's bytes,
 manifest and backups until the update is accepted.
 
-## Offline verification
-
-```sh
-python3 scripts/verify_docs_mail_release.py --self-test
-python3 scripts/verify_docs_mail_release.py
-```
-
-These checks inspect repository text and synthetic fixtures only. They never
-call git, gh, the network, a build or an installer, and they are not evidence
-that any release exists.

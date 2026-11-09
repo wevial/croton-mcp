@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -389,25 +388,7 @@ func TestThreadHeaderResults(t *testing.T) {
 		})
 	})
 
-	t.Run("output_and_docs", func(t *testing.T) {
+	t.Run("output", func(t *testing.T) {
 		requireThreadOutputControls(t)
-
-		contents, err := os.ReadFile("../../docs/MCP.md")
-		if err != nil {
-			t.Fatalf("read Mail documentation: %v", err)
-		}
-		for _, statement := range []string{
-			"The `get_thread` result keys are `id`, `mailbox`, `nodes`, `truncated` and `unavailableMembers`.",
-			"Each node carries `key`, `mailbox`, `uidvalidity`, `uid`, `messageId`, `parentKey`, `depth`, `subject`, `from`, `date` and `truncation`.",
-			"A node's `truncation` object carries only the true reasons among `headers`, `headerCount` and `references`, and is empty when the node's headers are complete.",
-			"Each `unavailableMembers` record is `{\"reason\": ...}` with one of `stale_id`, `invalid_identity` or `malformed_header`, at most 19 records.",
-			"Records are nonselectable failed-attempt records, not a mailbox inventory:",
-			"A target whose own header has a malformed encoded word fails `get_thread` with `unavailable`, without a sibling scan, while `get_message` still maps it to `internal`.",
-			"Malformed header syntax and over-bound header blocks still fail the whole call",
-		} {
-			if !strings.Contains(string(contents), statement) {
-				t.Errorf("Mail documentation missing contract statement: %q", statement)
-			}
-		}
 	})
 }

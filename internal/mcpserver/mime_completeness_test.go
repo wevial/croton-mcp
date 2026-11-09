@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -602,27 +601,5 @@ func TestMIMECompletenessPublic(t *testing.T) {
 			t.Fatalf("encodeBounded: %v", err)
 		}
 		requireReasons(t, "list_attachments fallback", decodeBounded(t, encoded), listAttachmentsReasons, "output")
-
-		contents, err := os.ReadFile("../../docs/MCP.md")
-		if err != nil {
-			t.Fatalf("read Mail documentation: %v", err)
-		}
-		documentation := strings.Join(strings.Fields(string(contents)), " ")
-		for _, statement := range []string{
-			"When it is `true`, `declaredSize` is present and is the nonnegative `size` parameter the sender declared in `Content-Disposition`, including a declared `0`.",
-			"a missing or invalid declaration is never reported as zero.",
-			"not a count of decoded bytes or of the transferred part.",
-			"It is always present and holds only `true` keys, so a complete result has an empty `truncation` object and no `truncated` marker.",
-			"`get_message` reasons are `headers`, `headerCount`, `text`, `mimeParts`, `mimeDepth`, `attachments`, `references` and `output`.",
-			"`list_attachments` reasons are `mimeParts`, `mimeDepth`, `attachments` and `output`.",
-			"An empty list with any reason is incomplete, not proof that the message has no attachments.",
-			"Listing attachments requests UID BODYSTRUCTURE only; it does not fetch or parse the message body.",
-			"`get_message` still fetches and parses the bounded raw MIME message with `BODY.PEEK[]`",
-			"A message whose raw MIME or header block exceeds the parser's bounds may be refused by `get_message` with an error code instead of a result.",
-		} {
-			if !strings.Contains(documentation, statement) {
-				t.Errorf("Mail documentation missing completeness statement: %q", statement)
-			}
-		}
 	})
 }

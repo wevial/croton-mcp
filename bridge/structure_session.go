@@ -30,8 +30,7 @@ type selectedStructure struct {
 // constructed until the transport is closed, so no server byte reaches the
 // client unframed and there is no arm, disarm or pool-return interval. The
 // session dispatches at most one UID FETCH, of UID and BODYSTRUCTURE, and is
-// closed after it without fallback. docs/design/0010-structure-quarantine.md
-// records the stack.
+// closed after it without fallback.
 type structureSession struct {
 	session    *imapSession
 	quarantine *structureQuarantine
