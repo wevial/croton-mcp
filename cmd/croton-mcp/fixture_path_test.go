@@ -12,12 +12,12 @@ import (
 )
 
 // TestServerConfigFixtureIsReachableThroughSecureLoader pins the fixture the
-// Hermes catalog smoke and the server tests hand to a real Croton process. The
-// secure loader refuses any path whose parents are reached through a symlink,
-// and on macOS t.TempDir returns a path under /var, itself a symlink to
-// /private/var, so an unresolved fixture path fails on the native runner
-// before the smoke can start. TMPDIR is pointed at a symlink here so the same
-// shape is reproduced on any supported platform.
+// server tests hand to a real Croton process. The secure loader refuses any
+// path whose parents are reached through a symlink, and on macOS t.TempDir
+// returns a path under /var, itself a symlink to /private/var, so an
+// unresolved fixture path fails on the native runner before the process can
+// start. TMPDIR is pointed at a symlink here so the same shape is reproduced
+// on any supported platform.
 func TestServerConfigFixtureIsReachableThroughSecureLoader(t *testing.T) {
 	// The roots are built before any fixture runs, because t.TempDir creates
 	// one base directory per test on its first call and caches it.
