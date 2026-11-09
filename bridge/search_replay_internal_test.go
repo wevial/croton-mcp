@@ -21,18 +21,6 @@ type replaySearchSession struct {
 	metadataCalls   int
 }
 
-func (session *replaySearchSession) Authenticate(context.Context, Credentials) error {
-	return nil
-}
-
-func (session *replaySearchSession) List(context.Context, int) ([]Folder, error) {
-	return nil, nil
-}
-
-func (session *replaySearchSession) Status(context.Context, string) (MailboxStatus, error) {
-	return MailboxStatus{}, nil
-}
-
 func (session *replaySearchSession) Examine(context.Context, string) (mailboxSnapshot, error) {
 	return session.snapshot, nil
 }
@@ -47,10 +35,6 @@ func (session *replaySearchSession) UIDFetchMetadata(context.Context, string, []
 	result := session.metadataResults[session.metadataCalls]
 	session.metadataCalls++
 	return result.metadata, result.err
-}
-
-func (session *replaySearchSession) UIDFetchBody(context.Context, uint32, int) ([]byte, error) {
-	return nil, nil
 }
 
 func (session *replaySearchSession) Logout(context.Context) error {

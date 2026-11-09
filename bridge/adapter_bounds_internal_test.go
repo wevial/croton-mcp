@@ -13,32 +13,8 @@ type oversizedListSession struct {
 	aborts  int
 }
 
-func (session *oversizedListSession) Authenticate(context.Context, Credentials) error {
-	return nil
-}
-
 func (session *oversizedListSession) List(context.Context, int) ([]Folder, error) {
 	return session.folders, nil
-}
-
-func (session *oversizedListSession) Status(context.Context, string) (MailboxStatus, error) {
-	return MailboxStatus{}, nil
-}
-
-func (session *oversizedListSession) Examine(context.Context, string) (mailboxSnapshot, error) {
-	return mailboxSnapshot{}, nil
-}
-
-func (session *oversizedListSession) UIDSearchWindow(context.Context, SearchQuery, uidWindow, int) ([]uint32, error) {
-	return nil, nil
-}
-
-func (session *oversizedListSession) UIDFetchMetadata(context.Context, string, []uint32, int) ([]MessageMetadata, error) {
-	return nil, nil
-}
-
-func (session *oversizedListSession) UIDFetchBody(context.Context, uint32, int) ([]byte, error) {
-	return nil, nil
 }
 
 func (session *oversizedListSession) Logout(context.Context) error {

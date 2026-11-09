@@ -15,11 +15,6 @@ type boundedSearchSession struct {
 	metadata     []MessageMetadata
 }
 
-func (session *boundedSearchSession) Authenticate(context.Context, Credentials) error { return nil }
-func (session *boundedSearchSession) List(context.Context, int) ([]Folder, error)     { return nil, nil }
-func (session *boundedSearchSession) Status(context.Context, string) (MailboxStatus, error) {
-	return MailboxStatus{}, nil
-}
 func (session *boundedSearchSession) Examine(context.Context, string) (mailboxSnapshot, error) {
 	session.examineCalls++
 	return mailboxSnapshot{UIDNext: 2, UIDValidity: 9001}, nil
@@ -29,9 +24,6 @@ func (session *boundedSearchSession) UIDSearchWindow(context.Context, SearchQuer
 }
 func (session *boundedSearchSession) UIDFetchMetadata(context.Context, string, []uint32, int) ([]MessageMetadata, error) {
 	return session.metadata, nil
-}
-func (session *boundedSearchSession) UIDFetchBody(context.Context, uint32, int) ([]byte, error) {
-	return nil, nil
 }
 func (session *boundedSearchSession) Logout(context.Context) error { return nil }
 func (session *boundedSearchSession) Abort() error                 { return nil }
