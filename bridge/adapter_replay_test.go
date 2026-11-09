@@ -38,9 +38,10 @@ func TestAdapterReplaysOneTransportFailure(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = adapter.Close() })
 
-			messages, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+			page, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+			messages := page.Messages
 			if err != nil || len(messages) != 1 {
-				t.Fatalf("SearchMail = %#v, %v", messages, err)
+				t.Fatalf("SearchMailPage = %#v, %v", messages, err)
 			}
 
 			body, err := adapter.GetMessageBody(context.Background(), messages[0].ID)
@@ -106,8 +107,8 @@ func TestAdapterSynchronizesPostLoginCapabilityBeforeOperation(t *testing.T) {
 				t.Fatalf("NewAdapter: %v", err)
 			}
 			t.Cleanup(func() { _ = adapter.Close() })
-			if _, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"}); err != nil {
-				t.Fatalf("SearchMail: %v", err)
+			if _, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"}); err != nil {
+				t.Fatalf("SearchMailPage: %v", err)
 			}
 
 			betweenLoginAndExamine := map[string]int{}
@@ -156,9 +157,10 @@ func TestAdapterReplaysPostLoginCapabilityFailure(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = adapter.Close() })
 
-			messages, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+			page, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+			messages := page.Messages
 			if err != nil || len(messages) != 1 {
-				t.Fatalf("SearchMail after post-login CAPABILITY disconnect = %#v, %v", messages, err)
+				t.Fatalf("SearchMailPage after post-login CAPABILITY disconnect = %#v, %v", messages, err)
 			}
 			assertTwoLogins(t, server.Commands())
 		})
@@ -181,9 +183,10 @@ func TestAdapterReplaysExactUIDSearchFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = adapter.Close() })
 
-	messages, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+	page, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+	messages := page.Messages
 	if err != nil || len(messages) != 1 {
-		t.Fatalf("SearchMail = %#v, %v", messages, err)
+		t.Fatalf("SearchMailPage = %#v, %v", messages, err)
 	}
 	body, err := adapter.GetMessageBody(context.Background(), messages[0].ID)
 	if err != nil || !strings.Contains(string(body), "Welcome to Croton") {
@@ -248,9 +251,10 @@ func TestAdapterRejectsStaleMessageIDAfterTransportReplay(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = adapter.Close() })
 
-			messages, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+			page, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+			messages := page.Messages
 			if err != nil || len(messages) != 1 {
-				t.Fatalf("SearchMail = %#v, %v", messages, err)
+				t.Fatalf("SearchMailPage = %#v, %v", messages, err)
 			}
 
 			if _, err := adapter.GetMessageBody(context.Background(), messages[0].ID); bridge.CodeOf(err) != bridge.CodeStaleMessageID {

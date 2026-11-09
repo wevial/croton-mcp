@@ -129,7 +129,7 @@ func TestAttachmentStructureAdapter(t *testing.T) {
 		})
 		ctx := context.Background()
 		opened := 0
-		adapter.factory = func(ctx context.Context) (readSession, error) {
+		adapter.factory = func(ctx context.Context) (bridgeSession, error) {
 			opened++
 			return adapter.openSession(ctx)
 		}

@@ -11,7 +11,7 @@ func (adapter *Adapter) GetMessageMetadata(ctx context.Context, identifier strin
 	}
 
 	var result MessageMetadata
-	err = adapter.execute(ctx, func(operationContext context.Context, session readSession) error {
+	err = adapter.execute(ctx, func(operationContext context.Context, session bridgeSession) error {
 		snapshot, err := session.Examine(operationContext, payload.Mailbox)
 		if err != nil {
 			return err
@@ -52,7 +52,7 @@ func (adapter *Adapter) GetMessageBody(ctx context.Context, identifier string) (
 	}
 
 	var body []byte
-	err = adapter.execute(ctx, func(operationContext context.Context, session readSession) error {
+	err = adapter.execute(ctx, func(operationContext context.Context, session bridgeSession) error {
 		snapshot, err := session.Examine(operationContext, payload.Mailbox)
 		if err != nil {
 			return err
@@ -75,9 +75,8 @@ func (adapter *Adapter) GetMessageBody(ctx context.Context, identifier string) (
 
 // GetMessageHeaders resolves an opaque message identifier after a fresh
 // read-only EXAMINE confirms its UIDVALIDITY generation, then returns the
-// metadata and bounded canonical headers of one header-only FETCH. A session
-// without the optional header capability is refused before any content
-// FETCH; the body is never read as a fallback.
+// metadata and bounded canonical headers of one header-only FETCH. The body
+// is never read.
 func (adapter *Adapter) GetMessageHeaders(ctx context.Context, identifier string) (MessageHeaders, error) {
 	payload, err := adapter.decodeMessageID(identifier)
 	if err != nil {
@@ -85,12 +84,7 @@ func (adapter *Adapter) GetMessageHeaders(ctx context.Context, identifier string
 	}
 
 	var result MessageHeaders
-	err = adapter.execute(ctx, func(operationContext context.Context, session readSession) error {
-		reader, ok := session.(headerSession)
-		if !ok {
-			return errorCode(CodeUnsupported)
-		}
-
+	err = adapter.execute(ctx, func(operationContext context.Context, session bridgeSession) error {
 		snapshot, err := session.Examine(operationContext, payload.Mailbox)
 		if err != nil {
 			return err
@@ -102,7 +96,7 @@ func (adapter *Adapter) GetMessageHeaders(ctx context.Context, identifier string
 			return err
 		}
 
-		record, err := reader.UIDFetchHeaders(operationContext, payload.UID, adapter.config.Bounds.MaxHeaderBytes)
+		record, err := session.UIDFetchHeaders(operationContext, payload.UID, adapter.config.Bounds.MaxHeaderBytes)
 		if err != nil {
 			return err
 		}
@@ -121,7 +115,7 @@ func (adapter *Adapter) GetMessageHeaders(ctx context.Context, identifier string
 	return result, nil
 }
 
-func requireMessageUID(ctx context.Context, session readSession, uid uint32) error {
+func requireMessageUID(ctx context.Context, session bridgeSession, uid uint32) error {
 	uids, err := session.UIDSearchWindow(ctx, SearchQuery{}, uidWindow{Start: uid, End: uid}, 1)
 	if err != nil {
 		if CodeOf(err) == CodeBoundsExceeded {

@@ -5,7 +5,6 @@ import (
 	"maps"
 	"mime"
 	"slices"
-	"strconv"
 	"strings"
 )
 
@@ -70,7 +69,9 @@ func (projector *attachmentProjector) visit(structure bodyStructure, depth int) 
 	}
 
 	if entity.disposition == "attachment" || filename != "" {
-		projector.appendAttachment(entity, filename)
+		if metadata, ok := boundedAttachment(len(projector.attachments), projector.limits, &projector.truncation, filename, entity.mediaType, entity.disposition, entity.dispositionParameters["size"]); ok {
+			projector.attachments = append(projector.attachments, AttachmentStructureEntry{AttachmentMetadata: metadata})
+		}
 
 		return nil
 	}
@@ -93,34 +94,6 @@ func (projector *attachmentProjector) visit(structure bodyStructure, depth int) 
 	}
 
 	return nil
-}
-
-// appendAttachment lists one attachment within the count and field limits.
-// Fields are truncated and repaired by truncateUTF8 exactly as
-// NormalizeMessage does, and any truncation sets Attachments.
-func (projector *attachmentProjector) appendAttachment(entity projectedEntity, filename string) {
-	if len(projector.attachments) >= projector.limits.MaxAttachmentCount {
-		projector.truncation.Attachments = true
-
-		return
-	}
-
-	filename, filenameTruncated := truncateUTF8(filename, projector.limits.MaxFilenameBytes)
-	contentType, contentTypeTruncated := truncateUTF8(entity.mediaType, projector.limits.MaxContentTypeBytes)
-	disposition, dispositionTruncated := truncateUTF8(entity.disposition, projector.limits.MaxDispositionBytes)
-	if filenameTruncated || contentTypeTruncated || dispositionTruncated {
-		projector.truncation.Attachments = true
-	}
-
-	entry := AttachmentStructureEntry{
-		AttachmentMetadata: AttachmentMetadata{Filename: filename, ContentType: contentType, Disposition: disposition},
-	}
-	if size, err := strconv.ParseInt(entity.dispositionParameters["size"], 10, 64); err == nil && size >= 0 {
-		entry.DeclaredSize = size
-		entry.HasDeclaredSize = true
-	}
-
-	projector.attachments = append(projector.attachments, entry)
 }
 
 // structureEntity normalizes one decoded node.

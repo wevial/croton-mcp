@@ -43,9 +43,10 @@ func TestAdapterReadsMailboxStatusAndMessageMetadataInBothTLSModes(t *testing.T)
 				t.Fatalf("status = %#v", status)
 			}
 
-			results, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX", Subject: "Welcome"})
+			page, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX", Subject: "Welcome"})
+			results := page.Messages
 			if err != nil {
-				t.Fatalf("SearchMail: %v", err)
+				t.Fatalf("SearchMailPage: %v", err)
 			}
 			if len(results) != 1 || results[0].Subject != "Welcome to Croton" || results[0].ID == "" {
 				t.Fatalf("search results = %#v", results)

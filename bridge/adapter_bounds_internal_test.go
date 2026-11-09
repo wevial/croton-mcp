@@ -5,7 +5,10 @@ import (
 	"testing"
 )
 
+// oversizedListSession implements only what the adapter calls; the embedded
+// nil interface fills the rest of bridgeSession.
 type oversizedListSession struct {
+	bridgeSession
 	folders []Folder
 	aborts  int
 }
@@ -51,7 +54,7 @@ func TestAdapterListFoldersAbortsWhenSessionExceedsConfiguredCap(t *testing.T) {
 	session := &oversizedListSession{folders: []Folder{{Name: "INBOX"}, {Name: "Archive"}}}
 	adapter := &Adapter{
 		config:  ValidatedConfig{Bounds: Bounds{MaxFolderResults: 1}},
-		factory: func(context.Context) (readSession, error) { return session, nil },
+		factory: func(context.Context) (bridgeSession, error) { return session, nil },
 		gate:    make(chan struct{}, 1),
 	}
 	adapter.gate <- struct{}{}

@@ -361,7 +361,9 @@ func (collector *mimeCollector) parseEntity(header textproto.MIMEHeader, body io
 
 	attachment := strings.EqualFold(disposition, "attachment") || filename != ""
 	if attachment {
-		collector.appendAttachment(filename, contentType, disposition, dispositionParameters)
+		if metadata, ok := boundedAttachment(len(collector.result.Attachments), collector.limits, &collector.result.Truncation, filename, contentType, disposition, dispositionParameters["size"]); ok {
+			collector.result.Attachments = append(collector.result.Attachments, metadata)
+		}
 
 		return nil
 	}
@@ -429,27 +431,31 @@ func (collector *mimeCollector) parseEntity(header textproto.MIMEHeader, body io
 	return nil
 }
 
-func (collector *mimeCollector) appendAttachment(filename, contentType, disposition string, parameters map[string]string) {
-	if len(collector.result.Attachments) >= collector.limits.MaxAttachmentCount {
-		collector.result.Truncation.Attachments = true
+// boundedAttachment builds one attachment's metadata within the count and
+// field limits, given count attachments already listed. Fields are truncated
+// and repaired by truncateUTF8, and any truncation or overflow sets
+// Attachments. It reports false when the count limit leaves no room.
+func boundedAttachment(count int, limits NormalizeLimits, truncation *Truncation, filename, contentType, disposition, size string) (AttachmentMetadata, bool) {
+	if count >= limits.MaxAttachmentCount {
+		truncation.Attachments = true
 
-		return
+		return AttachmentMetadata{}, false
 	}
 
-	filename, filenameTruncated := truncateUTF8(filename, collector.limits.MaxFilenameBytes)
-	contentType, contentTypeTruncated := truncateUTF8(contentType, collector.limits.MaxContentTypeBytes)
-	disposition, dispositionTruncated := truncateUTF8(disposition, collector.limits.MaxDispositionBytes)
+	filename, filenameTruncated := truncateUTF8(filename, limits.MaxFilenameBytes)
+	contentType, contentTypeTruncated := truncateUTF8(contentType, limits.MaxContentTypeBytes)
+	disposition, dispositionTruncated := truncateUTF8(disposition, limits.MaxDispositionBytes)
 	if filenameTruncated || contentTypeTruncated || dispositionTruncated {
-		collector.result.Truncation.Attachments = true
+		truncation.Attachments = true
 	}
 
 	metadata := AttachmentMetadata{Filename: filename, ContentType: contentType, Disposition: disposition}
-	if size, err := strconv.ParseInt(parameters["size"], 10, 64); err == nil && size >= 0 {
-		metadata.DeclaredSize = size
+	if declared, err := strconv.ParseInt(size, 10, 64); err == nil && declared >= 0 {
+		metadata.DeclaredSize = declared
 		metadata.HasDeclaredSize = true
 	}
 
-	collector.result.Attachments = append(collector.result.Attachments, metadata)
+	return metadata, true
 }
 
 func (collector *mimeCollector) applyText() {

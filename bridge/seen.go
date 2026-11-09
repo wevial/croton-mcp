@@ -37,7 +37,7 @@ func (adapter *Adapter) SetSeen(ctx context.Context, mailbox string, uidValidity
 	}
 	defer func() { adapter.gate <- struct{}{} }()
 
-	session, writer, err := adapter.openTriageSource(ctx, mailbox, uidValidity)
+	session, err := adapter.openTriageSource(ctx, mailbox, uidValidity)
 	if err != nil {
 		return nil, err
 	}
@@ -48,7 +48,7 @@ func (adapter *Adapter) SetSeen(ctx context.Context, mailbox string, uidValidity
 	}
 
 	for index, uid := range uids {
-		result, stop := adapter.storeSeen(ctx, session, writer, uid, seen)
+		result, stop := adapter.storeSeen(ctx, session, uid, seen)
 		results[index] = result
 		if stop {
 			break
@@ -83,10 +83,10 @@ func validateTriageRequest(mailbox string, uidValidity uint32, uids []uint32) er
 // openTriageSource selects the source read-write and checks its generation.
 // Nothing has been written yet, so one reconnect of a dead retained session
 // is as safe here as on the read path.
-func (adapter *Adapter) openTriageSource(ctx context.Context, mailbox string, uidValidity uint32) (readSession, seenSession, error) {
+func (adapter *Adapter) openTriageSource(ctx context.Context, mailbox string, uidValidity uint32) (bridgeSession, error) {
 	for attempt := 0; attempt < 2; attempt++ {
 		operationContext, cancel := adapter.operationContext(ctx)
-		session, writer, snapshot, err := adapter.selectTriageSource(operationContext, mailbox)
+		session, snapshot, err := adapter.selectTriageSource(operationContext, mailbox)
 		if err != nil {
 			err = mapIMAPError(operationContext, err)
 			retry := attempt == 0 && adapter.canReplay(operationContext, err)
@@ -99,39 +99,34 @@ func (adapter *Adapter) openTriageSource(ctx context.Context, mailbox string, ui
 				continue
 			}
 
-			return nil, nil, err
+			return nil, err
 		}
 		cancel()
 
 		if snapshot.UIDValidity != uidValidity {
-			return nil, nil, errorCode(CodeStaleMessageID)
+			return nil, errorCode(CodeStaleMessageID)
 		}
 
-		return session, writer, nil
+		return session, nil
 	}
 
-	return nil, nil, errorCode(CodeBridgeUnreachable)
+	return nil, errorCode(CodeBridgeUnreachable)
 }
 
-func (adapter *Adapter) selectTriageSource(ctx context.Context, mailbox string) (readSession, seenSession, mailboxSnapshot, error) {
+func (adapter *Adapter) selectTriageSource(ctx context.Context, mailbox string) (bridgeSession, mailboxSnapshot, error) {
 	session, err := adapter.sessionForOperation(ctx)
 	if err != nil {
-		return nil, nil, mailboxSnapshot{}, err
+		return nil, mailboxSnapshot{}, err
 	}
 
-	writer, ok := session.(seenSession)
-	if !ok {
-		return session, nil, mailboxSnapshot{}, errorCode(CodeIMAPProtocol)
-	}
-
-	snapshot, err := writer.SelectSource(ctx, mailbox)
-	return session, writer, snapshot, err
+	snapshot, err := session.SelectSource(ctx, mailbox)
+	return session, snapshot, err
 }
 
 // storeSeen confirms one UID is present, then dispatches its single STORE.
 // Every step has its own command deadline, so the batch latency is bounded.
 // It reports whether every later UID must be left unattempted.
-func (adapter *Adapter) storeSeen(ctx context.Context, session readSession, writer seenSession, uid uint32, seen bool) (TriageResult, bool) {
+func (adapter *Adapter) storeSeen(ctx context.Context, session bridgeSession, uid uint32, seen bool) (TriageResult, bool) {
 	operationContext, cancel := adapter.operationContext(ctx)
 	defer cancel()
 
@@ -146,7 +141,7 @@ func (adapter *Adapter) storeSeen(ctx context.Context, session readSession, writ
 		return TriageResult{UID: uid, Outcome: OutcomeNotAttempted, Code: CodeOf(mapIMAPError(operationContext, err))}, true
 	}
 
-	err := writer.StoreSeen(operationContext, uid, seen)
+	err := session.StoreSeen(operationContext, uid, seen)
 	if err == nil {
 		return TriageResult{UID: uid, Outcome: OutcomeApplied}, false
 	}

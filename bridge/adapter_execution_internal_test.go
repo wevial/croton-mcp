@@ -14,7 +14,7 @@ func TestAdapterCancelsQueuedCallerBeforeSessionUse(t *testing.T) {
 	session := &oversizedListSession{}
 	adapter := &Adapter{
 		config: ValidatedConfig{IMAP: IMAPConfig{CommandTimeoutMs: 1000}},
-		factory: func(context.Context) (readSession, error) {
+		factory: func(context.Context) (bridgeSession, error) {
 			return session, nil
 		},
 		gate: make(chan struct{}, 1),
@@ -22,7 +22,7 @@ func TestAdapterCancelsQueuedCallerBeforeSessionUse(t *testing.T) {
 	adapter.gate <- struct{}{}
 
 	go func() {
-		firstResult <- adapter.execute(context.Background(), func(context.Context, readSession) error {
+		firstResult <- adapter.execute(context.Background(), func(context.Context, bridgeSession) error {
 			close(started)
 			<-release
 			return nil
@@ -37,7 +37,7 @@ func TestAdapterCancelsQueuedCallerBeforeSessionUse(t *testing.T) {
 
 	queuedContext, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := adapter.execute(queuedContext, func(context.Context, readSession) error {
+	if err := adapter.execute(queuedContext, func(context.Context, bridgeSession) error {
 		t.Fatal("cancelled caller acquired the adapter gate")
 		return nil
 	}); CodeOf(err) != CodeOperationCanceled {
@@ -64,7 +64,7 @@ func TestAdapterDoesNotReplayNonTransportFailures(t *testing.T) {
 			factoryCalls := 0
 			adapter := &Adapter{
 				config: ValidatedConfig{IMAP: IMAPConfig{CommandTimeoutMs: 1000}},
-				factory: func(context.Context) (readSession, error) {
+				factory: func(context.Context) (bridgeSession, error) {
 					mu.Lock()
 					defer mu.Unlock()
 
@@ -75,7 +75,7 @@ func TestAdapterDoesNotReplayNonTransportFailures(t *testing.T) {
 			}
 			adapter.gate <- struct{}{}
 
-			err := adapter.execute(context.Background(), func(context.Context, readSession) error {
+			err := adapter.execute(context.Background(), func(context.Context, bridgeSession) error {
 				return errorCode(code)
 			})
 			if CodeOf(err) != code {

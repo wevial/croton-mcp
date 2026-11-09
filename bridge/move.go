@@ -96,23 +96,19 @@ func (adapter *Adapter) move(ctx context.Context, mailbox string, uidValidity ui
 	}
 	defer func() { adapter.gate <- struct{}{} }()
 
-	session, _, err := adapter.openTriageSource(ctx, mailbox, uidValidity)
+	session, err := adapter.openTriageSource(ctx, mailbox, uidValidity)
 	if err != nil {
 		return nil, err
 	}
 
-	mover, ok := session.(moveSession)
-	if !ok {
-		return nil, errorCode(CodeIMAPProtocol)
-	}
-	if !mover.SupportsMove() {
+	if !session.SupportsMove() {
 		refuseRemaining(results, 0)
 		return results, nil
 	}
 
 	written := false
 	for index, uid := range uids {
-		result, stop := adapter.moveUID(ctx, session, mover, uid, resolve)
+		result, stop := adapter.moveUID(ctx, session, uid, resolve)
 		results[index] = result
 		if result.Code == CodeUnsupported {
 			refuseRemaining(results, index+1)
@@ -169,8 +165,8 @@ func refuseRemaining(results []TriageResult, from int) {
 
 // moveUID dispatches one UID MOVE after prepareMove validated it. It reports
 // whether every later UID must be left unattempted.
-func (adapter *Adapter) moveUID(ctx context.Context, session readSession, mover moveSession, uid uint32, resolve destinationResolver) (TriageResult, bool) {
-	target, refusal, stop := adapter.prepareMove(ctx, session, mover, uid, resolve)
+func (adapter *Adapter) moveUID(ctx context.Context, session bridgeSession, uid uint32, resolve destinationResolver) (TriageResult, bool) {
+	target, refusal, stop := adapter.prepareMove(ctx, session, uid, resolve)
 	if target == "" {
 		return refusal, stop
 	}
@@ -178,7 +174,7 @@ func (adapter *Adapter) moveUID(ctx context.Context, session readSession, mover 
 	operationContext, cancel := adapter.operationContext(ctx)
 	defer cancel()
 
-	err := mover.MoveUID(operationContext, uid, target)
+	err := session.MoveUID(operationContext, uid, target)
 	if err == nil {
 		return TriageResult{UID: uid, Outcome: OutcomeApplied}, false
 	}
@@ -186,9 +182,8 @@ func (adapter *Adapter) moveUID(ctx context.Context, session readSession, mover 
 	err = mapIMAPError(operationContext, err)
 	switch CodeOf(err) {
 	case CodeUnsupported:
-		// MOVE stopped being advertised and nothing was sent: the check
-		// refused first, or the dispatch guard refused a fallback write and
-		// closed the connection, so the session is discarded.
+		// MOVE stopped being advertised and the check refused before
+		// anything was sent, so the session is discarded.
 		adapter.invalidate(session)
 		return TriageResult{UID: uid, Outcome: OutcomeRefused, Code: CodeUnsupported}, false
 	case CodeIMAPCommand:
@@ -209,7 +204,7 @@ func (adapter *Adapter) moveUID(ctx context.Context, session readSession, mover 
 // name anywhere in the account fails the listing and nothing is written. It
 // returns the exact target, or an empty target with the UID's result and
 // whether to stop the batch.
-func (adapter *Adapter) prepareMove(ctx context.Context, session readSession, mover moveSession, uid uint32, resolve destinationResolver) (string, TriageResult, bool) {
+func (adapter *Adapter) prepareMove(ctx context.Context, session bridgeSession, uid uint32, resolve destinationResolver) (string, TriageResult, bool) {
 	operationContext, cancel := adapter.operationContext(ctx)
 	defer cancel()
 
@@ -221,7 +216,7 @@ func (adapter *Adapter) prepareMove(ctx context.Context, session readSession, mo
 		return "", adapter.abandonUID(operationContext, session, uid, err), true
 	}
 
-	listing, err := mover.ListMailboxes(operationContext, "*", adapter.config.Bounds.MaxFolderResults)
+	listing, err := session.ListMailboxes(operationContext, "*", adapter.config.Bounds.MaxFolderResults)
 	if err != nil {
 		return "", adapter.abandonUID(operationContext, session, uid, err), true
 	}
@@ -236,7 +231,7 @@ func (adapter *Adapter) prepareMove(ctx context.Context, session readSession, mo
 
 // abandonUID reports a UID for which nothing was dispatched on a session that
 // is no longer trustworthy, so no later UID is attempted either.
-func (adapter *Adapter) abandonUID(ctx context.Context, session readSession, uid uint32, err error) TriageResult {
+func (adapter *Adapter) abandonUID(ctx context.Context, session bridgeSession, uid uint32, err error) TriageResult {
 	adapter.invalidate(session)
 	return TriageResult{UID: uid, Outcome: OutcomeNotAttempted, Code: CodeOf(mapIMAPError(ctx, err))}
 }

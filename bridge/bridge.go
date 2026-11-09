@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-type sessionFactory func(context.Context) (readSession, error)
+type sessionFactory func(context.Context) (bridgeSession, error)
 
 // Adapter serializes a single authenticated IMAP session. Its only writes are
 // the opt-in, Seen-only SetSeen and native Move; every other operation is
@@ -18,7 +18,7 @@ type Adapter struct {
 	idKey   [32]byte
 
 	mu      sync.Mutex
-	session readSession
+	session bridgeSession
 	closed  bool
 }
 
@@ -46,7 +46,7 @@ func NewAdapter(input Config) (*Adapter, error) {
 	return adapter, nil
 }
 
-func (adapter *Adapter) openSession(ctx context.Context) (readSession, error) {
+func (adapter *Adapter) openSession(ctx context.Context) (bridgeSession, error) {
 	connection, err := Dial(ctx, Config{IMAP: adapter.config.IMAP, Bounds: boundsPatch(adapter.config.Bounds), Audit: adapter.config.Audit})
 	if err != nil {
 		return nil, err
@@ -71,7 +71,7 @@ func (adapter *Adapter) openSession(ctx context.Context) (readSession, error) {
 	return session, nil
 }
 
-func (adapter *Adapter) execute(ctx context.Context, operation func(context.Context, readSession) error) error {
+func (adapter *Adapter) execute(ctx context.Context, operation func(context.Context, bridgeSession) error) error {
 	if err := adapter.acquire(ctx); err != nil {
 		return err
 	}
@@ -111,7 +111,7 @@ func (adapter *Adapter) execute(ctx context.Context, operation func(context.Cont
 	return errorCode(CodeBridgeUnreachable)
 }
 
-func (adapter *Adapter) sessionForOperation(ctx context.Context) (readSession, error) {
+func (adapter *Adapter) sessionForOperation(ctx context.Context) (bridgeSession, error) {
 	adapter.mu.Lock()
 	defer adapter.mu.Unlock()
 
@@ -163,7 +163,7 @@ func (adapter *Adapter) operationContext(ctx context.Context) (context.Context, 
 	return context.WithTimeout(ctx, timeout)
 }
 
-func (adapter *Adapter) invalidate(session readSession) {
+func (adapter *Adapter) invalidate(session bridgeSession) {
 	adapter.mu.Lock()
 	defer adapter.mu.Unlock()
 	if adapter.session == session {

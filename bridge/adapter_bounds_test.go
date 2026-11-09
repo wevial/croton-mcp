@@ -44,9 +44,10 @@ func TestAdapterRejectsOversizedBodyLiteralsDespitePartialFetch(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = adapter.Close() })
 
-			results, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+			page, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+			results := page.Messages
 			if err != nil || len(results) != 1 {
-				t.Fatalf("SearchMail = %#v, %v", results, err)
+				t.Fatalf("SearchMailPage = %#v, %v", results, err)
 			}
 			if _, err := adapter.GetMessageBody(context.Background(), results[0].ID); bridge.CodeOf(err) != bridge.CodeBoundsExceeded {
 				t.Fatalf("GetMessageBody error = %v, want %q", err, bridge.CodeBoundsExceeded)
@@ -80,11 +81,12 @@ func TestAdapterBoundedLiteralAbortReleasesFetchReader(t *testing.T) {
 			t.Fatalf("NewAdapter: %v", err)
 		}
 
-		results, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+		page, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+		results := page.Messages
 		if err != nil || len(results) != 1 {
 			_ = adapter.Close()
 			_ = server.Close()
-			t.Fatalf("SearchMail = %#v, %v", results, err)
+			t.Fatalf("SearchMailPage = %#v, %v", results, err)
 		}
 		if _, err := adapter.GetMessageBody(context.Background(), results[0].ID); bridge.CodeOf(err) != bridge.CodeBoundsExceeded {
 			_ = adapter.Close()

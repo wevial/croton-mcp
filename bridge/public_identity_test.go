@@ -46,14 +46,14 @@ func (session *publicIdentitySession) UIDFetchMetadata(_ context.Context, _ stri
 	return metadata, nil
 }
 
-func newPublicIdentityAdapter(sessions ...readSession) *Adapter {
+func newPublicIdentityAdapter(sessions ...bridgeSession) *Adapter {
 	factoryCalls := 0
 	adapter := &Adapter{
 		config: ValidatedConfig{
 			IMAP:   IMAPConfig{CommandTimeoutMs: 1000},
 			Bounds: Bounds{MaxSearchResults: 10, MaxHeaderBytes: 4096, MaxOutputBytes: defaultMaxOutputBytes},
 		},
-		factory: func(context.Context) (readSession, error) {
+		factory: func(context.Context) (bridgeSession, error) {
 			session := sessions[factoryCalls]
 			factoryCalls++
 			return session, nil

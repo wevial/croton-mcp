@@ -78,7 +78,8 @@ func startTLSMetadataAdapter(t *testing.T, fake testkit.TLSMode, mode string, fl
 func unseenOracle(t *testing.T, adapter *bridge.Adapter) map[uint32]bool {
 	t.Helper()
 
-	results, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX", Unread: true})
+	page, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX", Unread: true})
+	results := page.Messages
 	if err != nil {
 		t.Fatalf("UNSEEN search: %v", err)
 	}
@@ -145,12 +146,13 @@ func TestSearchMetadataTLS(t *testing.T) {
 		for _, mode := range modes {
 			server, adapter := startTLSMetadataAdapter(t, mode.fake, mode.mode, testkit.MetadataFlagsOrdinary)
 
-			results, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+			page, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+			results := page.Messages
 			if err != nil {
-				t.Fatalf("%s: SearchMail: %v", mode.name, err)
+				t.Fatalf("%s: SearchMailPage: %v", mode.name, err)
 			}
 			if len(results) != len(tlsMetadataMessages) {
-				t.Fatalf("%s: SearchMail results = %d, want %d", mode.name, len(results), len(tlsMetadataMessages))
+				t.Fatalf("%s: SearchMailPage results = %d, want %d", mode.name, len(results), len(tlsMetadataMessages))
 			}
 
 			for _, result := range results {
@@ -183,9 +185,10 @@ func TestSearchMetadataTLS(t *testing.T) {
 			server, adapter := startTLSMetadataAdapter(t, mode.fake, mode.mode, testkit.MetadataFlagsOmitted)
 
 			before := unseenOracle(t, adapter)
-			results, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+			page, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+			results := page.Messages
 			if err != nil || len(results) != len(tlsMetadataMessages) {
-				t.Fatalf("%s: omitted FLAGS SearchMail = %d results, %v", mode.name, len(results), err)
+				t.Fatalf("%s: omitted FLAGS SearchMailPage = %d results, %v", mode.name, len(results), err)
 			}
 			for _, result := range results {
 				if got := decodeTLSMetadata(t, result); *got.ReadState != "unknown" {
@@ -199,9 +202,10 @@ func TestSearchMetadataTLS(t *testing.T) {
 			assertMetadataOnlyTranscript(t, server)
 
 			server, adapter = startTLSMetadataAdapter(t, mode.fake, mode.mode, testkit.MetadataFlagsDuplicated)
-			results, err = adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+			page, err = adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+			results = page.Messages
 			if bridge.CodeOf(err) != bridge.CodeIMAPProtocol || results != nil {
-				t.Fatalf("%s: duplicate FLAGS SearchMail = %#v, %v, want nil and %q", mode.name, results, err, bridge.CodeIMAPProtocol)
+				t.Fatalf("%s: duplicate FLAGS SearchMailPage = %#v, %v, want nil and %q", mode.name, results, err, bridge.CodeIMAPProtocol)
 			}
 			if err.Error() != bridge.CodeIMAPProtocol {
 				t.Fatalf("%s: duplicate FLAGS error = %q, want code only", mode.name, err.Error())
