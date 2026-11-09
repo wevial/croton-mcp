@@ -244,6 +244,6 @@ Croton does not defend against the following, by design:
   needs, not that the disclosed content stays on the machine.
 - **Physical access.** Anyone with the machine can read process memory, the
   configuration file and the credential helper's inputs.
-- **Windows.** Both executables compile but refuse to load a configuration
-  file, so nothing runs. Support is fail-closed by design until a
-  descriptor-relative, no-follow opener exists for that platform.
+- **Windows.** The `croton-mcp` executable compiles but refuses to load a
+  configuration file, so nothing runs. Support is fail-closed by design until
+  a descriptor-relative, no-follow opener exists for that platform.
