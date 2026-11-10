@@ -50,7 +50,9 @@ argument or volume. Croton bounds what such a client can reach and receive:
 - Results are metadata first. Bodies are read only on request, with hard caps
   on raw, header and decoded text bytes, and every tool result is capped at
   100 000 bytes and truncated to valid JSON.
-- Attachment bytes are never fetched or returned.
+- Attachment bytes are never returned. `get_message` fetches the raw MIME
+  within the body cap, so a small message's attachment payload is read into
+  memory, but normalization drops it and only attachment metadata leaves.
 - Message IDs are opaque and bound to the mailbox UIDVALIDITY, so a stale or
   forged ID fails instead of reaching another message.
 - Each write touches one UID per command: Seen-only `UID STORE` or native
