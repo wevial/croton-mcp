@@ -54,7 +54,6 @@ JSON. Register the binary with your MCP client as a stdio server. See
 
 ## How it limits access
 
-- Writes are off by default; there is no send and no delete.
 - Tools return metadata first; bodies are read only on request and capped,
   and tool results are capped at 100 000 bytes of valid JSON.
 - Attachment bytes are never returned.
