@@ -175,7 +175,7 @@ func (session *headerTestSession) UIDSearchWindow(_ context.Context, _ SearchQue
 	return []uint32{headerTestUID}, nil
 }
 
-func (session *headerTestSession) UIDFetchBody(context.Context, uint32, int) ([]byte, error) {
+func (session *headerTestSession) UIDFetchBody(context.Context, uint32, []int, int) ([]byte, error) {
 	session.bodies++
 	return nil, errorCode(CodeIMAPProtocol)
 }

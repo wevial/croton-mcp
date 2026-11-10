@@ -60,12 +60,12 @@ func TestAdapterReadsMailboxStatusAndMessageMetadataInBothTLSModes(t *testing.T)
 				t.Fatalf("metadata = %#v", metadata)
 			}
 
-			body, err := adapter.GetMessageBody(context.Background(), results[0].ID)
+			message, err := adapter.GetMessage(context.Background(), results[0].ID)
 			if err != nil {
-				t.Fatalf("GetMessageBody: %v", err)
+				t.Fatalf("GetMessage: %v", err)
 			}
-			if !strings.Contains(string(body), "Welcome to Croton") {
-				t.Fatalf("body = %q", body)
+			if !strings.Contains(message.Text, "Welcome to Croton") || message.TextSource != bridge.TextSourcePlain {
+				t.Fatalf("message = %#v", message)
 			}
 			if err := server.AssertReadOnlyCommands(); err != nil {
 				t.Fatalf("read-only transcript: %v", err)

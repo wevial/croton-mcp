@@ -52,7 +52,7 @@ type bridgeSession interface {
 	UIDSearchWindow(context.Context, SearchQuery, uidWindow, int) ([]uint32, error)
 	UIDFetchMetadata(context.Context, string, []uint32, int) ([]MessageMetadata, error)
 	UIDFetchHeaders(context.Context, uint32, int) (MessageHeaders, error)
-	UIDFetchBody(context.Context, uint32, int) ([]byte, error)
+	UIDFetchBody(context.Context, uint32, []int, int) ([]byte, error)
 	fetchUIDStructure(context.Context, uint32) (bodyStructure, error)
 	StoreSeen(context.Context, uint32, bool) error
 	SupportsMove() bool
@@ -716,11 +716,13 @@ func validateFetchedMetadataUIDs(requested []uint32, results []MessageMetadata) 
 	return nil
 }
 
-func (session *imapSession) UIDFetchBody(ctx context.Context, uid uint32, limit int) ([]byte, error) {
-	if uid == 0 || limit < 1 {
+// UIDFetchBody reads at most limit bytes of one body part section with a
+// BODY.PEEK partial fetch. A literal longer than limit is refused.
+func (session *imapSession) UIDFetchBody(ctx context.Context, uid uint32, part []int, limit int) ([]byte, error) {
+	if uid == 0 || len(part) == 0 || limit < 1 {
 		return nil, errorCode(CodeBoundsExceeded)
 	}
-	section := &imap.FetchItemBodySection{Peek: true, Partial: &imap.SectionPartial{Offset: 0, Size: int64(limit) + 1}}
+	section := &imap.FetchItemBodySection{Part: part, Peek: true, Partial: &imap.SectionPartial{Offset: 0, Size: int64(limit)}}
 	options := &imap.FetchOptions{UID: true, BodySection: []*imap.FetchItemBodySection{section}}
 	var body []byte
 	fetch := func() (err error) {

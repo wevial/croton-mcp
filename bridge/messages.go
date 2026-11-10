@@ -1,6 +1,13 @@
 package bridge
 
-import "context"
+import (
+	"bytes"
+	"context"
+	"errors"
+	"slices"
+	"strings"
+	"unicode/utf8"
+)
 
 // GetMessageMetadata resolves an opaque message identifier only after a fresh
 // read-only EXAMINE confirms its UIDVALIDITY generation.
@@ -43,15 +50,22 @@ func (adapter *Adapter) GetMessageMetadata(ctx context.Context, identifier strin
 	return result, nil
 }
 
-// GetMessageBody returns at most MaxBodyBytes of a BODY.PEEK partial fetch.
-// The session independently enforces the cap if the server ignores the range.
-func (adapter *Adapter) GetMessageBody(ctx context.Context, identifier string) ([]byte, error) {
+// GetMessage resolves an opaque message identifier after a fresh read-only
+// EXAMINE confirms its UIDVALIDITY generation and UID, then reads its
+// BODYSTRUCTURE, its header and at most MaxBodyBytes of its first text/plain
+// leaf, else its first text/html leaf. Attachment bytes are never read.
+func (adapter *Adapter) GetMessage(ctx context.Context, identifier string) (NormalizedMessage, error) {
 	payload, err := adapter.decodeMessageID(identifier)
 	if err != nil {
-		return nil, err
+		return NormalizedMessage{}, err
 	}
 
-	var body []byte
+	bounds := adapter.config.Bounds
+	limits := normalizedLimits(NormalizeLimits{MaxMIMEParts: bounds.MaxMimeParts, MaxDecodedTextBytes: bounds.MaxBodyBytes})
+	var structure bodyStructure
+	var headers MessageHeaders
+	var section *textSection
+	var raw []byte
 	err = adapter.execute(ctx, func(operationContext context.Context, session bridgeSession) error {
 		snapshot, err := session.Examine(operationContext, payload.Mailbox)
 		if err != nil {
@@ -63,14 +77,177 @@ func (adapter *Adapter) GetMessageBody(ctx context.Context, identifier string) (
 		if err := requireMessageUID(operationContext, session, payload.UID); err != nil {
 			return err
 		}
-		body, err = session.UIDFetchBody(operationContext, payload.UID, adapter.config.Bounds.MaxBodyBytes)
+
+		structure, err = session.fetchUIDStructure(operationContext, payload.UID)
+		if err != nil {
+			return err
+		}
+		headers, err = session.UIDFetchHeaders(operationContext, payload.UID, bounds.MaxHeaderBytes)
+		if err != nil {
+			return err
+		}
+
+		selector := textSelector{limits: limits, parts: 1}
+		if err := selector.visit(structure, nil, 0); err != nil && !errors.Is(err, errMIMEPartsLimit) {
+			return err
+		}
+		section = selector.plain
+		if section == nil {
+			section = selector.html
+		}
+		if section == nil {
+			return nil
+		}
+
+		raw, err = session.UIDFetchBody(operationContext, payload.UID, section.part, bounds.MaxBodyBytes)
 		return err
 	})
 	if err != nil {
-		return nil, err
+		return NormalizedMessage{}, err
 	}
 
-	return body, nil
+	attachments, truncation, err := projectAttachmentStructure(structure, bounds)
+	if err != nil {
+		return NormalizedMessage{}, err
+	}
+
+	message := NormalizedMessage{Headers: headers.Headers, TextSource: TextSourceNone, Truncation: truncation}
+	message.Truncation.Headers = headers.Truncation.Headers
+	message.Truncation.HeaderCount = headers.Truncation.HeaderCount
+	message.Truncation.References = headers.Truncation.References
+	for _, attachment := range attachments {
+		message.Attachments = append(message.Attachments, attachment.AttachmentMetadata)
+	}
+
+	if section != nil {
+		if err := section.decode(&message, raw, int64(bounds.MaxBodyBytes), limits.MaxDecodedTextBytes); err != nil {
+			return NormalizedMessage{}, err
+		}
+	}
+
+	return message, nil
+}
+
+// textSelector finds the first text/plain and first text/html leaves that
+// are not attachments, under the MIME part and depth limits.
+type textSelector struct {
+	limits NormalizeLimits
+	parts  int
+	plain  *textSection
+	html   *textSection
+}
+
+// textSection is one selected leaf's section path and decoding parameters.
+type textSection struct {
+	part     []int
+	source   TextSource
+	encoding string
+	charset  string
+	size     uint32
+}
+
+func (selector *textSelector) visit(structure bodyStructure, part []int, depth int) error {
+	if depth > selector.limits.MaxMIMEDepth || selector.plain != nil {
+		return nil
+	}
+
+	entity, err := structureEntity(structure)
+	if err != nil {
+		return err
+	}
+
+	if entity.disposition == "attachment" || entity.dispositionParameters["filename"] != "" || entity.parameters["name"] != "" {
+		return nil
+	}
+
+	for index, child := range entity.children {
+		if selector.parts >= selector.limits.MaxMIMEParts {
+			return errMIMEPartsLimit
+		}
+		selector.parts++
+
+		if err := selector.visit(child, append(slices.Clone(part), index+1), depth+1); err != nil {
+			return err
+		}
+	}
+
+	leaf, ok := structure.(*singlePartStructure)
+	if !ok {
+		return nil
+	}
+	if len(part) == 0 {
+		part = []int{1}
+	}
+
+	section := &textSection{part: part, encoding: leaf.Encoding, charset: entity.parameters["charset"], size: leaf.Size}
+	switch {
+	case entity.mediaType == "text/plain" && selector.plain == nil:
+		section.source = TextSourcePlain
+		selector.plain = section
+	case entity.mediaType == "text/html" && selector.html == nil:
+		section.source = TextSourceHTML
+		selector.html = section
+	}
+
+	return nil
+}
+
+// decode sets message's text from raw, the first fetchLimit bytes of the
+// section. A cut base64 section is decoded only up to its last complete
+// quantum and a cut quoted-printable section drops only a trailing incomplete
+// escape, so a split quantum or escape is never decoded. A cut UTF-8, US-ASCII
+// or unlabelled section drops a trailing incomplete rune.
+func (section *textSection) decode(message *NormalizedMessage, raw []byte, fetchLimit int64, textLimit int) error {
+	cut := int64(section.size) > fetchLimit
+	encoding := strings.ToLower(strings.TrimSpace(section.encoding))
+	switch {
+	case cut && encoding == "base64":
+		keep, characters := 0, 0
+		for index, value := range raw {
+			if value == '\r' || value == '\n' {
+				continue
+			}
+
+			characters++
+			if characters%4 == 0 {
+				keep = index + 1
+			}
+		}
+		raw = raw[:keep]
+	case cut && encoding == "quoted-printable":
+		if escape := bytes.LastIndexByte(raw, '='); escape >= 0 && escape >= len(raw)-2 {
+			raw = raw[:escape]
+		}
+	}
+
+	decoded, transferTruncated, err := decodeTransfer(bytes.NewReader(raw), encoding, textLimit)
+	if err != nil {
+		return err
+	}
+	if cut && (section.charset == "" || strings.EqualFold(section.charset, "utf-8") || strings.EqualFold(section.charset, "us-ascii")) {
+		start := len(decoded) - 1
+		for start > 0 && start > len(decoded)-utf8.UTFMax && !utf8.RuneStart(decoded[start]) {
+			start--
+		}
+		if start >= 0 && !utf8.FullRune(decoded[start:]) {
+			decoded = decoded[:start]
+		}
+	}
+
+	text, charsetTruncated, err := decodeCharset(decoded, section.charset, textLimit)
+	if err != nil {
+		return err
+	}
+
+	htmlTruncated := false
+	if section.source == TextSourceHTML {
+		text, htmlTruncated = htmlText(text, textLimit)
+	}
+
+	message.Text = text
+	message.TextSource = section.source
+	message.Truncation.Text = cut || transferTruncated || charsetTruncated || htmlTruncated
+	return nil
 }
 
 // GetMessageHeaders resolves an opaque message identifier after a fresh

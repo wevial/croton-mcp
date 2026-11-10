@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -69,8 +70,9 @@ type Scenario struct {
 	// IgnoreBodyPartial makes UID FETCH return the complete body even when the
 	// client requested a BODY.PEEK partial range.
 	IgnoreBodyPartial bool
-	// OversizedBodyLiteralBytes replaces a body FETCH literal without changing
-	// metadata FETCH literals used to obtain an opaque message ID.
+	// OversizedBodyLiteralBytes replaces a body FETCH literal, ignoring any
+	// partial range, without changing metadata FETCH literals used to obtain
+	// an opaque message ID.
 	OversizedBodyLiteralBytes int
 	// UIDValidityAfterExamine changes the mailbox generation after the first
 	// EXAMINE, simulating a mailbox rebuild between opaque-ID operations.
@@ -703,8 +705,20 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 					continue
 				}
 
+				if strings.Contains(strings.ToUpper(raw), "BODYSTRUCTURE") {
+					structure := fmt.Sprintf(`* 1 FETCH (UID %d BODYSTRUCTURE ("text" "plain" ("charset" "utf-8") NIL NIL "7bit" %d 1 NIL NIL NIL NIL))`, fetchResponseUID(raw), len(syntheticMessageBody)-len(syntheticMessageHeader))
+					if !server.writeLines(writer, structure, tagged(tag, "OK FETCH completed")) {
+						return
+					}
+
+					continue
+				}
+
 				literal := syntheticMessageBody
 				header := strings.Contains(strings.ToUpper(raw), "HEADER")
+				if strings.Contains(strings.ToUpper(raw), "BODY.PEEK[1]<") {
+					literal = strings.TrimPrefix(syntheticMessageBody, syntheticMessageHeader)
+				}
 				if server.shouldOmitFetchResponse(header) {
 					if err := server.writeLine(writer, tagged(tag, "OK FETCH completed")); err != nil {
 						return
@@ -717,7 +731,7 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 				if !header && server.options.Scenario.OversizedBodyLiteralBytes > 0 {
 					literal = strings.Repeat("x", server.options.Scenario.OversizedBodyLiteralBytes)
 				}
-				if !header && !server.options.Scenario.IgnoreBodyPartial {
+				if !header && !server.options.Scenario.IgnoreBodyPartial && server.options.Scenario.OversizedBodyLiteralBytes == 0 {
 					literal = partialBodyLiteral(raw, literal)
 				}
 				section := fetchResponseSection(raw, header)
@@ -887,20 +901,17 @@ func fetchResponseSection(raw string, header bool) string {
 		return "[HEADER]"
 	}
 
-	upper := strings.ToUpper(raw)
-	const marker = "BODY.PEEK[]<"
-	start := strings.Index(upper, marker)
-	if start < 0 {
-		return "[]"
-	}
-	start += len(marker)
-	end := strings.IndexByte(upper[start:], '.')
-	if end < 0 {
+	match := bodyPartialItem.FindStringSubmatch(strings.ToUpper(raw))
+	if match == nil {
 		return "[]"
 	}
 
-	return "[]<" + upper[start:start+end] + ">"
+	return "[" + match[1] + "]<" + match[2] + ">"
 }
+
+// bodyPartialItem matches a whole-message or numbered section BODY.PEEK
+// partial item and captures its section, offset and size.
+var bodyPartialItem = regexp.MustCompile(`BODY\.PEEK\[([0-9.]*)\]<([0-9]+)\.([0-9]+)>`)
 
 func searchWindowIsExact(raw string) bool {
 	start, end, ok := searchUIDRange(raw)
@@ -952,17 +963,11 @@ func fetchResponseUID(raw string) uint32 {
 }
 
 func partialBodyLiteral(raw, literal string) string {
-	const marker = "BODY.PEEK[]<0."
-
-	start := strings.Index(strings.ToUpper(raw), marker)
-	if start < 0 {
+	match := bodyPartialItem.FindStringSubmatch(strings.ToUpper(raw))
+	if match == nil || match[2] != "0" {
 		return literal
 	}
-	end := strings.IndexByte(raw[start+len(marker):], '>')
-	if end < 0 {
-		return literal
-	}
-	size, err := strconv.Atoi(raw[start+len(marker) : start+len(marker)+end])
+	size, err := strconv.Atoi(match[3])
 	if err != nil || size < 0 || size >= len(literal) {
 		return literal
 	}

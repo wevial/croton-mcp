@@ -2,8 +2,13 @@ package testkit
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
+	"mime"
+	"mime/multipart"
+	"net/mail"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -312,6 +317,7 @@ func renderBodyString(builder *strings.Builder, value string) {
 
 type structureFetchItem struct {
 	name    string // UID, FLAGS, RFC822.SIZE, BODYSTRUCTURE, HEADER or BODY
+	section string // numbered section of a BODY item, empty for the whole message
 	partial bool
 	offset  uint64
 	size    uint64
@@ -361,19 +367,64 @@ func parseStructureFetchItem(token string) (structureFetchItem, error) {
 		return structureFetchItem{name: "BODY"}, nil
 	}
 
-	partial, ok := strings.CutPrefix(token, "BODY.PEEK[]<")
-	if !ok || !strings.HasSuffix(partial, ">") {
+	match := bodyPartialItem.FindStringSubmatch(token)
+	if match == nil || match[0] != token {
 		return structureFetchItem{}, fmt.Errorf("unsupported FETCH item %q", token)
 	}
 
-	offsetText, sizeText, _ := strings.Cut(strings.TrimSuffix(partial, ">"), ".")
-	offset, offsetErr := strconv.ParseUint(offsetText, 10, 32)
-	size, sizeErr := strconv.ParseUint(sizeText, 10, 32)
+	offset, offsetErr := strconv.ParseUint(match[2], 10, 32)
+	size, sizeErr := strconv.ParseUint(match[3], 10, 32)
 	if offsetErr != nil || sizeErr != nil || size == 0 {
 		return structureFetchItem{}, fmt.Errorf("invalid partial FETCH item %q", token)
 	}
 
-	return structureFetchItem{name: "BODY", partial: true, offset: offset, size: size}, nil
+	return structureFetchItem{name: "BODY", section: match[1], partial: true, offset: offset, size: size}, nil
+}
+
+// bodySection returns the transfer-encoded content of a numbered section of
+// message. Section 1 of a non-multipart entity is its body.
+func bodySection(message, section string) (string, error) {
+	parsed, err := mail.ReadMessage(strings.NewReader(message))
+	if err != nil {
+		return "", err
+	}
+
+	contentType := parsed.Header.Get("Content-Type")
+	content, err := io.ReadAll(parsed.Body)
+	if err != nil {
+		return "", err
+	}
+
+	for _, field := range strings.Split(section, ".") {
+		index, err := strconv.Atoi(field)
+		if err != nil || index < 1 {
+			return "", fmt.Errorf("invalid section %q", section)
+		}
+
+		mediaType, params, _ := mime.ParseMediaType(contentType)
+		if !strings.HasPrefix(mediaType, "multipart/") {
+			if index != 1 {
+				return "", fmt.Errorf("no section %q", section)
+			}
+
+			continue
+		}
+
+		reader := multipart.NewReader(bytes.NewReader(content), params["boundary"])
+		var part *multipart.Part
+		for range index {
+			if part, err = reader.NextRawPart(); err != nil {
+				return "", fmt.Errorf("no section %q", section)
+			}
+		}
+
+		contentType = part.Header.Get("Content-Type")
+		if content, err = io.ReadAll(part); err != nil {
+			return "", err
+		}
+	}
+
+	return string(content), nil
 }
 
 // uidSetContains reports whether uid is in a set of numbers, ranges and
@@ -440,10 +491,15 @@ func (server *Server) writeStructureFetch(writer *bufio.Writer, tag, raw string)
 				fmt.Fprintf(&response, " BODY[HEADER] {%d}\r\n%s", len(header), header)
 			case "BODY":
 				literal, section := body, "BODY[]"
+				if item.section != "" {
+					if literal, err = bodySection(body, item.section); err != nil {
+						return server.writeLines(writer, tagged(tag, "BAD "+err.Error()))
+					}
+				}
 				if item.partial {
-					start := min(item.offset, uint64(len(body)))
-					end := min(start+item.size, uint64(len(body)))
-					literal, section = body[start:end], fmt.Sprintf("BODY[]<%d>", item.offset)
+					start := min(item.offset, uint64(len(literal)))
+					end := min(start+item.size, uint64(len(literal)))
+					literal, section = literal[start:end], fmt.Sprintf("BODY[%s]<%d>", item.section, item.offset)
 				}
 				fmt.Fprintf(&response, " %s {%d}\r\n%s", section, len(literal), literal)
 			}

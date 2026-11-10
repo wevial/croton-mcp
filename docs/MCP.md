@@ -94,14 +94,18 @@ just below the last result kept.
 
 ### `get_message`
 
-Fetches the raw message with `BODY.PEEK[]` within `bounds.maxBodyBytes`
-(default 256 KiB, ceiling 1 MiB) and returns `id`, `mailbox`, `uidvalidity`,
-`uid`, `size`, `headers`, `text`, `textSource` (`plain`, `html` or `none`),
-attachment metadata and a `truncation` object. The parser uses fixed limits
-that no configuration changes: 256 KiB raw input, 16 KiB and 100 header
-fields, 50 MIME parts, depth 10, 256 KiB decoded text, 20 attachment entries
-and 50 references. A message beyond them may fail with a code instead of a
-result. Attachment bytes are dropped during normalization and never returned.
+Reads `UID BODYSTRUCTURE` within a 128 KiB response budget, then
+`BODY.PEEK[HEADER]` within `bounds.maxHeaderBytes` and one body section: the
+first `text/plain` leaf, else the first `text/html` leaf, that is not an
+attachment. The section is fetched as `BODY.PEEK[<section>]<0.N>` with `N` set
+to `bounds.maxBodyBytes` (default 256 KiB, ceiling 1 MiB); the whole message
+and attachment bytes are never fetched. It returns `id`, `mailbox`,
+`uidvalidity`, `uid`, `size`, `headers`, `text`, `textSource` (`plain`, `html`
+or `none`), attachment metadata from the structure as in `list_attachments`,
+and a `truncation` object. A section longer than `N`, or text longer than `N`
+once decoded, is cut and sets `text`. Header and structure reads keep 100
+header fields, `bounds.maxMimeParts` parts at depth 10,
+`bounds.maxAttachmentCount` attachment entries and 50 references.
 
 `truncation` is always present and holds only `true` keys among `headers`,
 `headerCount`, `text`, `mimeParts`, `mimeDepth`, `attachments`, `references`
