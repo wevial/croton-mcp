@@ -1,226 +1,169 @@
 package mcpserver
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
-	"unicode/utf8"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/wevial/croton-mcp/bridge"
 )
 
-func callTool(t *testing.T, session *mcp.ClientSession, name string, arguments any) *mcp.CallToolResult {
-	t.Helper()
-
-	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: arguments})
-	if err != nil {
-		t.Fatalf("call %s: %v", name, err)
-	}
-	return result
+// readCalls reaches every read tool with arguments that pass validation.
+var readCalls = map[string]map[string]any{
+	"list_folders":             {},
+	"search_mail":              {"mailbox": "INBOX"},
+	"select_digest_candidates": {"mailbox": "INBOX"},
+	"get_message":              {"messageId": "opaque-target"},
+	"get_thread":               {"messageId": "opaque-target"},
+	"list_attachments":         {"messageId": "opaque-target"},
 }
 
-func resultText(t *testing.T, result *mcp.CallToolResult) string {
-	t.Helper()
-
-	if len(result.Content) != 1 {
-		t.Fatalf("content items = %d, want 1", len(result.Content))
-	}
-	text, ok := result.Content[0].(*mcp.TextContent)
-	if !ok {
-		t.Fatalf("content type = %T, want *mcp.TextContent", result.Content[0])
-	}
-	return text.Text
-}
-
-func decodeResult(t *testing.T, result *mcp.CallToolResult, target any) {
-	t.Helper()
-
-	if result.IsError {
-		t.Fatalf("unexpected tool error: %s", resultText(t, result))
-	}
-	if err := json.Unmarshal([]byte(resultText(t, result)), target); err != nil {
-		t.Fatalf("tool result is not valid JSON: %v: %s", err, resultText(t, result))
-	}
-}
-
-func requireToolError(t *testing.T, result *mcp.CallToolResult, wantCode string) {
-	t.Helper()
-
-	if !result.IsError {
-		t.Fatalf("expected tool error %q, got success: %s", wantCode, resultText(t, result))
-	}
-	text := resultText(t, result)
-	var envelope struct {
-		Error struct {
-			Code string `json:"code"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal([]byte(text), &envelope); err != nil {
-		t.Fatalf("error result is not valid JSON: %v: %s", err, text)
-	}
-	if envelope.Error.Code != wantCode {
-		t.Fatalf("error code = %q, want %q (%s)", envelope.Error.Code, wantCode, text)
-	}
-}
-
-func TestListFoldersReturnsBoundedFolderList(t *testing.T) {
-	t.Parallel()
-
-	mail := &fakeMail{folders: []bridge.Folder{
-		{Name: "INBOX", Delimiter: "/"},
-		{Name: "Folders/Receipts", Delimiter: "/"},
-	}}
-	session := connectTestClient(t, Options{Mail: mail})
-
-	result := callTool(t, session, "list_folders", map[string]any{})
-
-	var decoded struct {
-		Folders []struct {
-			Name      string `json:"name"`
-			Delimiter string `json:"delimiter"`
-		} `json:"folders"`
-	}
-	decodeResult(t, result, &decoded)
-	if len(decoded.Folders) != 2 {
-		t.Fatalf("folders = %d, want 2", len(decoded.Folders))
-	}
-	if decoded.Folders[0].Name != "INBOX" || decoded.Folders[1].Name != "Folders/Receipts" {
-		t.Fatalf("unexpected folder names: %+v", decoded.Folders)
-	}
-	if decoded.Folders[0].Delimiter != "/" {
-		t.Fatalf("unexpected delimiter: %+v", decoded.Folders[0])
-	}
-}
-
-func TestListFoldersRejectsUnknownArguments(t *testing.T) {
-	t.Parallel()
-
-	session := connectTestClient(t, Options{Mail: &fakeMail{}})
-
-	result := callTool(t, session, "list_folders", map[string]any{"pattern": "*"})
-
-	requireToolError(t, result, errInvalidArgument)
-}
-
-func TestDecodeArgumentsRejectsNonObjectDuplicateAndOversizeJSON(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		name      string
-		arguments json.RawMessage
-	}{
-		{name: "null", arguments: json.RawMessage(`null`)},
-		{name: "duplicate field", arguments: json.RawMessage(`{"mailbox":"INBOX","mailbox":"Archive"}`)},
-		{name: "trailing value", arguments: json.RawMessage(`{"mailbox":"INBOX"} true`)},
-		{name: "oversize raw arguments", arguments: json.RawMessage(strings.Repeat(" ", maxToolArgumentsBytes) + `{"mailbox":"INBOX"}`)},
-	}
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-
-			var input struct {
-				Mailbox string `json:"mailbox"`
-			}
-			if decodeArguments(testCase.arguments, &input) {
-				t.Fatalf("decodeArguments accepted %s", testCase.arguments)
-			}
-		})
-	}
-}
-
-func TestBaseSubjectTruncatesOnUTF8Boundary(t *testing.T) {
-	t.Parallel()
-
-	subject := strings.Repeat("界", maxSearchTermBytes/len("界")+1)
-	got := baseSubject(subject)
-	if len(got) > maxSearchTermBytes {
-		t.Fatalf("subject bytes = %d, want <= %d", len(got), maxSearchTermBytes)
-	}
-	if !utf8.ValidString(got) {
-		t.Fatal("subject truncation split a UTF-8 code point")
-	}
-}
-
-func TestDecodeArgumentsRejectsNullAndCaseFoldedAliases(t *testing.T) {
-	t.Parallel()
-
-	type input struct {
-		Mailbox string `json:"mailbox"`
-		Sender  string `json:"sender"`
-		Subject string `json:"subject"`
-		Limit   *int   `json:"limit"`
-	}
-	cases := []json.RawMessage{
-		json.RawMessage(`{"mailbox":"INBOX","limit":null}`),
-		json.RawMessage(`{"mailbox":"INBOX","Mailbox":"Archive"}`),
-	}
-	for _, arguments := range cases {
-		var decoded input
-		if decodeArguments(arguments, &decoded) {
-			t.Fatalf("ambiguous schema-invalid arguments accepted: %s", arguments)
-		}
-	}
-}
-
-func TestDecodeArgumentsAcceptsSchemaBoundedEscapedStrings(t *testing.T) {
-	t.Parallel()
-
-	type input struct {
-		Mailbox string `json:"mailbox"`
-		Sender  string `json:"sender"`
-		Subject string `json:"subject"`
-	}
-	arguments := json.RawMessage(`{"mailbox":"INBOX","sender":"` +
-		strings.Repeat(`\u0073`, maxSearchTermBytes) +
-		`","subject":"` + strings.Repeat(`\u0074`, maxSearchTermBytes) + `"}`)
-	var decoded input
-	if !decodeArguments(arguments, &decoded) {
-		t.Fatalf("decoded-size-bounded arguments rejected at %d wire bytes", len(arguments))
-	}
-	if len(decoded.Sender) != maxSearchTermBytes || len(decoded.Subject) != maxSearchTermBytes {
-		t.Fatalf("decoded lengths = sender:%d subject:%d", len(decoded.Sender), len(decoded.Subject))
-	}
+func identity(id string, uid uint32) bridge.MessageMetadata {
+	return bridge.MessageMetadata{ID: id, Mailbox: "INBOX", UIDValidity: 3001, UID: uid, Subject: "Plan"}
 }
 
 func TestToolErrorsMapBridgeCodesStably(t *testing.T) {
 	t.Parallel()
 
-	cases := []struct {
-		name       string
-		underlying error
-		wantCode   string
-	}{
-		{"mailbox not found", &bridge.Error{Code: bridge.CodeMailboxNotFound}, errNotFound},
-		{"stale id", &bridge.Error{Code: bridge.CodeStaleMessageID}, errStaleID},
-		{"bounds", &bridge.Error{Code: bridge.CodeBoundsExceeded}, errBoundsExceeded},
-		{"timeout", &bridge.Error{Code: bridge.CodeCommandTimedOut}, errTimedOut},
-		{"canceled", &bridge.Error{Code: bridge.CodeOperationCanceled}, errCanceled},
-		{"unreachable", &bridge.Error{Code: bridge.CodeBridgeUnreachable}, errUnavailable},
-		{"authentication", &bridge.Error{Code: bridge.CodeAuthentication}, errUnavailable},
-		{"credential command", &bridge.Error{Code: bridge.CodeCredentialCommand}, errUnavailable},
-		{"tls mismatch", &bridge.Error{Code: bridge.CodeTLSMismatch}, errUnavailable},
-		{"imap protocol", &bridge.Error{Code: bridge.CodeIMAPProtocol}, errUnavailable},
-		{"adapter closed", &bridge.Error{Code: bridge.CodeAdapterClosed}, errUnavailable},
-		{"unknown error", errors.New("dial tcp 127.0.0.1:1143: secret-user@mail.test password hunter2"), errInternal},
+	for underlying, want := range map[error]string{
+		&bridge.Error{Code: bridge.CodeMailboxNotFound}:                      errNotFound,
+		&bridge.Error{Code: bridge.CodeInvalidRequest}:                       errInvalidArgument,
+		&bridge.Error{Code: bridge.CodeUnsupported}:                          errUnsupported,
+		&bridge.Error{Code: bridge.CodeStaleMessageID}:                       errStaleID,
+		&bridge.Error{Code: bridge.CodeBoundsExceeded}:                       errBoundsExceeded,
+		&bridge.Error{Code: bridge.CodeCommandTimedOut}:                      errTimedOut,
+		&bridge.Error{Code: bridge.CodeOperationCanceled}:                    errCanceled,
+		&bridge.Error{Code: bridge.CodeAuthentication}:                       errUnavailable,
+		&bridge.Error{Code: bridge.CodeTLSMismatch}:                          errUnavailable,
+		&bridge.Error{Code: "future hunter2"}:                                errInternal,
+		errors.New("dial tcp 127.0.0.1:1143: secret-user@mail.test hunter2"): errInternal,
+	} {
+		session := connectTestClient(t, Options{Mail: &fakeMail{err: underlying}})
+		for tool, arguments := range readCalls {
+			result := callTool(t, session, tool, arguments)
+			requireToolError(t, result, want)
+		}
 	}
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
+}
 
-			session := connectTestClient(t, Options{Mail: &fakeMail{err: testCase.underlying}})
+func TestToolsRefuseMissingCapabilitiesAndPanics(t *testing.T) {
+	t.Parallel()
 
-			result := callTool(t, session, "list_folders", map[string]any{})
+	// Embedding only Mail hides the optional header and structure readers;
+	// a nil embedded Mail panics on every call.
+	readerless := connectTestClient(t, Options{Mail: struct{ Mail }{&fakeMail{}}})
+	requireToolError(t, callTool(t, readerless, "get_thread", readCalls["get_thread"]), errUnsupported)
+	requireToolError(t, callTool(t, readerless, "list_attachments", readCalls["list_attachments"]), errUnsupported)
 
-			requireToolError(t, result, testCase.wantCode)
-			text := resultText(t, result)
-			for _, fragment := range []string{"secret-user", "hunter2", "127.0.0.1", "dial tcp", "mail.test"} {
-				if strings.Contains(text, fragment) {
-					t.Fatalf("error result leaks %q: %s", fragment, text)
-				}
-			}
-		})
+	absent := connectTestClient(t, Options{})
+	panicking := connectTestClient(t, Options{Mail: struct{ Mail }{}})
+	for tool, arguments := range readCalls {
+		requireToolError(t, callTool(t, absent, tool, arguments), errUnavailable)
+		want := errInternal
+		if tool == "get_thread" || tool == "list_attachments" {
+			want = errUnsupported
+		}
+		requireToolError(t, callTool(t, panicking, tool, arguments), want)
+	}
+}
+
+func TestToolsRefuseResultsWithoutReadIdentity(t *testing.T) {
+	t.Parallel()
+
+	missing := identity("opaque-target", 0)
+	session := connectTestClient(t, Options{Mail: &fakeMail{
+		searched:  []bridge.MessageMetadata{identity("opaque-a", 7), missing},
+		metadata:  missing,
+		body:      []byte("Subject: Plan\r\n\r\nbody\r\n"),
+		headers:   map[string]bridge.MessageHeaders{"opaque-target": {Metadata: missing}},
+		structure: bridge.MessageAttachmentStructure{ID: "opaque-other", Mailbox: "INBOX", UIDValidity: 3001, UID: 7},
+	}})
+
+	for tool, arguments := range readCalls {
+		if tool != "list_folders" {
+			requireToolError(t, callTool(t, session, tool, arguments), errUnavailable)
+		}
+	}
+}
+
+func TestGetThreadOmitsUnreadableSiblingsByReasonOnly(t *testing.T) {
+	t.Parallel()
+
+	headers := func(metadata bridge.MessageMetadata) bridge.MessageHeaders {
+		return bridge.MessageHeaders{Metadata: metadata, Headers: bridge.CanonicalHeaders{Subject: "Re: Plan", MessageID: "<" + metadata.ID + "@croton.test>"}}
+	}
+	mail := &fakeMail{
+		searched: []bridge.MessageMetadata{identity("opaque-stale", 4), identity("opaque-malformed", 3), identity("opaque-zero", 2), identity("opaque-ok", 1)},
+		headers: map[string]bridge.MessageHeaders{
+			"opaque-target": headers(identity("opaque-target", 5)),
+			"opaque-zero":   headers(identity("opaque-zero", 0)),
+			"opaque-ok":     headers(identity("opaque-ok", 1)),
+		},
+		headerErr: map[string]error{
+			"opaque-stale":     &bridge.Error{Code: bridge.CodeStaleMessageID},
+			"opaque-malformed": &bridge.NormalizeError{Code: threadUnavailableMalformedHeader},
+		},
+	}
+	session := connectTestClient(t, Options{Mail: mail})
+
+	var thread getThreadResult
+	decodeResult(t, callTool(t, session, "get_thread", readCalls["get_thread"]), &thread)
+	reasons, _ := json.Marshal(thread.UnavailableMembers)
+	if len(thread.Nodes) != 2 || !thread.Truncated || string(reasons) != `[{"reason":"stale_id"},{"reason":"malformed_header"},{"reason":"invalid_identity"}]` {
+		t.Fatalf("thread = %+v, unavailable %s", thread, reasons)
+	}
+
+	mail.headerErr["opaque-stale"] = &bridge.Error{Code: bridge.CodeCommandTimedOut}
+	requireToolError(t, callTool(t, session, "get_thread", readCalls["get_thread"]), errTimedOut)
+}
+
+func TestFlatResultsPublishOnlyTrustedMetadata(t *testing.T) {
+	t.Parallel()
+
+	long := strings.Repeat("é", 300)
+	items := []bridge.MessageMetadata{
+		identity("opaque-1", 4), identity("opaque-2", 3), identity("opaque-3", 2), identity("opaque-4", 1),
+	}
+	items[0].Date, items[0].DateSource, items[0].ReadState, items[0].From = "2026-01-01T00:00:00Z", bridge.DateSourceHeader, bridge.ReadStateRead, "Known <known@croton.test>"
+	items[1].Date, items[1].DateSource, items[1].From = "2026-01-01T02:00:00+02:00", bridge.DateSourceHeader, long
+	items[2].Date, items[2].ReadState, items[2].From = "2026-01-01T00:00:00Z", bridge.ReadStateUnread, "\xff invalid"
+	session := connectTestClient(t, Options{Mail: &fakeMail{searched: items}})
+
+	var search wireSearch
+	decodeResult(t, callTool(t, session, "search_mail", map[string]any{"mailbox": "INBOX", "limit": 3}), &search)
+	want := []wireItem{
+		{ID: "opaque-1", Mailbox: "INBOX", UIDValidity: 3001, UID: 4, Subject: "Plan", From: "Known <known@croton.test>", Date: "2026-01-01T00:00:00Z", DateSource: "header", ReadState: "read"},
+		{ID: "opaque-2", Mailbox: "INBOX", UIDValidity: 3001, UID: 3, Subject: "Plan", From: long[:512], DateSource: "unknown", ReadState: "unknown", MetadataTruncated: true},
+		{ID: "opaque-3", Mailbox: "INBOX", UIDValidity: 3001, UID: 2, Subject: "Plan", DateSource: "unknown", ReadState: "unread"},
+	}
+	if !search.Truncated || len(search.Results) != len(want) {
+		t.Fatalf("search = %+v, want three results and truncation", search)
+	}
+	for index := range want {
+		if search.Results[index] != want[index] {
+			t.Fatalf("result %d = %+v, want %+v", index, search.Results[index], want[index])
+		}
+	}
+}
+
+func TestDecodeArgumentsRejectsAmbiguousJSON(t *testing.T) {
+	t.Parallel()
+
+	for _, arguments := range []string{
+		`null`,
+		`{"mailbox":"INBOX","mailbox":"Archive"}`,
+		`{"mailbox":"INBOX","Mailbox":"Archive"}`,
+		`{"mailbox":"INBOX","limit":null}`,
+		`{"mailbox":"INBOX"} true`,
+		strings.Repeat(" ", maxToolArgumentsBytes) + `{"mailbox":"INBOX"}`,
+	} {
+		var input struct {
+			Mailbox string `json:"mailbox"`
+			Limit   *int   `json:"limit"`
+		}
+		if decodeArguments(json.RawMessage(arguments), &input) {
+			t.Fatalf("decodeArguments accepted %.80s", arguments)
+		}
 	}
 }

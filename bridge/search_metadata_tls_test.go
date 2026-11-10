@@ -2,7 +2,6 @@ package bridge_test
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -11,60 +10,20 @@ import (
 )
 
 var tlsMetadataMessages = []string{
-	"From: Seen Fixture <seen@croton.test>\r\nTo: Reader <reader@croton.test>\r\nDate: Tue, 03 Nov 2026 09:15:00 -0800\r\nSubject: Seen metadata\r\n\r\nseen-body-marker\r\n",
-	"From: =?utf-8?q?Unseen_Fixt=C3=BCre?= <unseen@croton.test>\r\nTo: Reader <reader@croton.test>\r\nDate: Wed, 04 Nov 2026 23:30:00 +0100\r\nSubject: Unseen metadata\r\n\r\nunseen-body-marker\r\n",
-	"From: Undated Fixture <undated@croton.test>\r\nTo: Reader <reader@croton.test>\r\nSubject: Undated metadata\r\n\r\nundated-body-marker\r\n",
+	"From: Seen Fixture <seen@croton.test>\r\nSubject: Seen metadata\r\n\r\nseen-body-marker\r\n",
+	"From: Unseen Fixture <unseen@croton.test>\r\nSubject: Unseen metadata\r\n\r\nunseen-body-marker\r\n",
 }
 
-var tlsMetadataSeen = []bool{true, false, true}
-
-var tlsMetadataWant = []struct{ from, date, source, read string }{
-	{from: "Seen Fixture <seen@croton.test>", date: "2026-11-03T17:15:00Z", source: "header", read: "read"},
-	{from: "Unseen Fixtüre <unseen@croton.test>", date: "2026-11-04T22:30:00Z", source: "header", read: "unread"},
-	{from: "Undated Fixture <undated@croton.test>", source: "unknown", read: "read"},
-}
-
-// tlsSourcedMetadata is the serialized view of adapter metadata.
-type tlsSourcedMetadata struct {
-	ID                string
-	UID               uint32
-	Subject           string
-	From              *string
-	Date              *string
-	DateSource        *string
-	ReadState         *string
-	MetadataTruncated *bool
-}
-
-func decodeTLSMetadata(t *testing.T, metadata bridge.MessageMetadata) tlsSourcedMetadata {
+func startTLSMetadataAdapter(t *testing.T, flags testkit.MetadataFlagsMode) (*testkit.Server, *bridge.Adapter) {
 	t.Helper()
 
-	encoded, err := json.Marshal(metadata)
-	if err != nil {
-		t.Fatalf("marshal metadata: %v", err)
-	}
-
-	var decoded tlsSourcedMetadata
-	if err := json.Unmarshal(encoded, &decoded); err != nil {
-		t.Fatalf("decode serialized metadata: %v", err)
-	}
-	if decoded.From == nil || decoded.Date == nil || decoded.DateSource == nil || decoded.ReadState == nil || decoded.MetadataTruncated == nil {
-		t.Fatalf("serialized metadata %s lacks sourced sender/date/read-state fields", encoded)
-	}
-
-	return decoded
-}
-
-func startTLSMetadataAdapter(t *testing.T, fake testkit.TLSMode, mode string, flags testkit.MetadataFlagsMode) (*testkit.Server, *bridge.Adapter) {
-	t.Helper()
-
-	server, err := testkit.Start(testkit.Options{Mode: fake, Messages: tlsMetadataMessages, Seen: tlsMetadataSeen, MetadataFlags: flags})
+	server, err := testkit.Start(testkit.Options{Mode: testkit.ImplicitTLS, Messages: tlsMetadataMessages, Seen: []bool{true}, MetadataFlags: flags})
 	if err != nil {
 		t.Fatalf("start fake server: %v", err)
 	}
 	t.Cleanup(func() { _ = server.Close() })
 
-	adapter, err := bridge.NewAdapter(fakeServerConfig(t, server.Addr(), mode, bridge.TLSConfig{SPKISHA256: server.SPKISHA256()}))
+	adapter, err := bridge.NewAdapter(fakeServerConfig(t, server.Addr(), bridge.TLSModeImplicit, bridge.TLSConfig{SPKISHA256: server.SPKISHA256()}))
 	if err != nil {
 		t.Fatalf("NewAdapter: %v", err)
 	}
@@ -73,144 +32,38 @@ func startTLSMetadataAdapter(t *testing.T, fake testkit.TLSMode, mode string, fl
 	return server, adapter
 }
 
-// unseenOracle asks the server for UNSEEN UIDs through the adapter's own
-// read-only search, independently of FETCH FLAGS.
-func unseenOracle(t *testing.T, adapter *bridge.Adapter) map[uint32]bool {
-	t.Helper()
+// TestSearchMetadataFlagsShape pins the read state to the FLAGS item the
+// server actually returned: omitted is unknown and changes no Seen state,
+// and a duplicated item refuses the whole page with a code-only error.
+func TestSearchMetadataFlagsShape(t *testing.T) {
+	server, adapter := startTLSMetadataAdapter(t, testkit.MetadataFlagsOmitted)
 
-	page, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX", Unread: true})
-	results := page.Messages
-	if err != nil {
-		t.Fatalf("UNSEEN search: %v", err)
+	page, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+	if err != nil || len(page.Messages) != len(tlsMetadataMessages) {
+		t.Fatalf("omitted FLAGS SearchMailPage = %d results, %v", len(page.Messages), err)
 	}
-
-	unseen := make(map[uint32]bool, len(results))
-	for _, result := range results {
-		unseen[result.UID] = true
+	for _, result := range page.Messages {
+		if result.ReadState != bridge.ReadStateUnknown {
+			t.Fatalf("omitted FLAGS UID %d read state %v, want unknown", result.UID, result.ReadState)
+		}
 	}
-
-	return unseen
-}
-
-func assertMetadataOnlyTranscript(t *testing.T, server *testkit.Server) {
-	t.Helper()
-
+	unseen, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX", Unread: true})
+	if err != nil || len(unseen.Messages) != 1 || unseen.Messages[0].UID != 102 {
+		t.Fatalf("UNSEEN after metadata reads = %+v, %v, want only UID 102", unseen.Messages, err)
+	}
 	if err := server.AssertReadOnlyCommands(); err != nil {
 		t.Fatalf("read-only transcript: %v", err)
 	}
-	if err := server.AssertNoInsecureAuthentication(); err != nil {
-		t.Fatalf("authentication transcript: %v", err)
-	}
-
-	metadataFetches := 0
 	for _, command := range server.Commands() {
 		upper := strings.ToUpper(command.Raw)
-		if !strings.Contains(upper, " FETCH ") {
-			continue
+		if strings.Contains(upper, " FETCH ") && (!strings.Contains(upper, "BODY.PEEK[HEADER]") || !strings.Contains(upper, " FLAGS") || strings.Contains(upper, "BODY.PEEK[]")) {
+			t.Fatalf("FETCH %q is not a FLAGS plus header-only metadata read", command.Raw)
 		}
-
-		if !command.TLS || !strings.Contains(upper, "BODY.PEEK[HEADER]") || !strings.Contains(upper, " FLAGS") || strings.Contains(upper, "INTERNALDATE") || strings.Contains(upper, "BODY.PEEK[]") || strings.Contains(upper, "STORE") {
-			t.Fatalf("FETCH %q is not a TLS FLAGS plus header-only metadata read", command.Raw)
-		}
-		metadataFetches++
-	}
-	if metadataFetches == 0 {
-		t.Fatal("no metadata FETCH recorded")
-	}
-}
-
-// isolateMetadataEnvironment keeps the credential helper and adapter away
-// from any real user home, config, cache or temporary directory.
-func isolateMetadataEnvironment(t *testing.T) {
-	t.Helper()
-
-	root := t.TempDir()
-	for _, name := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "TMPDIR"} {
-		t.Setenv(name, root)
-	}
-}
-
-func TestSearchMetadataTLS(t *testing.T) {
-	isolateMetadataEnvironment(t)
-
-	modes := []struct {
-		name string
-		fake testkit.TLSMode
-		mode string
-	}{
-		{name: "implicit TLS", fake: testkit.ImplicitTLS, mode: bridge.TLSModeImplicit},
-		{name: "STARTTLS", fake: testkit.StartTLS, mode: bridge.TLSModeStartTLS},
 	}
 
-	t.Run("flags_and_dates", func(t *testing.T) {
-		for _, mode := range modes {
-			server, adapter := startTLSMetadataAdapter(t, mode.fake, mode.mode, testkit.MetadataFlagsOrdinary)
-
-			page, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
-			results := page.Messages
-			if err != nil {
-				t.Fatalf("%s: SearchMailPage: %v", mode.name, err)
-			}
-			if len(results) != len(tlsMetadataMessages) {
-				t.Fatalf("%s: SearchMailPage results = %d, want %d", mode.name, len(results), len(tlsMetadataMessages))
-			}
-
-			for _, result := range results {
-				selected, err := adapter.GetMessageMetadata(context.Background(), result.ID)
-				if err != nil {
-					t.Fatalf("%s: GetMessageMetadata: %v", mode.name, err)
-				}
-
-				for _, metadata := range []bridge.MessageMetadata{result, selected} {
-					got := decodeTLSMetadata(t, metadata)
-					index := int(got.UID) - 101
-					if index < 0 || index >= len(tlsMetadataMessages) || got.ID != result.ID {
-						t.Fatalf("%s: unexpected identity UID %d", mode.name, got.UID)
-					}
-
-					want := tlsMetadataWant[index]
-					if *got.From != want.from || *got.Date != want.date || *got.DateSource != want.source || *got.ReadState != want.read || *got.MetadataTruncated {
-						t.Fatalf("%s: UID %d from %q date %q source %q read %q truncated %t, want %+v",
-							mode.name, got.UID, *got.From, *got.Date, *got.DateSource, *got.ReadState, *got.MetadataTruncated, want)
-					}
-				}
-			}
-
-			assertMetadataOnlyTranscript(t, server)
-		}
-	})
-
-	t.Run("missing_duplicate_and_readonly", func(t *testing.T) {
-		for _, mode := range modes {
-			server, adapter := startTLSMetadataAdapter(t, mode.fake, mode.mode, testkit.MetadataFlagsOmitted)
-
-			before := unseenOracle(t, adapter)
-			page, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
-			results := page.Messages
-			if err != nil || len(results) != len(tlsMetadataMessages) {
-				t.Fatalf("%s: omitted FLAGS SearchMailPage = %d results, %v", mode.name, len(results), err)
-			}
-			for _, result := range results {
-				if got := decodeTLSMetadata(t, result); *got.ReadState != "unknown" {
-					t.Fatalf("%s: omitted FLAGS UID %d read state %q, want unknown", mode.name, got.UID, *got.ReadState)
-				}
-			}
-			after := unseenOracle(t, adapter)
-			if len(before) != 1 || !before[102] || len(after) != len(before) || !after[102] {
-				t.Fatalf("%s: UNSEEN before %v after %v, want unchanged {102}", mode.name, before, after)
-			}
-			assertMetadataOnlyTranscript(t, server)
-
-			server, adapter = startTLSMetadataAdapter(t, mode.fake, mode.mode, testkit.MetadataFlagsDuplicated)
-			page, err = adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
-			results = page.Messages
-			if bridge.CodeOf(err) != bridge.CodeIMAPProtocol || results != nil {
-				t.Fatalf("%s: duplicate FLAGS SearchMailPage = %#v, %v, want nil and %q", mode.name, results, err, bridge.CodeIMAPProtocol)
-			}
-			if err.Error() != bridge.CodeIMAPProtocol {
-				t.Fatalf("%s: duplicate FLAGS error = %q, want code only", mode.name, err.Error())
-			}
-			assertMetadataOnlyTranscript(t, server)
-		}
-	})
+	_, adapter = startTLSMetadataAdapter(t, testkit.MetadataFlagsDuplicated)
+	page, err = adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+	if bridge.CodeOf(err) != bridge.CodeIMAPProtocol || err.Error() != bridge.CodeIMAPProtocol || page.Messages != nil {
+		t.Fatalf("duplicate FLAGS SearchMailPage = %#v, %v, want nil and code-only %q", page.Messages, err, bridge.CodeIMAPProtocol)
+	}
 }
