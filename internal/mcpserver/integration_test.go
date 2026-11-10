@@ -383,6 +383,14 @@ func TestReadToolsOverTheWire(t *testing.T) {
 func TestReadToolsEmptyOverTheWire(t *testing.T) {
 	t.Parallel()
 
+	// The fixture LIST always names INBOX, so an empty folder list comes
+	// from an adapter that reports none.
+	var folders listFoldersResult
+	empty := connectTestClient(t, Options{Mail: &fakeMail{}})
+	if raw := callJSON(t, empty, "list_folders", map[string]any{}, &folders); !bytes.Contains(raw, []byte(`{\"folders\":[]}`)) {
+		t.Fatalf("empty folder list is not an empty array: %s", raw)
+	}
+
 	options := wireFixture()
 	options.Messages, options.BodyStructures = options.Messages[4:], options.BodyStructures[4:]
 	server, adapter := startIntegrationAdapter(t, options)

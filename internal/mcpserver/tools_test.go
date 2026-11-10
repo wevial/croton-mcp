@@ -13,14 +13,15 @@ import (
 // It answers headers and attachment structure so every read tool is
 // reachable; err fails every call.
 type fakeMail struct {
-	folders   []bridge.Folder
-	searched  []bridge.MessageMetadata
-	metadata  bridge.MessageMetadata
-	body      []byte
-	headers   map[string]bridge.MessageHeaders
-	headerErr map[string]error
-	structure bridge.MessageAttachmentStructure
-	err       error
+	folders     []bridge.Folder
+	searched    []bridge.MessageMetadata
+	metadata    bridge.MessageMetadata
+	body        []byte
+	headers     map[string]bridge.MessageHeaders
+	headerErr   map[string]error
+	headerReads int
+	structure   bridge.MessageAttachmentStructure
+	err         error
 }
 
 func (mail *fakeMail) ListFolders(context.Context) ([]bridge.Folder, error) {
@@ -44,6 +45,7 @@ func (mail *fakeMail) GetMessageBody(context.Context, string) ([]byte, error) {
 }
 
 func (mail *fakeMail) GetMessageHeaders(_ context.Context, identifier string) (bridge.MessageHeaders, error) {
+	mail.headerReads++
 	if mail.err != nil {
 		return bridge.MessageHeaders{}, mail.err
 	}

@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -111,6 +112,19 @@ func TestGetThreadOmitsUnreadableSiblingsByReasonOnly(t *testing.T) {
 	reasons, _ := json.Marshal(thread.UnavailableMembers)
 	if len(thread.Nodes) != 2 || !thread.Truncated || string(reasons) != `[{"reason":"stale_id"},{"reason":"malformed_header"},{"reason":"invalid_identity"}]` {
 		t.Fatalf("thread = %+v, unavailable %s", thread, reasons)
+	}
+
+	// Failed attempts spend the sibling budget: maxMessages=3 allows the
+	// target read plus two sibling attempts, however many siblings are stale.
+	stale := &fakeMail{headers: mail.headers, headerErr: map[string]error{}}
+	for uid := uint32(100); uid < 130; uid++ {
+		id := fmt.Sprintf("opaque-stale-%d", uid)
+		stale.searched = append(stale.searched, identity(id, uid))
+		stale.headerErr[id] = &bridge.Error{Code: bridge.CodeStaleMessageID}
+	}
+	decodeResult(t, callTool(t, connectTestClient(t, Options{Mail: stale}), "get_thread", map[string]any{"messageId": "opaque-target", "maxMessages": 3}), &thread)
+	if stale.headerReads != 3 || len(thread.Nodes) != 1 || len(thread.UnavailableMembers) != 2 || !thread.Truncated {
+		t.Fatalf("stale siblings: %d header reads, thread %+v; want 3 reads and two omissions", stale.headerReads, thread)
 	}
 
 	mail.headerErr["opaque-stale"] = &bridge.Error{Code: bridge.CodeCommandTimedOut}
