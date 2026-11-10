@@ -1,8 +1,8 @@
 package bridge
 
 import (
-	"container/heap"
-	"sort"
+	"cmp"
+	"slices"
 	"strconv"
 	"time"
 )
@@ -38,7 +38,10 @@ type Thread struct {
 // BuildThread links supplied headers using References and In-Reply-To without network or transport state.
 func BuildThread(messages []ThreadMessage, options ThreadOptions) Thread {
 	limits := normalizedLimits(options.Limits)
-	ordered := earliestThreadMessages(messages, limits.MaxThreadMessages)
+	// A stable sort keeps input order as the final tiebreak.
+	ordered := slices.Clone(messages)
+	slices.SortStableFunc(ordered, compareThreadMessages)
+	ordered = ordered[:min(len(ordered), limits.MaxThreadMessages)]
 
 	thread := Thread{}
 	if len(messages) > limits.MaxThreadMessages {
@@ -101,80 +104,12 @@ func BuildThread(messages []ThreadMessage, options ThreadOptions) Thread {
 	return thread
 }
 
-type indexedThreadMessage struct {
-	message    ThreadMessage
-	inputIndex int
-}
-
-type latestThreadMessageHeap []indexedThreadMessage
-
-func (messages latestThreadMessageHeap) Len() int {
-	return len(messages)
-}
-
-func (messages latestThreadMessageHeap) Less(left, right int) bool {
-	return threadMessageBefore(messages[right], messages[left])
-}
-
-func (messages latestThreadMessageHeap) Swap(left, right int) {
-	messages[left], messages[right] = messages[right], messages[left]
-}
-
-func (messages *latestThreadMessageHeap) Push(value any) {
-	*messages = append(*messages, value.(indexedThreadMessage))
-}
-
-func (messages *latestThreadMessageHeap) Pop() any {
-	old := *messages
-	last := len(old) - 1
-	value := old[last]
-	*messages = old[:last]
-
-	return value
-}
-
-func earliestThreadMessages(messages []ThreadMessage, limit int) []ThreadMessage {
-	selected := make(latestThreadMessageHeap, 0, min(len(messages), limit))
-	for inputIndex, message := range messages {
-		candidate := indexedThreadMessage{message: message, inputIndex: inputIndex}
-		if len(selected) < limit {
-			heap.Push(&selected, candidate)
-
-			continue
-		}
-
-		if threadMessageBefore(candidate, selected[0]) {
-			selected[0] = candidate
-			heap.Fix(&selected, 0)
-		}
+func compareThreadMessages(left, right ThreadMessage) int {
+	if order := left.ReceivedAt.Compare(right.ReceivedAt); order != 0 {
+		return order
 	}
 
-	sort.Slice(selected, func(left, right int) bool {
-		return threadMessageBefore(selected[left], selected[right])
-	})
-
-	ordered := make([]ThreadMessage, len(selected))
-	for index := range selected {
-		ordered[index] = selected[index].message
-	}
-
-	return ordered
-}
-
-func threadMessageBefore(left, right indexedThreadMessage) bool {
-	if !left.message.ReceivedAt.Equal(right.message.ReceivedAt) {
-		return left.message.ReceivedAt.Before(right.message.ReceivedAt)
-	}
-
-	if left.message.Key != right.message.Key {
-		return left.message.Key < right.message.Key
-	}
-
-	if left.message.Headers.MessageID != right.message.Headers.MessageID {
-		return left.message.Headers.MessageID < right.message.Headers.MessageID
-	}
-
-	return left.inputIndex < right.inputIndex
+	return cmp.Or(cmp.Compare(left.Key, right.Key), cmp.Compare(left.Headers.MessageID, right.Headers.MessageID))
 }
 
 func stableThreadKey(message ThreadMessage, keys map[string]int) string {

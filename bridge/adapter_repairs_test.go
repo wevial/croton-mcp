@@ -50,7 +50,7 @@ func TestAdapterRejectsOversizedControlResponses(t *testing.T) {
 			name:    "examine",
 			command: "EXAMINE",
 			operation: func(adapter *bridge.Adapter) error {
-				_, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+				_, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
 				return err
 			},
 		},
@@ -107,15 +107,16 @@ func TestAdapterRejectsMismatchedAndDuplicateFetchSections(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = adapter.Close() })
 
-			results, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+			page, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+			results := page.Messages
 			if !test.body {
 				if bridge.CodeOf(err) != bridge.CodeIMAPProtocol {
-					t.Fatalf("SearchMail error = %v, want %q", err, bridge.CodeIMAPProtocol)
+					t.Fatalf("SearchMailPage error = %v, want %q", err, bridge.CodeIMAPProtocol)
 				}
 				return
 			}
 			if err != nil || len(results) != 1 {
-				t.Fatalf("SearchMail = %#v, %v", results, err)
+				t.Fatalf("SearchMailPage = %#v, %v", results, err)
 			}
 			if _, err := adapter.GetMessageBody(context.Background(), results[0].ID); bridge.CodeOf(err) != bridge.CodeIMAPProtocol {
 				t.Fatalf("GetMessageBody error = %v, want %q", err, bridge.CodeIMAPProtocol)
@@ -140,8 +141,8 @@ func TestAdapterRejectsUnexpectedBinaryFetchLiteral(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = adapter.Close() })
 
-	if _, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"}); bridge.CodeOf(err) != bridge.CodeBoundsExceeded {
-		t.Fatalf("SearchMail unexpected binary literal error = %v, want %q", err, bridge.CodeBoundsExceeded)
+	if _, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"}); bridge.CodeOf(err) != bridge.CodeBoundsExceeded {
+		t.Fatalf("SearchMailPage unexpected binary literal error = %v, want %q", err, bridge.CodeBoundsExceeded)
 	}
 }
 
@@ -163,9 +164,10 @@ func TestAdapterRejectsUnexpectedBinaryBodyFetchLiteral(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = adapter.Close() })
 
-	results, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+	page, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+	results := page.Messages
 	if err != nil || len(results) != 1 {
-		t.Fatalf("SearchMail = %#v, %v", results, err)
+		t.Fatalf("SearchMailPage = %#v, %v", results, err)
 	}
 
 	if _, err := adapter.GetMessageBody(context.Background(), results[0].ID); bridge.CodeOf(err) != bridge.CodeBoundsExceeded {
@@ -199,9 +201,10 @@ func TestAdapterRejectsLiteralDeclarationPayloadMismatch(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = adapter.Close() })
 
-	results, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+	page, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+	results := page.Messages
 	if err != nil || len(results) != 1 {
-		t.Fatalf("SearchMail = %#v, %v", results, err)
+		t.Fatalf("SearchMailPage = %#v, %v", results, err)
 	}
 	if _, err := adapter.GetMessageBody(context.Background(), results[0].ID); bridge.CodeOf(err) != bridge.CodeIMAPProtocol {
 		t.Fatalf("GetMessageBody declaration/payload mismatch error = %v, want %q", err, bridge.CodeIMAPProtocol)
@@ -224,8 +227,8 @@ func TestAdapterRejectsOversizedESearchRangeWithoutMaterializingIt(t *testing.T)
 	}
 	t.Cleanup(func() { _ = adapter.Close() })
 
-	if _, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"}); bridge.CodeOf(err) != bridge.CodeBoundsExceeded {
-		t.Fatalf("SearchMail oversized ESEARCH range error = %v, want %q", err, bridge.CodeBoundsExceeded)
+	if _, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"}); bridge.CodeOf(err) != bridge.CodeBoundsExceeded {
+		t.Fatalf("SearchMailPage oversized ESEARCH range error = %v, want %q", err, bridge.CodeBoundsExceeded)
 	}
 }
 
@@ -289,9 +292,10 @@ func TestAdapterReconnectsAfterBoundedAbort(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = adapter.Close() })
 
-	results, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+	page, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+	results := page.Messages
 	if err != nil || len(results) != 1 {
-		t.Fatalf("SearchMail = %#v, %v", results, err)
+		t.Fatalf("SearchMailPage = %#v, %v", results, err)
 	}
 	if _, err := adapter.GetMessageBody(context.Background(), results[0].ID); bridge.CodeOf(err) != bridge.CodeBoundsExceeded {
 		t.Fatalf("GetMessageBody error = %v, want %q", err, bridge.CodeBoundsExceeded)
@@ -384,8 +388,8 @@ func TestAdapterRejectsOversizedSearchResponseBudget(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = adapter.Close() })
 
-	if _, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"}); bridge.CodeOf(err) != bridge.CodeBoundsExceeded {
-		t.Fatalf("SearchMail oversized SEARCH response error = %v, want %q", err, bridge.CodeBoundsExceeded)
+	if _, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"}); bridge.CodeOf(err) != bridge.CodeBoundsExceeded {
+		t.Fatalf("SearchMailPage oversized SEARCH response error = %v, want %q", err, bridge.CodeBoundsExceeded)
 	}
 }
 
@@ -405,9 +409,10 @@ func TestAdapterSearchesAtMostEightDescendingWindows(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = adapter.Close() })
 
-	results, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+	page, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+	results := page.Messages
 	if err != nil || len(results) != 8 {
-		t.Fatalf("SearchMail = %#v, %v", results, err)
+		t.Fatalf("SearchMailPage = %#v, %v", results, err)
 	}
 
 	var windows []string

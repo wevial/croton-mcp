@@ -21,7 +21,7 @@ type MailboxStatus struct {
 // exposes IMAP LIST options or a caller-controlled wire pattern.
 func (adapter *Adapter) ListFolders(ctx context.Context) ([]Folder, error) {
 	var folders []Folder
-	err := adapter.execute(ctx, func(operationContext context.Context, session readSession) error {
+	err := adapter.execute(ctx, func(operationContext context.Context, session bridgeSession) error {
 		result, err := session.List(operationContext, adapter.config.Bounds.MaxFolderResults)
 		if err != nil {
 			return err
@@ -50,7 +50,7 @@ func (adapter *Adapter) Status(ctx context.Context, mailbox string) (MailboxStat
 	}
 
 	var status MailboxStatus
-	err := adapter.execute(ctx, func(operationContext context.Context, session readSession) error {
+	err := adapter.execute(ctx, func(operationContext context.Context, session bridgeSession) error {
 		result, err := session.Status(operationContext, mailbox)
 		if err != nil {
 			return err

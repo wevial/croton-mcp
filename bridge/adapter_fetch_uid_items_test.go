@@ -31,12 +31,13 @@ func TestAdapterRejectsMultipleUIDAttributesInMetadataFetch(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = adapter.Close() })
 
-			results, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+			page, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+			results := page.Messages
 			if bridge.CodeOf(err) != bridge.CodeIMAPProtocol {
-				t.Fatalf("SearchMail error = %v, results = %#v, want %q", err, results, bridge.CodeIMAPProtocol)
+				t.Fatalf("SearchMailPage error = %v, results = %#v, want %q", err, results, bridge.CodeIMAPProtocol)
 			}
 			if results != nil {
-				t.Fatalf("SearchMail results = %#v, want nil", results)
+				t.Fatalf("SearchMailPage results = %#v, want nil", results)
 			}
 		})
 	}

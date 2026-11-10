@@ -24,8 +24,8 @@ func TestSearchMailMissingFetchedUIDRemainsProtocolError(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = adapter.Close() })
 
-	if _, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"}); bridge.CodeOf(err) != bridge.CodeIMAPProtocol {
-		t.Fatalf("SearchMail error = %v, want %q", err, bridge.CodeIMAPProtocol)
+	if _, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"}); bridge.CodeOf(err) != bridge.CodeIMAPProtocol {
+		t.Fatalf("SearchMailPage error = %v, want %q", err, bridge.CodeIMAPProtocol)
 	}
 }
 
@@ -54,9 +54,10 @@ func TestAdapterAcceptsMatchingTagESearchProof(t *testing.T) {
 				t.Fatalf("NewAdapter: %v", err)
 			}
 			t.Cleanup(func() { _ = adapter.Close() })
-			results, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+			page, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+			results := page.Messages
 			if err != nil || len(results) != 1 {
-				t.Fatalf("SearchMail = %#v, %v", results, err)
+				t.Fatalf("SearchMailPage = %#v, %v", results, err)
 			}
 			_, err = adapter.GetMessageMetadata(context.Background(), results[0].ID)
 			if test.wantSuccess && err != nil {
@@ -106,9 +107,10 @@ func TestAdapterReportsExpungedOpaqueIDsAsStale(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = adapter.Close() })
 
-			results, err := adapter.SearchMail(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+			page, err := adapter.SearchMailPage(context.Background(), bridge.SearchQuery{Mailbox: "INBOX"})
+			results := page.Messages
 			if err != nil || len(results) != 1 {
-				t.Fatalf("SearchMail = %#v, %v", results, err)
+				t.Fatalf("SearchMailPage = %#v, %v", results, err)
 			}
 			if err := test.lookup(context.Background(), adapter, results[0].ID); bridge.CodeOf(err) != bridge.CodeStaleMessageID {
 				t.Fatalf("lookup error = %v, want %q", err, bridge.CodeStaleMessageID)

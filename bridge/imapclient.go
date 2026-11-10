@@ -37,47 +37,28 @@ const (
 
 var errIMAPInputLimit = errors.New("IMAP response exceeds input budget")
 
-// readSession intentionally exposes only Croton-owned read operations. The
-// concrete go-imap client never escapes this file.
-type readSession interface {
+// bridgeSession intentionally exposes only Croton-owned operations. The
+// concrete go-imap client never escapes this file. SelectSource, StoreSeen
+// and MoveUID are the only mutating surfaces: a read-write selection of the
+// source mailbox, a single-UID Seen-only incremental STORE and a single-UID
+// native MOVE, reached only from the opt-in triage path.
+type bridgeSession interface {
 	Authenticate(context.Context, Credentials) error
 	List(context.Context, int) ([]Folder, error)
+	ListMailboxes(context.Context, string, int) ([]listedMailbox, error)
 	Status(context.Context, string) (MailboxStatus, error)
 	Examine(context.Context, string) (mailboxSnapshot, error)
+	SelectSource(context.Context, string) (mailboxSnapshot, error)
 	UIDSearchWindow(context.Context, SearchQuery, uidWindow, int) ([]uint32, error)
 	UIDFetchMetadata(context.Context, string, []uint32, int) ([]MessageMetadata, error)
+	UIDFetchHeaders(context.Context, uint32, int) (MessageHeaders, error)
 	UIDFetchBody(context.Context, uint32, int) ([]byte, error)
+	fetchUIDStructure(context.Context, uint32) (bodyStructure, error)
+	StoreSeen(context.Context, uint32, bool) error
+	SupportsMove() bool
+	MoveUID(context.Context, uint32, string) error
 	Logout(context.Context) error
 	Abort() error
-}
-
-// seenSession and moveSession are the only mutating surfaces: a read-write
-// selection of the source mailbox, a single-UID Seen-only incremental STORE
-// and a single-UID native MOVE. They are kept apart from readSession so the
-// read tools can never reach them.
-type seenSession interface {
-	SelectSource(context.Context, string) (mailboxSnapshot, error)
-	StoreSeen(context.Context, uint32, bool) error
-}
-
-type moveSession interface {
-	SupportsMove() bool
-	ListMailboxes(context.Context, string, int) ([]listedMailbox, error)
-	MoveUID(context.Context, uint32, string) error
-}
-
-// headerSession is an optional read capability beside readSession, so
-// existing sessions need not implement it. It returns one selected message's
-// metadata and bounded canonical headers from a single header-only FETCH.
-type headerSession interface {
-	UIDFetchHeaders(context.Context, uint32, int) (MessageHeaders, error)
-}
-
-// structureSession is an optional read capability beside readSession. It
-// returns one selected message's extended BODYSTRUCTURE from a single
-// structure-only FETCH.
-type structureSession interface {
-	fetchUIDStructure(context.Context, uint32) (bodyStructure, error)
 }
 
 // listedMailbox is one ordinary LIST entry with its protocol attributes.

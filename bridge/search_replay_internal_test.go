@@ -10,24 +10,15 @@ type replaySearchResponse struct {
 	err      error
 }
 
+// replaySearchSession implements only what the adapter calls; the embedded
+// nil interface fills the rest of bridgeSession.
 type replaySearchSession struct {
+	bridgeSession
 	snapshot        mailboxSnapshot
 	searchResults   [][]uint32
 	searchCalls     int
 	metadataResults []replaySearchResponse
 	metadataCalls   int
-}
-
-func (session *replaySearchSession) Authenticate(context.Context, Credentials) error {
-	return nil
-}
-
-func (session *replaySearchSession) List(context.Context, int) ([]Folder, error) {
-	return nil, nil
-}
-
-func (session *replaySearchSession) Status(context.Context, string) (MailboxStatus, error) {
-	return MailboxStatus{}, nil
 }
 
 func (session *replaySearchSession) Examine(context.Context, string) (mailboxSnapshot, error) {
@@ -44,10 +35,6 @@ func (session *replaySearchSession) UIDFetchMetadata(context.Context, string, []
 	result := session.metadataResults[session.metadataCalls]
 	session.metadataCalls++
 	return result.metadata, result.err
-}
-
-func (session *replaySearchSession) UIDFetchBody(context.Context, uint32, int) ([]byte, error) {
-	return nil, nil
 }
 
 func (session *replaySearchSession) Logout(context.Context) error {
@@ -79,7 +66,7 @@ func TestSearchMailDiscardsPartialResultsBeforeTransportReplay(t *testing.T) {
 			IMAP:   IMAPConfig{CommandTimeoutMs: 1000},
 			Bounds: Bounds{MaxSearchResults: 2, MaxOutputBytes: defaultMaxOutputBytes},
 		},
-		factory: func(context.Context) (readSession, error) {
+		factory: func(context.Context) (bridgeSession, error) {
 			session := sessions[factoryCalls]
 			factoryCalls++
 			return session, nil
@@ -88,12 +75,13 @@ func TestSearchMailDiscardsPartialResultsBeforeTransportReplay(t *testing.T) {
 	}
 	adapter.gate <- struct{}{}
 
-	results, err := adapter.SearchMail(context.Background(), SearchQuery{Mailbox: "INBOX"})
+	page, err := adapter.SearchMailPage(context.Background(), SearchQuery{Mailbox: "INBOX"})
+	results := page.Messages
 	if err != nil {
-		t.Fatalf("SearchMail: %v", err)
+		t.Fatalf("SearchMailPage: %v", err)
 	}
 	if len(results) != 1 || results[0].uid != 2 {
-		t.Fatalf("SearchMail replay results = %#v, want only replacement generation UID 2", results)
+		t.Fatalf("SearchMailPage replay results = %#v, want only replacement generation UID 2", results)
 	}
 	if factoryCalls != 2 {
 		t.Fatalf("session factory calls = %d, want 2", factoryCalls)

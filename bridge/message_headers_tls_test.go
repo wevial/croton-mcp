@@ -81,16 +81,16 @@ func startTLSHeaderAdapter(t *testing.T, mode testkit.TLSMode, options testkit.O
 func searchTLSHeaderID(t *testing.T, adapter *Adapter, uid uint32) string {
 	t.Helper()
 
-	results, err := adapter.SearchMail(context.Background(), SearchQuery{Mailbox: "INBOX"})
+	page, err := adapter.SearchMailPage(context.Background(), SearchQuery{Mailbox: "INBOX"})
 	if err != nil {
-		t.Fatalf("SearchMail: %v", err)
+		t.Fatalf("SearchMailPage: %v", err)
 	}
-	for _, result := range results {
+	for _, result := range page.Messages {
 		if result.UID == uid {
 			return result.ID
 		}
 	}
-	t.Fatalf("SearchMail did not return UID %d", uid)
+	t.Fatalf("SearchMailPage did not return UID %d", uid)
 
 	return ""
 }

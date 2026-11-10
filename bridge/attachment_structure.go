@@ -22,9 +22,7 @@ type AttachmentStructureEntry struct {
 
 // GetMessageAttachmentStructure resolves an opaque message identifier after a
 // fresh read-only EXAMINE confirms its UIDVALIDITY generation and UID, then
-// projects the structure of one bounded UID FETCH. A session without the
-// optional structure capability is refused; the body is never read as a
-// fallback.
+// projects the structure of one bounded UID FETCH. The body is never read.
 func (adapter *Adapter) GetMessageAttachmentStructure(ctx context.Context, identifier string) (MessageAttachmentStructure, error) {
 	payload, err := adapter.decodeMessageID(identifier)
 	if err != nil {
@@ -32,12 +30,7 @@ func (adapter *Adapter) GetMessageAttachmentStructure(ctx context.Context, ident
 	}
 
 	var structure bodyStructure
-	err = adapter.execute(ctx, func(operationContext context.Context, session readSession) error {
-		reader, ok := session.(structureSession)
-		if !ok {
-			return errorCode(CodeUnsupported)
-		}
-
+	err = adapter.execute(ctx, func(operationContext context.Context, session bridgeSession) error {
 		snapshot, err := session.Examine(operationContext, payload.Mailbox)
 		if err != nil {
 			return err
@@ -49,7 +42,7 @@ func (adapter *Adapter) GetMessageAttachmentStructure(ctx context.Context, ident
 			return err
 		}
 
-		structure, err = reader.fetchUIDStructure(operationContext, payload.UID)
+		structure, err = session.fetchUIDStructure(operationContext, payload.UID)
 		return err
 	})
 	if err != nil {

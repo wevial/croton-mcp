@@ -7,16 +7,14 @@ import (
 	"testing"
 )
 
+// boundedSearchSession implements only what the adapter calls; the embedded
+// nil interface fills the rest of bridgeSession.
 type boundedSearchSession struct {
+	bridgeSession
 	examineCalls int
 	metadata     []MessageMetadata
 }
 
-func (session *boundedSearchSession) Authenticate(context.Context, Credentials) error { return nil }
-func (session *boundedSearchSession) List(context.Context, int) ([]Folder, error)     { return nil, nil }
-func (session *boundedSearchSession) Status(context.Context, string) (MailboxStatus, error) {
-	return MailboxStatus{}, nil
-}
 func (session *boundedSearchSession) Examine(context.Context, string) (mailboxSnapshot, error) {
 	session.examineCalls++
 	return mailboxSnapshot{UIDNext: 2, UIDValidity: 9001}, nil
@@ -26,9 +24,6 @@ func (session *boundedSearchSession) UIDSearchWindow(context.Context, SearchQuer
 }
 func (session *boundedSearchSession) UIDFetchMetadata(context.Context, string, []uint32, int) ([]MessageMetadata, error) {
 	return session.metadata, nil
-}
-func (session *boundedSearchSession) UIDFetchBody(context.Context, uint32, int) ([]byte, error) {
-	return nil, nil
 }
 func (session *boundedSearchSession) Logout(context.Context) error { return nil }
 func (session *boundedSearchSession) Abort() error                 { return nil }
@@ -41,7 +36,7 @@ func (*emptySearchSession) UIDSearchWindow(context.Context, SearchQuery, uidWind
 	return []uint32{}, nil
 }
 
-func newBoundedSearchAdapter(session readSession, maxOutputBytes int) *Adapter {
+func newBoundedSearchAdapter(session bridgeSession, maxOutputBytes int) *Adapter {
 	adapter := &Adapter{
 		config: ValidatedConfig{
 			IMAP: IMAPConfig{CommandTimeoutMs: 1000},
@@ -51,7 +46,7 @@ func newBoundedSearchAdapter(session readSession, maxOutputBytes int) *Adapter {
 				MaxOutputBytes:   maxOutputBytes,
 			},
 		},
-		factory: func(context.Context) (readSession, error) { return session, nil },
+		factory: func(context.Context) (bridgeSession, error) { return session, nil },
 		gate:    make(chan struct{}, 1),
 	}
 	adapter.gate <- struct{}{}
@@ -72,12 +67,13 @@ func TestSearchMailRejectsOversizedInputsBeforeOpeningSession(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			session := &boundedSearchSession{}
 			adapter := newBoundedSearchAdapter(session, defaultMaxOutputBytes)
-			results, err := adapter.SearchMail(context.Background(), test.query)
+			page, err := adapter.SearchMailPage(context.Background(), test.query)
+			results := page.Messages
 			if CodeOf(err) != CodeBoundsExceeded {
-				t.Fatalf("SearchMail error = %v, want %q", err, CodeBoundsExceeded)
+				t.Fatalf("SearchMailPage error = %v, want %q", err, CodeBoundsExceeded)
 			}
 			if results != nil {
-				t.Fatalf("SearchMail results = %#v, want nil", results)
+				t.Fatalf("SearchMailPage results = %#v, want nil", results)
 			}
 			if session.examineCalls != 0 {
 				t.Fatalf("EXAMINE calls = %d, want 0", session.examineCalls)
@@ -115,12 +111,13 @@ func TestSearchMailEmptyResultsRespectExactOutputBudget(t *testing.T) {
 	for _, maxOutputBytes := range []int{2, 3} {
 		t.Run(string(rune('0'+maxOutputBytes)), func(t *testing.T) {
 			adapter := newBoundedSearchAdapter(&emptySearchSession{}, maxOutputBytes)
-			results, err := adapter.SearchMail(context.Background(), SearchQuery{Mailbox: "INBOX"})
+			page, err := adapter.SearchMailPage(context.Background(), SearchQuery{Mailbox: "INBOX"})
+			results := page.Messages
 			if err != nil {
-				t.Fatalf("SearchMail: %v", err)
+				t.Fatalf("SearchMailPage: %v", err)
 			}
 			if results == nil || len(results) != 0 {
-				t.Fatalf("SearchMail results = %#v, want non-nil empty slice", results)
+				t.Fatalf("SearchMailPage results = %#v, want non-nil empty slice", results)
 			}
 			encoded, err := json.Marshal(results)
 			if err != nil {
@@ -136,11 +133,12 @@ func TestSearchMailEmptyResultsRespectExactOutputBudget(t *testing.T) {
 func TestSearchMailRejectsAggregateOutputBeyondConfiguredBudget(t *testing.T) {
 	session := &boundedSearchSession{metadata: []MessageMetadata{{Subject: strings.Repeat("s", 64), uid: 1}}}
 	adapter := newBoundedSearchAdapter(session, 32)
-	results, err := adapter.SearchMail(context.Background(), SearchQuery{Mailbox: "INBOX"})
+	page, err := adapter.SearchMailPage(context.Background(), SearchQuery{Mailbox: "INBOX"})
+	results := page.Messages
 	if CodeOf(err) != CodeBoundsExceeded {
-		t.Fatalf("SearchMail error = %v, want %q", err, CodeBoundsExceeded)
+		t.Fatalf("SearchMailPage error = %v, want %q", err, CodeBoundsExceeded)
 	}
 	if results != nil {
-		t.Fatalf("SearchMail results = %#v, want nil", results)
+		t.Fatalf("SearchMailPage results = %#v, want nil", results)
 	}
 }

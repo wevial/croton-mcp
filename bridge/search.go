@@ -116,15 +116,6 @@ type SearchPage struct {
 	Truncated bool
 }
 
-// SearchMail preserves the original adapter API for existing callers.
-func (adapter *Adapter) SearchMail(ctx context.Context, query SearchQuery) ([]MessageMetadata, error) {
-	page, err := adapter.SearchMailPage(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	return page.Messages, nil
-}
-
 // SearchMailPage searches a finite sequence of descending UID windows and
 // returns the highest matching UIDs that fit the result budget, newest UID
 // first. UID order is not header-Date or delivery-date order. Truncated reports
@@ -139,7 +130,7 @@ func (adapter *Adapter) SearchMailPage(ctx context.Context, query SearchQuery) (
 	}
 
 	var page SearchPage
-	err := adapter.execute(ctx, func(operationContext context.Context, session readSession) error {
+	err := adapter.execute(ctx, func(operationContext context.Context, session bridgeSession) error {
 		attemptResults := make([]MessageMetadata, 0)
 		attemptOutputBytes := 2 // JSON array brackets.
 		omitted := false

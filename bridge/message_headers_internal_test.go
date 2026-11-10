@@ -209,7 +209,7 @@ func startHeaderSession(t *testing.T, script headerFetchScript) *headerTestSessi
 }
 
 // newHeaderAdapter hands out the given sessions in order, one per open.
-func newHeaderAdapter(key byte, headerLimit int, sessions ...readSession) (*Adapter, *int) {
+func newHeaderAdapter(key byte, headerLimit int, sessions ...bridgeSession) (*Adapter, *int) {
 	opened := 0
 	adapter := &Adapter{
 		config: ValidatedConfig{
@@ -219,7 +219,7 @@ func newHeaderAdapter(key byte, headerLimit int, sessions ...readSession) (*Adap
 		gate: make(chan struct{}, 1),
 	}
 	adapter.idKey[0] = key
-	adapter.factory = func(context.Context) (readSession, error) {
+	adapter.factory = func(context.Context) (bridgeSession, error) {
 		if opened >= len(sessions) {
 			return nil, errorCode(CodeBridgeUnreachable)
 		}
@@ -369,13 +369,6 @@ func TestMessageHeadersAdapter(t *testing.T) {
 		}
 		requireHeaderOnlyFetches(t, second)
 
-		legacy := &replaySearchSession{snapshot: mailboxSnapshot{UIDNext: 201, UIDValidity: headerTestUIDValidity}}
-		adapter, opened = newHeaderAdapter(7, headerTestLimit, legacy)
-		result, err = callGetMessageHeaders(t, adapter, headerTestID(t, adapter, headerTestUIDValidity, headerTestUID))
-		requireHeaderRefusal(t, "absent capability", result, err, CodeUnsupported)
-		if *opened != 1 || legacy.searchCalls != 0 || legacy.metadataCalls != 0 {
-			t.Fatalf("absent capability opened %d searched %d fetched metadata %d", *opened, legacy.searchCalls, legacy.metadataCalls)
-		}
 	})
 
 	t.Run("bounds_and_response", func(t *testing.T) {
