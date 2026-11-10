@@ -384,7 +384,7 @@ func TestReadToolsEmptyOverTheWire(t *testing.T) {
 	t.Parallel()
 
 	options := wireFixture()
-	options.Messages, options.Seen, options.BodyStructures = options.Messages[4:], []bool{true}, options.BodyStructures[4:]
+	options.Messages, options.BodyStructures = options.Messages[4:], options.BodyStructures[4:]
 	server, adapter := startIntegrationAdapter(t, options)
 	session := connectTestClient(t, Options{Mail: adapter})
 
