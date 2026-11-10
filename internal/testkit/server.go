@@ -75,8 +75,6 @@ type Scenario struct {
 	// UIDValidityAfterExamine changes the mailbox generation after the first
 	// EXAMINE, simulating a mailbox rebuild between opaque-ID operations.
 	UIDValidityAfterExamine uint32
-	// UIDNext replaces the mailbox UIDNEXT returned by EXAMINE when non-zero.
-	UIDNext uint32
 	// ListResponseCount controls the number of synthetic folders in a LIST response.
 	ListResponseCount int
 	// ListMailboxLiteralBytes replaces the first LIST mailbox name with a literal
@@ -643,10 +641,7 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 			}
 
 			uidValidity := server.nextUIDValidity()
-			uidNext := server.options.Scenario.UIDNext
-			if uidNext == 0 {
-				uidNext = uint32(101 + exists)
-			}
+			uidNext := uint32(101 + exists)
 			if !server.writeLines(writer, fmt.Sprintf("* %d EXISTS", exists), fmt.Sprintf("* OK [UIDVALIDITY %d] fixture generation", uidValidity), fmt.Sprintf("* OK [UIDNEXT %d] fixture next UID", uidNext), tagged(tag, "OK [READ-ONLY] EXAMINE completed")) {
 				return
 			}
