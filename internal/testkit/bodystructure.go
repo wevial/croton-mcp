@@ -84,7 +84,7 @@ func newBodyStructures(options Options) ([]string, error) {
 	}
 
 	if options.MetadataFlags != MetadataFlagsOrdinary || options.Scenario != (Scenario{}) {
-		return nil, errors.New("testkit: BodyStructures cannot be combined with MetadataFlags, Scenario, Stateful or Labels")
+		return nil, errors.New("testkit: BodyStructures cannot be combined with MetadataFlags, Scenario or Stateful")
 	}
 
 	rendered := make([]string, 0, len(options.BodyStructures))
