@@ -171,13 +171,12 @@ empty, over 512 bytes, not UTF-8, or contains a control character, `*` or `%`.
    and nothing is written.
 2. UIDs are handled one at a time in input order. `UID SEARCH` confirms the
    UID is present before its one write.
-3. `move_mail` refuses every UID as `unsupported` before any IMAP command
-   when `destination` equals the source. All move tools refuse every UID,
-   before any LIST or write, when the server does not advertise `MOVE`. There
-   is no COPY, STORE or EXPUNGE fallback.
+3. `move_mail` refuses every UID as `unsupported`, before any IMAP command,
+   when `destination` equals the source; every move tool refuses every UID,
+   before any LIST or write, when the server lacks `MOVE`. No COPY, STORE or
+   EXPUNGE fallback exists.
 4. Before each UID, move tools resolve the destination from a fresh
-   `LIST "" "*"` on that session, so a failing LIST fails the call before
-   any write. `move_mail` needs exactly one listed match
+   `LIST "" "*"` on that session. `move_mail` needs exactly one listed match
    (INBOX case-insensitively, others exactly) that is selectable (not
    `\Noselect`, `\NonExistent`, `\All` or `\Flagged`) and is INBOX, under
    `Folders/`, or a hierarchy root carrying `\Sent`, `\Drafts`, `\Junk`,
@@ -189,8 +188,7 @@ empty, over 512 bytes, not UTF-8, or contains a control character, `*` or `%`.
 
 ### Result
 
-`{"results": [{"uid", "outcome", "code"}]}`, one row per input UID in input
-order:
+`{"results": [{"uid", "outcome", "code"}]}`, one row per UID in input order:
 
 - `applied`: the STORE or MOVE returned OK.
 - `refused`: the UID is gone (`not_found`) or the server answered NO or BAD
@@ -199,7 +197,9 @@ order:
 - `unknown`: the connection dropped or the command deadline expired after
   dispatch. The session is discarded, nothing is retried, and every later UID
   is `not_attempted`. Run a fresh read before any new call.
-- `not_attempted`: never dispatched.
+- `not_attempted`: never dispatched. A failing presence check or move `LIST`
+  marks that UID and every later one `not_attempted`; earlier writes stay
+  applied. A move call with nothing applied yet fails whole with that code.
 
 Each IMAP step runs under `imap.commandTimeoutMs`, so a batch is bounded.
 

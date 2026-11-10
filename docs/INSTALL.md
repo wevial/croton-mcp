@@ -5,8 +5,9 @@ running, logged-in Proton Mail Bridge. Other platforms refuse to load a config.
 
 ## 1. Get the binary
 
-Either download a published release (see [RELEASE.md](RELEASE.md) for
-checksum verification) or build a release tag from source with Go 1.26.10:
+Either download and verify a release asset as in [RELEASE.md](RELEASE.md),
+then `umask 077 && mkdir -p ~/bin && install -m 0700 "$ASSET" ~/bin/croton-mcp`,
+or build a release tag from source with Go 1.26.10:
 
 ```sh
 RELEASE_TAG=vX.Y.Z
