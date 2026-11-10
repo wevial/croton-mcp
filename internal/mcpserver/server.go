@@ -22,7 +22,7 @@ type Mail interface {
 	Status(ctx context.Context, mailbox string) (bridge.MailboxStatus, error)
 	SearchMailPage(ctx context.Context, query bridge.SearchQuery) (bridge.SearchPage, error)
 	GetMessageMetadata(ctx context.Context, identifier string) (bridge.MessageMetadata, error)
-	GetMessageBody(ctx context.Context, identifier string) ([]byte, error)
+	GetMessage(ctx context.Context, identifier string) (bridge.NormalizedMessage, error)
 	GetMessageHeaders(ctx context.Context, identifier string) (bridge.MessageHeaders, error)
 	GetMessageAttachmentStructure(ctx context.Context, identifier string) (bridge.MessageAttachmentStructure, error)
 }

@@ -49,11 +49,11 @@ func TestAdapterRejectsOversizedBodyLiteralsDespitePartialFetch(t *testing.T) {
 			if err != nil || len(results) != 1 {
 				t.Fatalf("SearchMailPage = %#v, %v", results, err)
 			}
-			if _, err := adapter.GetMessageBody(context.Background(), results[0].ID); bridge.CodeOf(err) != bridge.CodeBoundsExceeded {
-				t.Fatalf("GetMessageBody error = %v, want %q", err, bridge.CodeBoundsExceeded)
+			if _, err := adapter.GetMessage(context.Background(), results[0].ID); bridge.CodeOf(err) != bridge.CodeBoundsExceeded {
+				t.Fatalf("GetMessage error = %v, want %q", err, bridge.CodeBoundsExceeded)
 			}
 
-			assertTranscriptContains(t, server.Commands(), "EXAMINE INBOX", "UID SEARCH UID 3:102", "UID FETCH 101", "BODY.PEEK[HEADER]", "BODY.PEEK[]<0.33>")
+			assertTranscriptContains(t, server.Commands(), "EXAMINE INBOX", "UID SEARCH UID 3:102", "UID FETCH 101", "BODY.PEEK[HEADER]", "BODY.PEEK[1]<0.32>")
 			if err := server.AssertReadOnlyCommands(); err != nil {
 				t.Fatalf("read-only transcript: %v", err)
 			}
@@ -88,10 +88,10 @@ func TestAdapterBoundedLiteralAbortReleasesFetchReader(t *testing.T) {
 			_ = server.Close()
 			t.Fatalf("SearchMailPage = %#v, %v", results, err)
 		}
-		if _, err := adapter.GetMessageBody(context.Background(), results[0].ID); bridge.CodeOf(err) != bridge.CodeBoundsExceeded {
+		if _, err := adapter.GetMessage(context.Background(), results[0].ID); bridge.CodeOf(err) != bridge.CodeBoundsExceeded {
 			_ = adapter.Close()
 			_ = server.Close()
-			t.Fatalf("GetMessageBody error = %v, want %q", err, bridge.CodeBoundsExceeded)
+			t.Fatalf("GetMessage error = %v, want %q", err, bridge.CodeBoundsExceeded)
 		}
 		if err := adapter.Close(); err != nil {
 			_ = server.Close()

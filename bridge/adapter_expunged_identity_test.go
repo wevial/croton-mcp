@@ -88,7 +88,7 @@ func TestAdapterReportsExpungedOpaqueIDsAsStale(t *testing.T) {
 			name:     "body",
 			scenario: testkit.Scenario{OmitExactUIDSearchResponse: true},
 			lookup: func(ctx context.Context, adapter *bridge.Adapter, id string) error {
-				_, err := adapter.GetMessageBody(ctx, id)
+				_, err := adapter.GetMessage(ctx, id)
 				return err
 			},
 		},

@@ -1,7 +1,6 @@
 package mcpserver
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -324,12 +323,7 @@ func fetchNormalizedMessage(ctx context.Context, deps Options, identifier string
 		return bridge.MessageMetadata{}, bridge.NormalizedMessage{}, mapAdapterError(err)
 	}
 
-	body, err := deps.Mail.GetMessageBody(ctx, identifier)
-	if err != nil {
-		return bridge.MessageMetadata{}, bridge.NormalizedMessage{}, mapAdapterError(err)
-	}
-
-	normalized, err := bridge.NormalizeMessage(bytes.NewReader(body), bridge.NormalizeOptions{})
+	normalized, err := deps.Mail.GetMessage(ctx, identifier)
 	if err != nil {
 		return bridge.MessageMetadata{}, bridge.NormalizedMessage{}, mapAdapterError(err)
 	}

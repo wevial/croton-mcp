@@ -51,9 +51,9 @@ func TestAdapterReplaysIdleConnectionClose(t *testing.T) {
 				t.Fatalf("search sent %d commands, want %d so the close hits an idle connection: %+v", idle, test.disconnectAfter-1, server.Commands())
 			}
 
-			body, err := adapter.GetMessageBody(context.Background(), messages[0].ID)
-			if err != nil || !strings.Contains(string(body), "Welcome to Croton") {
-				t.Fatalf("GetMessageBody after idle close = %q, %v", body, err)
+			message, err := adapter.GetMessage(context.Background(), messages[0].ID)
+			if err != nil || !strings.Contains(message.Text, "Welcome to Croton") {
+				t.Fatalf("GetMessage after idle close = %#v, %v", message, err)
 			}
 
 			commands := server.Commands()
@@ -63,7 +63,7 @@ func TestAdapterReplaysIdleConnectionClose(t *testing.T) {
 				if command.Name == "LOGIN" {
 					loginConnections = append(loginConnections, command.ConnectionID)
 				}
-				if strings.Contains(command.Raw, "BODY.PEEK[]") {
+				if strings.Contains(command.Raw, "BODY.PEEK[1]") {
 					bodyFetchConnections = append(bodyFetchConnections, command.ConnectionID)
 				}
 			}
@@ -71,7 +71,7 @@ func TestAdapterReplaysIdleConnectionClose(t *testing.T) {
 				t.Fatalf("LOGIN connections = %v, want one reconnect: %+v", loginConnections, commands)
 			}
 			if len(bodyFetchConnections) != 1 || bodyFetchConnections[0] != loginConnections[1] {
-				t.Fatalf("BODY.PEEK[] connections = %v, want one fetch on the new connection: %+v", bodyFetchConnections, commands)
+				t.Fatalf("BODY.PEEK[1] connections = %v, want one fetch on the new connection: %+v", bodyFetchConnections, commands)
 			}
 			if err := server.AssertReadOnlyCommands(); err != nil {
 				t.Fatalf("read-only transcript: %v", err)

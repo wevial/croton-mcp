@@ -74,7 +74,7 @@ func flagsOnlyReply(command string) string {
 	case strings.Contains(command, "BODY.PEEK[HEADER]"):
 		return fmt.Sprintf("* 1 FETCH (UID %d FLAGS () RFC822.SIZE %d BODY[HEADER] {%d}\r\n%s)\r\n", flagsOnlyUID, len(flagsOnlyHeader)+len(flagsOnlyBody), len(flagsOnlyHeader), flagsOnlyHeader)
 	default:
-		return fmt.Sprintf("* 1 FETCH (UID %d BODY[]<0> {%d}\r\n%s)\r\n", flagsOnlyUID, len(flagsOnlyBody), flagsOnlyBody)
+		return fmt.Sprintf("* 1 FETCH (UID %d BODY[1]<0> {%d}\r\n%s)\r\n", flagsOnlyUID, len(flagsOnlyBody), flagsOnlyBody)
 	}
 }
 
@@ -87,7 +87,7 @@ func TestFetchRetriesOnceAfterFlagsOnlyReply(t *testing.T) {
 		{
 			name: "body",
 			fetch: func(ctx context.Context, session *imapSession) (string, error) {
-				body, err := session.UIDFetchBody(ctx, flagsOnlyUID, 64)
+				body, err := session.UIDFetchBody(ctx, flagsOnlyUID, []int{1}, 64)
 				return string(body), err
 			},
 			want: flagsOnlyBody,

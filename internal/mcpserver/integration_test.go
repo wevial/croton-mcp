@@ -458,30 +458,30 @@ func TestReadToolsEmptyOverTheWire(t *testing.T) {
 func TestReadToolsBoundsOverTheWire(t *testing.T) {
 	t.Parallel()
 
-	// UID 101 fits the 256 KiB body budget but not the result budget; UID
-	// 102 exceeds the body budget.
-	message := func(kib int) string {
-		return "From: Fixture <fixture@croton.test>\r\nSubject: Synthetic oversize\r\nDate: Thu, 01 Jan 2026 00:00:00 +0000\r\n" +
-			"Content-Type: text/plain; charset=utf-8\r\n\r\n" + strings.Repeat("Synthetic oversize line of plain text.\r\n", (kib<<10)/40)
-	}
-	server, adapter := startIntegrationAdapter(t, testkit.Options{Messages: []string{message(150), message(300)}, Scenario: testkit.Scenario{ListResponseCount: 201}})
-	session := connectTestClient(t, Options{Mail: adapter})
+	_, adapter := startIntegrationAdapter(t, testkit.Options{Scenario: testkit.Scenario{ListResponseCount: 201}})
+	requireToolError(t, callTool(t, connectTestClient(t, Options{Mail: adapter}), "list_folders", map[string]any{}), errBoundsExceeded)
 
-	requireToolError(t, callTool(t, session, "list_folders", map[string]any{}), errBoundsExceeded)
+	// UID 101 fits the 256 KiB body budget but not the result budget.
+	text := strings.Repeat("Synthetic oversize line of plain text.\r\n", (150<<10)/40)
+	server, adapter := startIntegrationAdapter(t, testkit.Options{
+		Messages: []string{"From: Fixture <fixture@croton.test>\r\nSubject: Synthetic oversize\r\nDate: Thu, 01 Jan 2026 00:00:00 +0000\r\n" +
+			"Content-Type: text/plain; charset=utf-8\r\n\r\n" + text},
+		BodyStructures: []*testkit.BodyPart{{Kind: testkit.BodyPartText, Type: "text", Subtype: "plain", Params: []testkit.BodyParam{{Name: "charset", Value: "utf-8"}}, Size: uint32(len(text)), Lines: uint32(len(text) / 40)}},
+	})
+	session := connectTestClient(t, Options{Mail: adapter})
 
 	var search wireSearch
 	callJSON(t, session, "search_mail", map[string]any{"mailbox": "INBOX"}, &search)
-	if len(search.Results) != 2 || search.Results[1].UID != 101 {
+	if len(search.Results) != 1 || search.Results[0].UID != 101 {
 		t.Fatalf("search = %+v", search)
 	}
 
-	result := callTool(t, session, "get_message", map[string]any{"messageId": search.Results[1].ID})
+	result := callTool(t, session, "get_message", map[string]any{"messageId": search.Results[0].ID})
 	var decoded getMessageResult
 	decodeResult(t, result, &decoded)
-	if len(resultText(t, result)) > maxToolResultBytes || !decoded.Truncated || !decoded.Truncation.Text && !decoded.Truncation.Output || decoded.UID != 101 {
+	if len(resultText(t, result)) > maxToolResultBytes || !decoded.Truncated || !decoded.Truncation.Output || decoded.UID != 101 {
 		t.Fatalf("oversize message: %d bytes, truncation %+v", len(resultText(t, result)), decoded.Truncation)
 	}
-	requireToolError(t, callTool(t, session, "get_message", map[string]any{"messageId": search.Results[0].ID}), errBoundsExceeded)
 
 	for _, tc := range []struct {
 		tool      string
@@ -522,6 +522,98 @@ func TestReadToolsBoundsOverTheWire(t *testing.T) {
 	callJSON(t, session, "list_attachments", map[string]any{"messageId": search.Results[0].ID}, &listed)
 	if len(listed.Attachments) != 20 || listed.Attachments[19].Filename != "part-19.bin" || listed.Truncation != (attachmentListTruncation{Attachments: true}) || !listed.Truncated {
 		t.Fatalf("21 attachments = %d entries, truncation %+v (truncated %v)", len(listed.Attachments), listed.Truncation, listed.Truncated)
+	}
+}
+
+func TestGetMessageLargeAttachments(t *testing.T) {
+	t.Parallel()
+
+	const header = "From: Fixture <fixture@croton.test>\r\nSubject: Synthetic large\r\nDate: Thu, 01 Jan 2026 00:00:00 +0000\r\n"
+	textParam := []testkit.BodyParam{{Name: "charset", Value: "utf-8"}}
+
+	// UID 101: a short plain body and two 280 KiB base64 attachments.
+	body := "Synthetic short body before two large attachments."
+	attachment := strings.Repeat(strings.Repeat("A", 76)+"\r\n", (280<<10)/78)
+	large := header + "Content-Type: multipart/mixed; boundary=large\r\n\r\n--large\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n" + body + "\r\n"
+	parts := []*testkit.BodyPart{{Kind: testkit.BodyPartText, Type: "text", Subtype: "plain", Params: textParam, Size: uint32(len(body)), Lines: 1}}
+	for _, name := range []string{"first.bin", "second.bin"} {
+		large += "--large\r\nContent-Type: application/octet-stream\r\nContent-Transfer-Encoding: base64\r\nContent-Disposition: attachment; filename=" + name + "\r\n\r\n" + attachment
+		parts = append(parts, &testkit.BodyPart{Kind: testkit.BodyPartBasic, Type: "application", Subtype: "octet-stream", Encoding: "base64", Size: uint32(len(attachment)),
+			Disposition: &testkit.BodyDisposition{Value: "attachment", Params: []testkit.BodyParam{{Name: "filename", Value: name}}}})
+	}
+	large += "--large--\r\n"
+
+	// UID 102: a plain body longer than a 16 KiB body bound.
+	long := strings.Repeat(strings.Repeat("p", 78)+"\r\n", (20<<10)/80)
+
+	// UID 103: an HTML-only body.
+	html := "<html><head><style>p{}</style></head><body><p>Synthetic =\r\nHTML body</p></body></html>"
+
+	options := testkit.Options{
+		Seen: []bool{true},
+		Messages: []string{
+			large,
+			header + "Content-Type: text/plain; charset=utf-8\r\n\r\n" + long,
+			header + "Content-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n" + html,
+		},
+		BodyStructures: []*testkit.BodyPart{
+			{Kind: testkit.BodyPartMultipart, Subtype: "mixed", Params: []testkit.BodyParam{{Name: "boundary", Value: "large"}}, Children: parts},
+			{Kind: testkit.BodyPartText, Type: "text", Subtype: "plain", Params: textParam, Size: uint32(len(long)), Lines: uint32(len(long) / 80)},
+			{Kind: testkit.BodyPartText, Type: "text", Subtype: "html", Params: textParam, Encoding: "quoted-printable", Size: uint32(len(html)), Lines: 2},
+		},
+	}
+	server, adapter := startIntegrationAdapter(t, options)
+	session := connectTestClient(t, Options{Mail: adapter})
+	if len(large) < 560<<10 {
+		t.Fatalf("large fixture is %d bytes", len(large))
+	}
+
+	var search wireSearch
+	callJSON(t, session, "search_mail", map[string]any{"mailbox": "INBOX"}, &search)
+	ids := requireItems(t, "search", search.Results, 103, 102, 101)
+
+	before := len(server.Commands())
+	var message getMessageResult
+	callJSON(t, session, "get_message", map[string]any{"messageId": ids[101]}, &message)
+	commands := requireWire(t, server, before, true)
+	if message.Text != body || message.TextSource != "plain" || message.Truncated || message.Headers.Subject != "Synthetic large" {
+		t.Fatalf("large message = %+v", message)
+	}
+	if len(message.Attachments) != 2 || message.Attachments[0].Filename != "first.bin" || message.Attachments[1].Filename != "second.bin" {
+		t.Fatalf("large message attachments = %+v", message.Attachments)
+	}
+	var structures, headers int
+	var sections []string
+	for _, command := range commands {
+		upper := strings.ToUpper(command.Raw)
+		if strings.Contains(upper, "BODYSTRUCTURE") {
+			structures++
+		}
+		for _, match := range fetchSection.FindAllStringSubmatch(upper, -1) {
+			switch {
+			case match[1] == "HEADER":
+				headers++
+			case !headerSection.MatchString(match[1]):
+				sections = append(sections, match[0])
+			}
+		}
+	}
+	if structures != 1 || headers == 0 || len(sections) != 1 || sections[0] != "BODY.PEEK[1]" {
+		t.Fatalf("get_message read %d structures, %d headers and sections %q", structures, headers, sections)
+	}
+
+	callJSON(t, session, "get_message", map[string]any{"messageId": ids[103]}, &message)
+	if message.Text != "Synthetic HTML body" || message.TextSource != "html" || message.Truncated {
+		t.Fatalf("HTML message = %+v", message)
+	}
+
+	_, adapter = startIntegrationAdapter(t, options, bridge.BoundsPatch{MaxBodyBytes: bridge.Int(16 << 10)})
+	session = connectTestClient(t, Options{Mail: adapter})
+	callJSON(t, session, "search_mail", map[string]any{"mailbox": "INBOX"}, &search)
+	ids = requireItems(t, "bounded search", search.Results, 103, 102, 101)
+	callJSON(t, session, "get_message", map[string]any{"messageId": ids[102]}, &message)
+	if len(message.Text) != 16<<10 || message.Text != long[:16<<10] || message.TextSource != "plain" || message.Truncation != (messageTruncation{Text: true}) || !message.Truncated {
+		t.Fatalf("long message text is %d bytes, truncation %+v", len(message.Text), message.Truncation)
 	}
 }
 

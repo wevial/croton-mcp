@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"testing"
@@ -40,8 +41,12 @@ func (mail *fakeMail) GetMessageMetadata(context.Context, string) (bridge.Messag
 	return mail.metadata, mail.err
 }
 
-func (mail *fakeMail) GetMessageBody(context.Context, string) ([]byte, error) {
-	return mail.body, mail.err
+func (mail *fakeMail) GetMessage(context.Context, string) (bridge.NormalizedMessage, error) {
+	if mail.err != nil {
+		return bridge.NormalizedMessage{}, mail.err
+	}
+
+	return bridge.NormalizeMessage(bytes.NewReader(mail.body), bridge.NormalizeOptions{})
 }
 
 func (mail *fakeMail) GetMessageHeaders(_ context.Context, identifier string) (bridge.MessageHeaders, error) {

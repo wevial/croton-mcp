@@ -166,8 +166,8 @@ func TestAdapterReconnectsAfterBoundedAbort(t *testing.T) {
 	if err != nil || len(results) != 1 {
 		t.Fatalf("SearchMailPage = %#v, %v", results, err)
 	}
-	if _, err := adapter.GetMessageBody(context.Background(), results[0].ID); bridge.CodeOf(err) != bridge.CodeBoundsExceeded {
-		t.Fatalf("GetMessageBody error = %v, want %q", err, bridge.CodeBoundsExceeded)
+	if _, err := adapter.GetMessage(context.Background(), results[0].ID); bridge.CodeOf(err) != bridge.CodeBoundsExceeded {
+		t.Fatalf("GetMessage error = %v, want %q", err, bridge.CodeBoundsExceeded)
 	}
 	if _, err := adapter.Status(context.Background(), "INBOX"); err != nil {
 		t.Fatalf("Status after bounded abort: %v", err)
