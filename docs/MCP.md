@@ -32,7 +32,7 @@ set `\Seen`.
 | Tool | Arguments |
 | --- | --- |
 | `list_folders` | none |
-| `search_mail` | `mailbox` (required), `since`, `before` (RFC 3339), `sender`, `subject` (≤ 1024 bytes), `unreadOnly` (default false), `limit` (1–250, default 50) |
+| `search_mail` | `mailbox` (required), `since`, `before` (RFC 3339), `sender`, `subject` (≤ 1024 bytes), `unreadOnly` (default false), `limit` (1–250, default 50), `cursor` |
 | `get_message` | `messageId` (required) |
 | `get_thread` | `messageId` (required), `maxMessages` (1–20, default 10) |
 | `list_attachments` | `messageId` (required) |
@@ -53,7 +53,9 @@ Search results, digest candidates, `get_thread` nodes and the parent of
 `get_message` and `list_attachments` also carry the exact `mailbox` and
 positive 32-bit `uidvalidity` and `uid` from the same read, or the read fails.
 These fields are the input to the triage writes; they grant no write
-authority. Output shrinking removes whole items, so retained identity is exact.
+authority. Output shrinking removes whole items, so retained identity is exact;
+`search_mail` keeps at least one result and halves its `subject` instead,
+marking it `metadataTruncated`.
 
 ### `list_folders`
 
@@ -62,10 +64,11 @@ authority. Output shrinking removes whole items, so retained identity is exact.
 
 ### `search_mail`
 
-`{"results": [...], "truncated"}`. Each result carries `id`, `mailbox`,
+`{"results": [...], "truncated", "nextCursor"}`. Each result carries `id`, `mailbox`,
 `uidvalidity`, `uid`, `subject`, `size`, `from`, `date`, `dateSource`,
-`readState` and, when `from` was cut, `metadataTruncated`. One metadata FETCH
-of `BODY.PEEK[HEADER]` and `FLAGS` supplies them; no body is read.
+`readState` and, when `from` or `subject` was cut, `metadataTruncated`. One
+metadata FETCH of `BODY.PEEK[HEADER]` and `FLAGS` supplies them; no body is
+read.
 
 - `from` is the decoded `From` header, at most 512 bytes; omitted when
   missing, repeated or invalid. It is sender-controlled and proves nothing.
@@ -77,7 +80,17 @@ Results are in strictly descending UID order, not date order. A search walks
 at most 8 windows of 100 UIDs, newest first. A raw SEARCH response is capped
 at 4096 bytes; an oversize response or a zero, out-of-window or repeated UID
 fails the whole call. `truncated` is set when matches were dropped or an older
-UID range was not examined. There is no continuation cursor.
+UID range was not examined.
+
+`nextCursor` is present exactly when `truncated` is. Pass it back as `cursor`
+with the same `mailbox`, `since`, `before`, `sender`, `subject` and
+`unreadOnly` to get the next older page; `limit` may change between pages.
+Each match appears on exactly one page. The cursor is opaque and HMAC-bound
+to the mailbox, UIDVALIDITY, the filters and the page's exclusive upper UID.
+A cursor reused with another mailbox or other filters, or a forged one, fails
+with `invalid_argument` before any IMAP command; a UIDVALIDITY change fails
+with `stale_id`. When output shrinking drops results, `nextCursor` resumes
+just below the last result kept.
 
 ### `get_message`
 

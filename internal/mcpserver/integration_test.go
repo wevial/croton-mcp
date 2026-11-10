@@ -34,8 +34,9 @@ type wireItem struct {
 }
 
 type wireSearch struct {
-	Results   []wireItem `json:"results"`
-	Truncated bool       `json:"truncated"`
+	Results    []wireItem `json:"results"`
+	Truncated  bool       `json:"truncated"`
+	NextCursor string     `json:"nextCursor"`
 }
 
 type wireDigest struct {
@@ -77,7 +78,7 @@ func wireFixture() testkit.Options {
 	}
 }
 
-func startIntegrationAdapter(t *testing.T, options testkit.Options) (*testkit.Server, *bridge.Adapter) {
+func startIntegrationAdapter(t *testing.T, options testkit.Options, bounds ...bridge.BoundsPatch) (*testkit.Server, *bridge.Adapter) {
 	t.Helper()
 
 	options.Mode = testkit.ImplicitTLS
@@ -100,7 +101,11 @@ func startIntegrationAdapter(t *testing.T, options testkit.Options) (*testkit.Se
 		t.Fatalf("resolve test executable: %v", err)
 	}
 
-	adapter, err := bridge.NewAdapter(bridge.Config{IMAP: bridge.IMAPConfig{
+	var patch bridge.BoundsPatch
+	if len(bounds) > 0 {
+		patch = bounds[0]
+	}
+	adapter, err := bridge.NewAdapter(bridge.Config{Bounds: patch, IMAP: bridge.IMAPConfig{
 		Host:              host,
 		Port:              port,
 		TLSMode:           bridge.TLSModeImplicit,
@@ -517,6 +522,133 @@ func TestReadToolsBoundsOverTheWire(t *testing.T) {
 	callJSON(t, session, "list_attachments", map[string]any{"messageId": search.Results[0].ID}, &listed)
 	if len(listed.Attachments) != 20 || listed.Attachments[19].Filename != "part-19.bin" || listed.Truncation != (attachmentListTruncation{Attachments: true}) || !listed.Truncated {
 		t.Fatalf("21 attachments = %d entries, truncation %+v (truncated %v)", len(listed.Attachments), listed.Truncation, listed.Truncated)
+	}
+}
+
+func TestSearchMailCursorPages(t *testing.T) {
+	t.Parallel()
+
+	// 120 matching messages take UIDs 101-220.
+	messages := make([]string, 120)
+	for index := range messages {
+		messages[index] = fmt.Sprintf("From: Fixture <fixture@croton.test>\r\nSubject: Synthetic page %d\r\nDate: Thu, 01 Jan 2026 00:00:00 +0000\r\n\r\nSynthetic page body.\r\n", index)
+	}
+	server, adapter := startIntegrationAdapter(t, testkit.Options{Messages: messages})
+	session := connectTestClient(t, Options{Mail: adapter})
+
+	var pages []wireSearch
+	next := uint32(220)
+	arguments := map[string]any{"mailbox": "INBOX", "limit": 50}
+	for index, size := range []int{50, 50, 20} {
+		var page wireSearch
+		callJSON(t, session, "search_mail", arguments, &page)
+		if len(page.Results) != size {
+			t.Fatalf("page %d has %d results, want %d", index, len(page.Results), size)
+		}
+		for _, item := range page.Results {
+			if item.UID != next {
+				t.Fatalf("page %d UID %d, want %d", index, item.UID, next)
+			}
+			next--
+		}
+		last := index == 2
+		if page.Truncated == last || (page.NextCursor == "") != last {
+			t.Fatalf("page %d truncated %v, nextCursor %q", index, page.Truncated, page.NextCursor)
+		}
+		pages = append(pages, page)
+		arguments = map[string]any{"mailbox": "INBOX", "limit": 50, "cursor": page.NextCursor}
+	}
+
+	cursor := pages[0].NextCursor
+	tampered := []byte(cursor)
+	tampered[len(tampered)/2] ^= 1
+	before := len(server.Commands())
+	for _, arguments := range []map[string]any{
+		{"mailbox": "Archive", "cursor": cursor},
+		{"mailbox": "INBOX", "unreadOnly": true, "cursor": cursor},
+		{"mailbox": "INBOX", "subject": "Synthetic", "cursor": cursor},
+		{"mailbox": "INBOX", "cursor": string(tampered)},
+		{"mailbox": "INBOX", "cursor": pages[0].Results[0].ID},
+	} {
+		requireToolError(t, callTool(t, session, "search_mail", arguments), errInvalidArgument)
+	}
+	if commands := server.Commands()[before:]; len(commands) != 0 {
+		t.Fatalf("rejected cursors reached the wire: %+v", commands)
+	}
+	requireWire(t, server, 0, false)
+
+	// The generation changes after the first page's EXAMINE.
+	_, adapter = startIntegrationAdapter(t, testkit.Options{Messages: messages, Scenario: testkit.Scenario{UIDValidityAfterExamine: 9002}})
+	session = connectTestClient(t, Options{Mail: adapter})
+	var first wireSearch
+	callJSON(t, session, "search_mail", map[string]any{"mailbox": "INBOX", "limit": 50}, &first)
+	requireToolError(t, callTool(t, session, "search_mail", map[string]any{"mailbox": "INBOX", "limit": 50, "cursor": first.NextCursor}), errStaleID)
+
+	// Pages the output budget shrinks still resume below their last result.
+	for index := range messages {
+		messages[index] = fmt.Sprintf("From: Fixture <fixture@croton.test>\r\nSubject: Synthetic page %d %s\r\n\r\nSynthetic page body.\r\n", index, strings.Repeat("s", 3000))
+	}
+	_, adapter = startIntegrationAdapter(t, testkit.Options{Messages: messages}, bridge.BoundsPatch{MaxOutputBytes: bridge.Int(400000)})
+	session = connectTestClient(t, Options{Mail: adapter})
+	next, shrunk := uint32(220), false
+	arguments = map[string]any{"mailbox": "INBOX", "limit": 50}
+	for calls := 0; ; calls++ {
+		if calls == 20 {
+			t.Fatal("shrunk pages did not finish")
+		}
+		var page wireSearch
+		callJSON(t, session, "search_mail", arguments, &page)
+		shrunk = shrunk || len(page.Results) < 50 && page.NextCursor != ""
+		for _, item := range page.Results {
+			if item.UID != next {
+				t.Fatalf("shrunk page UID %d, want %d", item.UID, next)
+			}
+			next--
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		arguments = map[string]any{"mailbox": "INBOX", "limit": 50, "cursor": page.NextCursor}
+	}
+	if next != 100 || !shrunk {
+		t.Fatalf("shrunk pages ended at UID %d (shrunk %v), want every match", next+1, shrunk)
+	}
+
+	// A single result over the output budget keeps its identity and cursor.
+	oversized := []string{messages[0], "From: Fixture <fixture@croton.test>\r\nSubject: " + strings.Repeat("<", 20000) + "\r\n\r\nSynthetic page body.\r\n"}
+	_, adapter = startIntegrationAdapter(t, testkit.Options{Messages: oversized}, bridge.BoundsPatch{MaxHeaderBytes: bridge.Int(65536), MaxOutputBytes: bridge.Int(400000)})
+	session = connectTestClient(t, Options{Mail: adapter})
+	var single, rest wireSearch
+	callJSON(t, session, "search_mail", map[string]any{"mailbox": "INBOX", "limit": 1}, &single)
+	if len(single.Results) != 1 || single.Results[0].UID != 102 || !single.Truncated || single.NextCursor == "" {
+		t.Fatalf("oversized single result = %d results, truncated %v, cursor %q", len(single.Results), single.Truncated, single.NextCursor)
+	}
+	callJSON(t, session, "search_mail", map[string]any{"mailbox": "INBOX", "limit": 1, "cursor": single.NextCursor}, &rest)
+	if len(rest.Results) != 1 || rest.Results[0].UID != 101 {
+		t.Fatalf("page after oversized result has %d results", len(rest.Results))
+	}
+
+	// An oversized terminal result is cut, not the page.
+	_, adapter = startIntegrationAdapter(t, testkit.Options{Messages: oversized[1:]}, bridge.BoundsPatch{MaxHeaderBytes: bridge.Int(65536), MaxOutputBytes: bridge.Int(400000)})
+	session = connectTestClient(t, Options{Mail: adapter})
+	var terminal wireSearch
+	callJSON(t, session, "search_mail", map[string]any{"mailbox": "INBOX"}, &terminal)
+	if len(terminal.Results) != 1 || !terminal.Results[0].MetadataTruncated || terminal.Truncated || terminal.NextCursor != "" {
+		t.Fatalf("oversized terminal result = %d results, truncated %v, cursor %q", len(terminal.Results), terminal.Truncated, terminal.NextCursor)
+	}
+
+	// A limit below the configured bound still examines every window, so a
+	// lone match ends the search.
+	seenFlags := make([]bool, 100)
+	for index := range 99 {
+		seenFlags[index] = true
+	}
+	_, adapter = startIntegrationAdapter(t, testkit.Options{Messages: messages[:100], Seen: seenFlags})
+	session = connectTestClient(t, Options{Mail: adapter})
+	var lone wireSearch
+	callJSON(t, session, "search_mail", map[string]any{"mailbox": "INBOX", "unreadOnly": true, "limit": 1}, &lone)
+	if len(lone.Results) != 1 || lone.Results[0].UID != 200 || lone.Truncated || lone.NextCursor != "" {
+		t.Fatalf("lone match = %d results, truncated %v, cursor %q", len(lone.Results), lone.Truncated, lone.NextCursor)
 	}
 }
 
