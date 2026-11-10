@@ -39,7 +39,8 @@ func TestIMAPDependencyAndMutationMethodsStayInsideFacade(t *testing.T) {
 		}
 		if filepath.Base(sourcePath) == "imapclient.go" {
 			// Store is reachable only through StoreSeen: one UID, \Seen only.
-			// Move is reachable only through MoveUID: one UID, native MOVE only.
+			// Move is reachable only through dispatchMove: one UID, guarded
+			// so go-imap's COPY/STORE/EXPUNGE fallback cannot reach the wire.
 			allowedClientMethods := map[string]bool{
 				"WaitGreeting": true,
 				"Caps":         true,

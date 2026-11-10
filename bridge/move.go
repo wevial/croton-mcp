@@ -182,8 +182,9 @@ func (adapter *Adapter) moveUID(ctx context.Context, session bridgeSession, uid 
 	err = mapIMAPError(operationContext, err)
 	switch CodeOf(err) {
 	case CodeUnsupported:
-		// MOVE stopped being advertised and the check refused before
-		// anything was sent, so the session is discarded.
+		// MOVE stopped being advertised and nothing was sent: the check
+		// refused first, or the dispatch guard refused a fallback write and
+		// closed the connection, so the session is discarded.
 		adapter.invalidate(session)
 		return TriageResult{UID: uid, Outcome: OutcomeRefused, Code: CodeUnsupported}, false
 	case CodeIMAPCommand:

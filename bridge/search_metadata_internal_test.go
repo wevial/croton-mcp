@@ -267,6 +267,7 @@ func TestSearchMetadataAdapter(t *testing.T) {
 			{name: "truncated Q escape", from: "=?utf-8?q?bad=4?= <a@croton.test>"},
 			{name: "unterminated encoded word", from: "=?utf-8?q?decoder-marker"},
 			{name: "unknown encoding", from: "=?utf-8?x?decoder-marker?="},
+			{name: "whitespace inside Q payload", from: "=?utf-8?Q?Alice Bob?= <sender@example.test>"},
 			{name: "empty charset", from: "=??q?decoder-marker?= <a@croton.test>"},
 			{name: "decodes to encoded-word text", from: "=?utf-8?q?=3D=3Futf-8=3Fq=3Fx=3F=3D?= <a@croton.test>"},
 			{name: "invalid UTF-8", from: "Bad \xff\xfe <bad@croton.test>"},
