@@ -507,15 +507,10 @@ func TestReadToolsUnavailableOverTheWire(t *testing.T) {
 			t.Fatalf("close fake server: %v", err)
 		}
 
-		id := search.Results[0].ID
-		for tool, arguments := range map[string]map[string]any{
-			"list_folders":             {},
-			"search_mail":              {"mailbox": "INBOX"},
-			"select_digest_candidates": {"mailbox": "INBOX"},
-			"get_message":              {"messageId": id},
-			"get_thread":               {"messageId": id},
-			"list_attachments":         {"messageId": id},
-		} {
+		for tool, arguments := range readCalls {
+			if arguments["messageId"] != nil {
+				arguments = map[string]any{"messageId": search.Results[0].ID}
+			}
 			result := callTool(t, session, tool, arguments)
 			requireToolError(t, result, errUnavailable)
 			if text := resultText(t, result); strings.Contains(text, "127.0.0.1") || strings.Contains(text, "fixture-") {
