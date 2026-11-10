@@ -48,7 +48,9 @@ func TestAuditNeverRecordsInputsOrWrappedErrors(t *testing.T) {
 		"sender":  "target-person@victim.test",
 		"subject": "password hunter2 attachment.pdf",
 	}), errInternal)
+
 	mail.err = nil
+
 	callTool(t, session, "list_folders", map[string]any{})
 
 	events := auditLines(t, &buffer)

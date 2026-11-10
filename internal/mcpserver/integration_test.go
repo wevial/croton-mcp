@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -130,7 +131,7 @@ func TestMCPCredentialHelperProcess(t *testing.T) {
 }
 
 // requireWire checks every command since before: TLS only, read-only, and a
-// UID FETCH that reads the whole body only when bodyAllowed. It returns the
+// UID FETCH that reads body or part bytes only when bodyAllowed. It returns the
 // commands for further checks.
 func requireWire(t *testing.T, server *testkit.Server, before int, bodyAllowed bool) []testkit.Command {
 	t.Helper()
@@ -154,12 +155,31 @@ func requireWire(t *testing.T, server *testkit.Server, before int, bodyAllowed b
 				t.Fatalf("mutating IMAP command reached the wire: %q", command.Raw)
 			}
 		}
-		if strings.Contains(upper, "FETCH") && !bodyAllowed && (strings.Contains(upper, "BODY.PEEK[]") || strings.Contains(upper, "BODY[") || strings.Contains(upper, "RFC822 ") || strings.Contains(upper, "RFC822)")) {
+		if strings.Contains(upper, "FETCH") && !bodyAllowed && fetchesContent(upper) {
 			t.Fatalf("metadata-only read fetched message bytes: %q", command.Raw)
 		}
 	}
 
 	return commands
+}
+
+var (
+	fetchSection   = regexp.MustCompile(`(?:BODY|BINARY)(?:\.PEEK)?\[([^\]]*)\]`)
+	headerSection  = regexp.MustCompile(`^(?:\d+\.)*(?:HEADER|MIME)`)
+	wholeOrTextRFC = regexp.MustCompile(`(?:^|[ (])RFC822(?:\.TEXT)?(?:[ )]|$)`)
+)
+
+// fetchesContent reports whether an upper-cased FETCH asks for message or
+// part bytes: any section other than a header or MIME header, or RFC822 and
+// RFC822.TEXT.
+func fetchesContent(upper string) bool {
+	for _, match := range fetchSection.FindAllStringSubmatch(upper, -1) {
+		if !headerSection.MatchString(match[1]) {
+			return true
+		}
+	}
+
+	return wholeOrTextRFC.MatchString(upper)
 }
 
 func callJSON(t *testing.T, session *mcp.ClientSession, name string, arguments map[string]any, target any) []byte {
