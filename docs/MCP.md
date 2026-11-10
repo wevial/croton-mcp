@@ -6,7 +6,8 @@ registration steps are in [INSTALL.md](INSTALL.md).
 
 ## Protocol surface
 
-- Stdout carries only JSON-RPC frames; audit lines and errors go to stderr.
+- Stdout carries only JSON-RPC frames, tool errors included; audit lines and
+  startup errors go to stderr.
 - A fail-closed allowlist serves only `initialize`, `ping`, `server/discover`,
   `tools/list`, `tools/call` and the `initialized`, `cancelled` and
   `progress` notifications. Everything else is `method not supported`.
@@ -31,28 +32,28 @@ set `\Seen`.
 | Tool | Arguments |
 | --- | --- |
 | `list_folders` | none |
-| `search_mail` | `mailbox` (required), `since`, `before` (RFC 3339), `sender`, `subject` (≤ 1024 bytes), `unreadOnly`, `limit` (1–250, default 50) |
+| `search_mail` | `mailbox` (required), `since`, `before` (RFC 3339), `sender`, `subject` (≤ 1024 bytes), `unreadOnly` (default false), `limit` (1–250, default 50) |
 | `get_message` | `messageId` (required) |
 | `get_thread` | `messageId` (required), `maxMessages` (1–20, default 10) |
 | `list_attachments` | `messageId` (required) |
-| `select_digest_candidates` | `mailbox` (required), `sinceHours` (1–168, default 24), `limit` (1–50, default 20), `unreadOnly` |
+| `select_digest_candidates` | `mailbox` (required), `sinceHours` (1–168, default 24), `limit` (1–50, default 20), `unreadOnly` (default true; false includes read mail) |
 
 Mailbox arguments are 1 to 512 bytes. `limit` is further clamped by the
 configured `bounds.maxSearchResults`.
 
 ### Message identity
 
-`messageId` and every returned `id` are opaque, HMAC-bound to the mailbox,
-UIDVALIDITY and UID. Every use re-checks the mailbox's current UIDVALIDITY; a
-stale or forged ID fails with `stale_id` instead of reaching another message.
+The `messageId` argument, every returned `id` and each thread node `key` are
+opaque, HMAC-bound to the mailbox, UIDVALIDITY and UID, not to the account.
+Every use re-checks the current UIDVALIDITY; a stale or forged ID fails with
+`stale_id`. If the helper switches accounts, an old ID can reach a different
+message with the same tuple, so run a fresh read after any account change.
 
 Search results, digest candidates, `get_thread` nodes and the parent of
 `get_message` and `list_attachments` also carry the exact `mailbox` and
-positive 32-bit `uidvalidity` and `uid` from the same read. A read that cannot
-supply a positive tuple fails rather than returning a partial one. These
-fields are the input to the triage writes; they grant no write authority.
-Output shrinking removes whole items, so every retained item keeps its exact
-identity.
+positive 32-bit `uidvalidity` and `uid` from the same read, or the read fails.
+These fields are the input to the triage writes; they grant no write
+authority. Output shrinking removes whole items, so retained identity is exact.
 
 ### `list_folders`
 
@@ -69,16 +70,14 @@ of `BODY.PEEK[HEADER]` and `FLAGS` supplies them; no body is read.
 - `from` is the decoded `From` header, at most 512 bytes; omitted when
   missing, repeated or invalid. It is sender-controlled and proves nothing.
 - `date` is the header `Date` in RFC 3339 UTC, with `dateSource: "header"`;
-  otherwise `date` is omitted and `dateSource` is `unknown`. It is not arrival
-  time.
+  otherwise it is omitted and `dateSource` is `unknown`. It is not arrival time.
 - `readState` is `read`, `unread`, or `unknown` when no `FLAGS` was seen.
 
 Results are in strictly descending UID order, not date order. A search walks
 at most 8 windows of 100 UIDs, newest first. A raw SEARCH response is capped
 at 4096 bytes; an oversize response or a zero, out-of-window or repeated UID
 fails the whole call. `truncated` is set when matches were dropped or an older
-UID range was not examined; it is absent only when every window down to UID 1
-was examined and nothing was left out. There is no continuation cursor.
+UID range was not examined. There is no continuation cursor.
 
 ### `get_message`
 
@@ -115,10 +114,11 @@ with header-only `BODY.PEEK[HEADER]`; bodies are never fetched. Reply links
 come from `References` and `In-Reply-To`; an unlinked same-subject sibling is
 a root at depth 0.
 
-Each node carries `key`, `mailbox`, `uidvalidity`, `uid`, `messageId`,
-`parentKey`, `depth`, `subject`, `from`, `date` and a `truncation` object
-(`headers`, `headerCount`, `references`). `maxMessages` bounds the nodes and
-the reads: one target read plus at most `maxMessages - 1` sibling attempts.
+Each node carries `key`, `mailbox`, `uidvalidity`, `uid`, `messageId` (the RFC
+`Message-ID`; pass `key` to read tools), `parentKey`, `depth`, `subject`,
+`from`, `date` and a `truncation` object (`headers`, `headerCount`,
+`references`). `maxMessages` bounds the nodes and the reads: one target read
+plus at most `maxMessages - 1` sibling attempts.
 
 A sibling that is stale, lacks a positive tuple or has a malformed RFC 2047
 header is omitted and reported only as `{"reason": "stale_id" |

@@ -5,9 +5,12 @@ running, logged-in Proton Mail Bridge. Other platforms refuse to load a config.
 
 ## 1. Get the binary
 
-Either download and verify a release asset as in [RELEASE.md](RELEASE.md),
-then `umask 077 && mkdir -p ~/bin && install -m 0700 "$ASSET" ~/bin/croton-mcp`,
-or build a release tag from source with Go 1.26.10:
+Either download and verify a release asset with the GitHub CLI as in
+[RELEASE.md](RELEASE.md); v0.1.0-beta.1 to beta.3 have no `SHA256SUMS`, so
+compare `sha256sum` (Linux) or `shasum -a 256` (macOS) of the binary with the
+`sha256` field of its `<asset>.manifest.json`. Then run
+`umask 077 && mkdir -p ~/bin && install -m 0700 "$ASSET" ~/bin/croton-mcp`.
+Or build a release tag from source with Go 1.26.10:
 
 ```sh
 RELEASE_TAG=vX.Y.Z
@@ -59,7 +62,8 @@ Never run the real helper by hand to inspect it or paste its output anywhere.
 
 ## 4. Write the configuration
 
-Create it with `umask 077` as `~/.config/croton/mail.json`, mode `0600`:
+Run `umask 077 && mkdir -p ~/.config/croton`, then create
+`~/.config/croton/mail.json` with mode `0600`:
 
 ```json
 {
@@ -117,16 +121,11 @@ first helper run, Bridge connection and live read.
 
 ## 7. Enabling writes
 
-Add this to the configuration and restart the client's Croton session:
-
-```json
-"mutations": {"enabled": true}
-```
-
-The catalog then also lists `mark_read`, `mark_unread`, `move_mail`,
-`archive_mail` and `trash_mail` (see [MCP.md](MCP.md#triage-writes-opt-in)).
-`enabled` accepts only a boolean; any other type, including null, stops
-startup.
+Add `"mutations": {"enabled": true}` to the configuration and restart the
+client's Croton session. The catalog then also lists `mark_read`,
+`mark_unread`, `move_mail`, `archive_mail` and `trash_mail` (see
+[MCP.md](MCP.md#triage-writes-opt-in)). A non-boolean `enabled`, including
+null, stops startup.
 
 Enabling makes the tools available; it approves no call. Croton cannot tell
 whether a human approved a write, so use a client that prompts before each
@@ -137,9 +136,9 @@ and restart.
 
 ## Updating and rolling back
 
-Close the client's Croton session, back up the binary and configuration,
-then `mv` the new binary over the old one; restore the backups to roll back.
-If Bridge's certificate changes, pin it again.
+Close the client's Croton session, back up the binary and configuration, then
+`install -m 0700` the new binary over `~/bin/croton-mcp`; restore the
+backups to roll back. If Bridge's certificate changes, pin it again.
 
 ## Troubleshooting
 
