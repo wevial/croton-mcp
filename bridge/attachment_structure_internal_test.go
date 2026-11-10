@@ -28,9 +28,6 @@ type attachmentStructureView struct {
 	Metadata AttachmentMetadata
 }
 
-// callAttachmentStructure invokes Adapter.GetMessageAttachmentStructure
-// through reflection, requires its result to hold exactly six fields and
-// copies it into the mirror.
 func startTLSHeaderAdapter(t *testing.T, mode testkit.TLSMode, options testkit.Options) (*testkit.Server, *Adapter) {
 	t.Helper()
 
@@ -74,6 +71,9 @@ func startTLSHeaderAdapter(t *testing.T, mode testkit.TLSMode, options testkit.O
 	return server, adapter
 }
 
+// callAttachmentStructure invokes Adapter.GetMessageAttachmentStructure
+// through reflection, requires its result to hold exactly six fields and
+// copies it into the mirror.
 func callAttachmentStructure(t *testing.T, ctx context.Context, adapter *Adapter, identifier string) (attachmentStructureResult, error) {
 	t.Helper()
 
