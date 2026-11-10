@@ -117,6 +117,6 @@ holds what Croton guards:
 - **No rate limit.** The frame cap bounds one frame; nothing limits how many
   valid frames or tool calls a client sends.
 - **Pre-release IMAP library.** `go-imap` v2 is pre-release; see
-  [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md).
+  [CONTRIBUTING.md](CONTRIBUTING.md#dependencies).
 - **Stderr after redirection.** Audit lines are content-free, but Croton does
   not protect stderr once an operator sends it somewhere shared.

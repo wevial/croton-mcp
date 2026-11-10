@@ -13,16 +13,18 @@ publishes a GitHub release. A tag containing a hyphen is a prerelease.
 6. Check: `gh release view vX.Y.Z` lists four `croton-mcp-vX.Y.Z-<os>-<arch>`
    binaries plus `SHA256SUMS`.
 
-To install published bytes, download the native binary and `SHA256SUMS`:
+To install published bytes, download the native binary and `SHA256SUMS` with
+the GitHub CLI (`gh`). Go is not needed; set `ASSET` to your OS (`linux` or
+`darwin`) and CPU (`amd64`, or `arm64` for ARM and Apple silicon):
 
 ```sh
 RELEASE_TAG=vX.Y.Z
-ASSET="croton-mcp-$RELEASE_TAG-$(go env GOHOSTOS)-$(go env GOHOSTARCH)"
+ASSET="croton-mcp-$RELEASE_TAG-linux-amd64"
 gh release download "$RELEASE_TAG" --repo wevial/croton-mcp --pattern "$ASSET" --pattern SHA256SUMS
 grep " $ASSET\$" SHA256SUMS | sha256sum -c -   # macOS: shasum -a 256 -c -
 ```
 
-On mismatch, STOP. Then follow User-owned layout in
-[USER-INSTALL.md](USER-INSTALL.md). Checksums provide integrity, not signatures
+On mismatch, STOP. Then install the binary as described in
+[INSTALL.md](INSTALL.md). Checksums provide integrity, not signatures
 or provenance. Publishing grants no authority to install, enable writes, or
 make a live `tools/call`.

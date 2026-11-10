@@ -1,525 +1,220 @@
-# Croton MCP server
-
-`croton-mcp` exposes the bridge layer as an MCP server over stdio. It is
-read-only unless its configuration file opts in to the Seen
-[triage tools](#triage-tools).
-Stdout carries protocol frames only; all diagnostics go to stderr. There is no
-network listener, and no MCP resources, prompts, Roots, Sampling, or Logging —
-a fail-closed method allowlist rejects everything except initialization,
-discovery, ping, and the tool methods.
-
-Five default-off triage tools sit behind a local `mutations.enabled` file
-opt-in, limited to Seen `UID STORE` and native `UID MOVE`, with approval owned
-by the trusted client. All five are implemented: the Seen tools `mark_read` and `mark_unread`, and the move tools
-`move_mail`, `archive_mail` and `trash_mail`. With the opt-in absent or false,
-the default, the catalog is the six read tools below and Mail remains
-read-only.
-
-## Protocol
-
-The server targets MCP `2026-07-28` and retains legacy compatibility through
-the official Go SDK (`modelcontextprotocol/go-sdk`).
-
-`TestIndependentStdioCatalog` provides independent legacy protocol coverage
-against the built Mail executable using standard-library JSON and pipes, without
-an MCP SDK client or Hermes. It initializes with `2025-11-25` and checks the exact
-six read-only tools, with one frame per write and a frame split across two writes.
-Each case uses a fresh child and synthetic secure config, verifies protocol-only
-stdout and clean shutdown after stdin EOF, and asserts the credential helper was
-never invoked. It performs no tool calls or Bridge/account access. This is generic
-protocol evidence, not validated Claude Code or Codex compatibility or branded-client
-certification.
-
-## Running
-
-```sh
-croton-mcp --config /absolute/path/to/croton.json
-```
-
-The configuration file is bounded JSON (64 KiB maximum, top-level object required,
-unknown, null, duplicate, and case-folded-alias fields rejected) mirroring
-`bridge.Config`. Secure configuration loading is supported on Linux and macOS,
-which share one descriptor-relative no-follow traversal over every path
-component. Windows and all other platforms compile but fail closed: they refuse
-to load configuration at all until they have an equivalent secure opener.
-The file must be an absolute, symlink-free regular path owned by the current
-user and must not grant group or world permissions (normally mode `0600`):
-
-```json
-{
-  "imap": {
-    "host": "127.0.0.1",
-    "port": 1143,
-    "tlsMode": "starttls",
-    "credentialCommand": ["/usr/local/bin/croton-credentials"],
-    "tls": {"spkiSha256": "<lowercase hex SPKI pin>"}
-  },
-  "bounds": {"maxSearchResults": 50},
-  "audit": {"enabled": true}
-}
-```
-
-The optional `mutations` object accepts only the boolean `enabled`. Absent or
-false, the default, registers only the six read tools; true also registers
-`mark_read`, `mark_unread`, `move_mail`, `archive_mail` and `trash_mail`. Any other type, including null, a string or a
-number, and any unknown key inside `mutations` fail startup with the static
-invalid-configuration error before any Bridge connection. Setting it is a
-local operator opt-in, not approval of any call. The example above and the
-installation guides leave it absent.
-
-Validation and clamping remain the bridge's responsibility; the loader only
-reads and decodes. `SIGTERM` and `SIGINT` shut the server down cleanly and log
-out the retained IMAP session.
-
-## Hermes registration
-
-Hermes runs Croton as a stdio MCP server. Two prerequisites: an absolute path
-to a built `croton-mcp` binary, and the absolute path of a secure
-configuration file as described above.
-
-```sh
-hermes mcp add croton --connect-timeout 60 \
-  --command /absolute/path/to/croton-mcp \
-  --args --config /absolute/path/to/croton.json
-```
-
-`--args` must come last: everything after it is passed through to Croton.
-`hermes mcp add` starts Croton once to discover its catalog and stores the
-resulting registration in the active Hermes profile.
-
-Verify and inspect the registration:
-
-```sh
-hermes mcp test croton
-hermes mcp list
-```
-
-`hermes mcp test croton` reports the six raw tool names Croton advertises:
-
-- `list_folders`
-- `search_mail`
-- `get_message`
-- `get_thread`
-- `list_attachments`
-- `select_digest_candidates`
-
-When Hermes registers those tools for model use, it prefixes each name with
-the server name, producing exactly six runtime names:
-
-- `mcp__croton__list_folders`
-- `mcp__croton__search_mail`
-- `mcp__croton__get_message`
-- `mcp__croton__get_thread`
-- `mcp__croton__list_attachments`
-- `mcp__croton__select_digest_candidates`
-
-Croton exposes no resources or prompts, so Hermes registers no prefixed
-`list_resources`, `read_resource`, `list_prompts`, or `get_prompt` utilities.
-
-Registration needs no `--env` secrets. Croton reads its own configuration file
-from the path given after `--config`; credential material belongs behind that
-file's `credentialCommand` and never on a command line or in profile
-documentation.
-
-To try the registration without touching an existing profile, point Hermes at a
-throwaway profile directory first:
-
-```sh
-export HERMES_HOME="$(mktemp -d)"
-```
-
-The profile and configuration changes made by the commands above are then
-confined to that temporary directory, leaving the existing profile untouched.
-
-Removal is the rollback:
-
-```sh
-hermes mcp remove croton
-```
-
-`hermes mcp remove` asks for interactive confirmation before dropping the
-registration; afterwards `hermes mcp list` no longer shows the `croton`
-registration (in the throwaway profile above, it lists nothing at all).
-
-## Tools
-
-By default exactly six read-only tools are registered, each with `readOnlyHint: true`,
-a closed (`additionalProperties: false`) bounded input schema, and
-server-authoritative validation and clamping that does not trust schema
-enforcement by the caller. Raw argument objects are capped at 24 KiB and reject
-non-objects, nulls, duplicate/case-folded-alias or unknown fields, excessive
-nesting, and trailing JSON values. String schemas publish both standard
-character `maxLength` and authoritative `x-maxBytes` annotations. The stdio
-transport admits only one unambiguous newline-delimited JSON object of at most
-64 KiB before handing each frame to the SDK:
-
-| Tool | Purpose |
-| ---- | ------- |
-| `list_folders` | Bounded folder list from the local Bridge. |
-| `search_mail` | Structured, bounded search in one mailbox; returns metadata. |
-| `get_message` | One message by opaque id: headers, normalized text, attachment metadata. |
-| `get_thread` | Local thread resolution with bounded header-only sibling reads. |
-| `list_attachments` | Attachment metadata from the message structure only; never attachment or body bytes. |
-| `select_digest_candidates` | Metadata-first digest selection composing STATUS and one bounded search; no body fetches. |
-
-Message identifiers are the bridge's opaque HMAC-bound ids; they are validated
-against a fresh UIDVALIDITY generation on every use.
-
-### Flat read identities
-
-Four flat read shapes carry numeric `uidvalidity` and `uid` beside the opaque
-`id` and the exact `mailbox`: each `search_mail` result, each
-`select_digest_candidates` candidate, and the parent message of `get_message`
-and `list_attachments`. Both values are positive 32-bit integers, 1 to
-4294967295. They come from the same successful read-only EXAMINE and UID FETCH
-generation that the bridge bound into that `id`, so clients never decode the
-opaque id. A read that cannot supply a positive tuple fails rather than
-returning a partial, zero or guessed identity, and a stale id fails with
-`stale_id` and no tuple. Attachment entries, digest counters and the
-`get_thread` aggregate carry no UID.
-
-These fields are read metadata only. They are not account authentication or
-approval, grant no write authority, and different accounts may share the same
-tuple. Account continuity is unavailable. The write pilot remains blocked.
-
-Each `get_thread` node carries its own `mailbox`, `uidvalidity` and `uid`,
-taken from the metadata already fetched for that member and associated by its
-opaque `key`. A node never borrows the target's tuple, an ordinal or its RFC
-`messageId`, and no extra read reconstructs a missing tuple. The thread's
-top-level `id` and `mailbox` are context and carry no UID. A target without a
-positive tuple fails with `unavailable` and a stale target fails with
-`stale_id`. A stale sibling is omitted as before, and a sibling without a
-positive tuple is omitted and the result is marked truncated. Each omitted
-sibling, stale or not, is reported only by a reason-only `unavailableMembers`
-record and marks the result truncated.
-
-Bounded output keeps every retained identity exact. Oversized search results,
-digest candidates and thread nodes are removed whole, so each retained item
-keeps its exact tuple, mailbox and opaque id. The `get_message` and
-`list_attachments` fallbacks drop content but keep the parent's exact
-identity; when even that cannot fit, the call fails with `bounds_exceeded`
-instead of returning a shortened identity. An empty fallback list contains no
-selectable item, and a thread fallback's top-level `id` and `mailbox` are
-bounded context, not a selectable identity, and it carries no
-`unavailableMembers` records. Thread shrinking removes whole
-`unavailableMembers` records before whole nodes and never alters a retained
-node's identity or `truncation` flags. A truncated or fallback result
-lists fewer items, but every item it retains is a complete selectable
-identity.
-
-### Attachment size and MIME completeness
-
-Each attachment entry of `get_message` and `list_attachments` carries
-`hasDeclaredSize`. When it is `true`, `declaredSize` is present and is the
-nonnegative `size` parameter the sender declared in `Content-Disposition`,
-including a declared `0`. When it is `false` the size is unknown and
-`declaredSize` is omitted; a missing or invalid declaration is never reported
-as zero. The value is a sender-controlled declaration, not a count of decoded
-bytes or of the transferred part.
-
-Both results also carry a `truncation` object that names every limit that
-shaped them. It is always present and holds only `true` keys, so a complete
-result has an empty `truncation` object and no `truncated` marker.
-`get_message` reasons are `headers`, `headerCount`, `text`, `mimeParts`,
-`mimeDepth`, `attachments`, `references` and `output`.
-`list_attachments` reasons are `mimeParts`, `mimeDepth`, `attachments` and
-`output`. Header, text and reference limits do not apply to a listing and
-never mark it incomplete. `mimeParts` and `mimeDepth` mean MIME parts or
-nested entities beyond the bounds were not examined, so attachments may be
-missing; `headerCount` means the same for header fields, but only
-`get_message` reports it. For a listing, `mimeDepth` also marks an
-embedded message whose contents were not enumerated. `attachments` means
-entries beyond the 20-entry cap were omitted or their metadata was shortened.
-`output` means the 100 000-byte result cap removed text or whole attachment
-entries, or replaced the result with its identity-only fallback; earlier
-reasons are kept. `truncated` is `true` whenever any listed reason is.
-
-An empty `attachments` list with an empty `truncation` object means the
-message structure declared no attachments. An empty list with any reason is
-incomplete, not proof that the message has no attachments.
-
-Listing attachments requests UID BODYSTRUCTURE only; it does not fetch or
-parse the message body. It never returns attachment bytes, transfer sizes,
-decoded sizes, the message size, body text, headers, read state or per-part
-identifiers. Each attachment listing runs on the pooled Bridge session like
-every other read, so it opens no new connection, runs no credential helper and
-does not log in again once that session exists. It confirms the opaque id's
-UIDVALIDITY generation and UID before its one structure FETCH, so a listing
-still fails with a code-only error when the id is stale or missing, when the
-structure response exceeds its 128 KiB budget or is malformed, or when the
-session cannot be established.
-A large raw message body alone is not a reason to refuse a listing. A Mail
-surface without the structure read refuses `list_attachments` as
-`unsupported` and never falls back to a body read.
-
-`get_message` still fetches and parses the bounded raw MIME message with
-`BODY.PEEK[]` and never returns attachment bytes. A message whose raw MIME or
-header block exceeds the parser's bounds may be refused by `get_message` with
-an error code instead of a result.
-
-### Search order and limits
-
-`search_mail` and the search behind `select_digest_candidates` return results
-in strictly descending UID order, whatever order the server sends SEARCH and
-FETCH replies in. UID order is not header `Date` or delivery-date order, so a
-page is not a chronological, latest-mail or complete-inventory guarantee.
-
-Each search examines at most 8 UID windows of 100 UIDs each, newest first. A
-dense window with more matches than the remaining result budget is not a
-failure: the bridge reads the whole bounded SEARCH response, keeps the highest
-UIDs that fit the budget, fetches metadata for only those, and reports
-`truncated: true`. `truncated` is also set when an older UID range is left
-unexamined. It stays false only when every window down to UID 1 was examined
-and no match was left out. The result budget defaults to 50 and is capped at
-250. The SEARCH response is still capped at 4096 bytes. An oversized response,
-or a UID that is zero, outside its window or repeated in the raw SEARCH reply
-or ESEARCH `ALL` set, fails the whole call with a code and returns no partial
-page.
-
-This release has no continuation cursor: a truncated search cannot be resumed
-from where it stopped. Ordering and truncation describe read results only and
-do not mean any write path is ready.
-
-### Search metadata
-
-Each `search_mail` result and each `select_digest_candidates` candidate also
-carries `from`, `date`, `dateSource`, `readState` and, when it applies,
-`metadataTruncated`. All of them come from the same read-only metadata FETCH
-that produced the entry's `id`, `mailbox`, `uidvalidity` and `uid`: the
-`BODY.PEEK[HEADER]` literal and the `FLAGS` item. No body, `INTERNALDATE` or
-write command is used, and no tool, input or configuration is added.
-
-- `from` is the decoded `From` header text, capped at 512 UTF-8 bytes. It is
-  omitted when the header is missing, repeated or invalid. It is untrusted,
-  sender-controlled text and proves no account, address or sender identity.
-- `metadataTruncated` is `true` only when `from` was cut to its 512-byte cap,
-  and is omitted otherwise.
-- `date` is the message's own header `Date`, normalized to RFC 3339 UTC. It is
-  sender-controlled and is not arrival, delivery or `INTERNALDATE` time.
-- `dateSource` is `header` when `date` is present and `unknown` when the header
-  `Date` is missing, repeated or invalid; `date` is then omitted. No other
-  clock is substituted.
-- `readState` is `read` when `FLAGS` includes `\Seen`, `unread` when `FLAGS`
-  lacks it, and `unknown` when no `FLAGS` item was observed. Unread is never
-  guessed.
-
-An unknown date or read state does not fail an otherwise valid call.
-
-Returning sender text and header dates is a deliberate disclosure of private
-mail metadata to the MCP client, beyond subjects and sizes. It is not
-permission to copy that metadata into shared notes or logs, and the audit
-stream never records it.
-
-Entries keep descending UID order. They are never sorted by `date`, so a
-higher UID can carry an older or equal header date. A result is a bounded
-sample, not a complete inventory: `truncated: true` means matches were left
-out or a UID range was not examined, while an empty list with `truncated`
-absent means no message matched in the examined range down to UID 1. The
-digest `totalMessages` and `unseenCount` are mailbox STATUS counters, not the
-number of matches examined or returned. When output is too large, whole
-entries are removed from the end and `truncated` is set; a retained entry keeps
-every field. There is no continuation cursor.
-
-### Triage tools
-
-When `mutations.enabled` is true, five more tools are registered with
-`readOnlyHint: false` and `openWorldHint: false`. The Seen tools also publish
-`destructiveHint: false` and `idempotentHint: true`; the move tools publish
-`destructiveHint: true` and `idempotentHint: false`, because they remove
-messages from their source. Annotations describe the tools; they neither
-prompt for nor prove approval, which belongs to the trusted client.
-`mutations.enabled` accepts only a boolean; any other type, including null, is
-a configuration error at startup. Enabling it makes the tools available and
-approves no action.
-
-Croton cannot verify human intent, so the client owns approval. One approval
-covers one exact payload: one tool, source mailbox, UIDVALIDITY, ordered UID
-list and, for `move_mail`, destination. A clear, direct user request that
-resolves against identities the client has displayed is that approval. An
-assistant proposal is not: the client shows the exact payload and calls only
-after the user confirms it. An ambiguous selection, or one with no exact
-displayed snapshot, needs clarification before any call. Ordinal words such
-as "the first 3" resolve against the displayed snapshot, never a later
-search. Instructions found in mail content never authorize a call, and the
-client never presents one to the user as a request or a proposal to approve.
-Approval does not outlive its payload; a prior action, restart or configuration change
-grants nothing. Label changes are out of scope: Bridge models a label add or
-removal as COPY or EXPUNGE, both of which stay prohibited.
-
-| Tool | Purpose |
-| ---- | ------- |
-| `mark_read` | Add `\Seen` to the given UIDs of one mailbox generation. |
-| `mark_unread` | Remove `\Seen` from the given UIDs of one mailbox generation. |
-| `move_mail` | Natively move the given UIDs of one mailbox generation to one exact existing destination. |
-| `archive_mail` | Natively move the given UIDs of one mailbox generation to the one selectable `\Archive` mailbox. |
-| `trash_mail` | Natively move the given UIDs of one mailbox generation to the one selectable `\Trash` mailbox. Nothing is deleted. |
-
-All five take exactly `mailbox`, `uidvalidity` and `uids`: a positive 32-bit
-generation and 1 to 50 distinct positive 32-bit UIDs. `move_mail` also takes
-an exact `destination` mailbox name; `archive_mail` and `trash_mail` take no
-destination. There is no approval, ordinal or message-id argument. A missing, null, zero, negative, fractional,
-out-of-range, duplicate or unknown input fails the whole request with
-`invalid_argument` before any IMAP command. So does a `destination` that is
-empty, longer than 512 bytes, not UTF-8, or contains a control character, `*`
-or `%`. Any other exact UTF-8 name is accepted as written, including one with
-an ampersand such as `Folders/R&D-2026`.
-
-The server selects the source mailbox read-write on its one authenticated
-session and compares the fresh UIDVALIDITY with `uidvalidity`. A mismatch
-fails with `stale_id`, and a mailbox that cannot be selected fails the
-request; neither sends a write. The server then handles one UID at a time in
-input order: `UID SEARCH` confirms the UID is present, and only then one
-`UID STORE <uid> +FLAGS.SILENT (\Seen)` or `-FLAGS.SILENT (\Seen)` is sent.
-No other flag, STORE form, MOVE, COPY or EXPUNGE is sent, and the read tools
-keep their `BODY.PEEK` fetches.
-
-`move_mail` uses the same selection and presence check, then resolves its
-destination from a fresh ordinary `LIST "" "*"` on that same session before
-every UID, without selection or `RETURN` options, and sends one native
-`UID MOVE <uid> <destination>`. Every listed wire name is decoded from
-modified UTF-7, so a malformed wire name anywhere in the account fails the
-listing; if nothing has been moved yet the request fails with no write. The
-destination must match exactly one listed name, INBOX case-insensitively and
-every other name exactly, and be selectable: not `\Noselect` or
-`\NonExistent`, and not a `\All` or `\Flagged` virtual view. It must then be
-INBOX, an entry beneath `Folders/`, or a hierarchy-root mailbox carrying
-`\Sent`, `\Drafts`, `\Junk`, `\Archive` or `\Trash`. A name such as
-`Archive` without the attribute, anything under `Labels/` and every other
-mailbox are refused. A destination equal to the source, or a server that does
-not advertise `MOVE`, refuses every UID before any LIST or write. There is no
-COPY, STORE or EXPUNGE fallback.
-
-`archive_mail` and `trash_mail` follow `move_mail` exactly, except that each
-fresh listing maps the destination from protocol attributes: the one listed
-mailbox carrying `\Archive` or `\Trash` respectively. Neither the
-`SPECIAL-USE` capability nor `LIST RETURN (SPECIAL-USE)` is needed, and a
-name such as `Archive` or `Trash` without the attribute never maps. No holder,
-several holders, or a holder that fails any `move_mail` destination rule above,
-including `Labels/`, virtual views and nonselectable mailboxes, is
-`unsupported`. So is a holder named `All Mail` or `Starred`, Bridge's
-aggregate views, even without `\All` or `\Flagged`. A holder equal to the
-source mailbox is refused. Because the mapping is redone before every UID, a
-mailbox that gained, lost or now shares the attribute is resolved afresh.
-`trash_mail` only moves; it never deletes, expunges or empties Trash.
-
-The result is `{"results": [...]}` with one entry per input UID in input
-order, each with `uid`, `outcome` and an optional `code` from the error
-vocabulary below:
-
-- `applied`: the STORE or MOVE completed with OK.
-- `refused`: the UID is not present (`not_found`), or the server answered NO
-  or BAD (`unavailable`). Later UIDs continue. For the move tools, an
-  unsupported destination or a missing `MOVE` capability is `unsupported`
-  and refuses that UID and every later one; a NO after validation, for
-  example because the destination disappeared, refuses only that UID.
+# Croton MCP tool reference
+
+`croton-mcp` is a stdio MCP server. It targets MCP `2026-07-28` and keeps the
+legacy `2025-11-25` `initialize` flow through the official Go SDK. Install and
+registration steps are in [INSTALL.md](INSTALL.md).
+
+## Protocol surface
+
+- Stdout carries only JSON-RPC frames, tool errors included; audit lines and
+  startup errors go to stderr.
+- A fail-closed allowlist serves only `initialize`, `ping`, `server/discover`,
+  `tools/list`, `tools/call` and the `initialized`, `cancelled` and
+  `progress` notifications. Everything else is `method not supported`.
+- No resources, prompts, Roots, Sampling or MCP Logging.
+- Each inbound frame must be one strictly decoded JSON object of at most
+  64 KiB before the SDK sees it.
+- Tool arguments are capped at 24 KiB and decoded strictly: one object, no
+  unknown, null, duplicate or case-folded-alias fields, no trailing values.
+  Schemas are closed (`additionalProperties: false`) and publish `maxLength`
+  and `x-maxBytes`, but the server validates and clamps every value itself.
+- Every successful result is one JSON text item of at most 100 000 bytes.
+  Oversize results shrink structurally (whole list items removed, text halved
+  on rune boundaries) and set `truncated`; JSON is never byte-sliced. A result
+  that cannot shrink below the cap fails with `bounds_exceeded`.
+
+## Read tools
+
+Six tools are always registered, with `readOnlyHint: true` and
+`openWorldHint: false`. Reads use `EXAMINE` and `BODY.PEEK`, so they never
+set `\Seen`.
+
+| Tool | Arguments |
+| --- | --- |
+| `list_folders` | none |
+| `search_mail` | `mailbox` (required), `since`, `before` (RFC 3339), `sender`, `subject` (≤ 1024 bytes), `unreadOnly` (default false), `limit` (1–250, default 50) |
+| `get_message` | `messageId` (required) |
+| `get_thread` | `messageId` (required), `maxMessages` (1–20, default 10) |
+| `list_attachments` | `messageId` (required) |
+| `select_digest_candidates` | `mailbox` (required), `sinceHours` (1–168, default 24), `limit` (1–50, default 20), `unreadOnly` (default true; false includes read mail) |
+
+Mailbox arguments are 1 to 512 bytes. `limit` is further clamped by the
+configured `bounds.maxSearchResults`.
+
+### Message identity
+
+The `messageId` argument, every returned `id` and each thread node `key` are
+opaque, HMAC-bound to the mailbox, UIDVALIDITY and UID, not to the account.
+Every use re-checks the current UIDVALIDITY; a stale or forged ID fails with
+`stale_id`. If the helper switches accounts, an old ID can reach a different
+message with the same tuple, so run a fresh read after any account change.
+
+Search results, digest candidates, `get_thread` nodes and the parent of
+`get_message` and `list_attachments` also carry the exact `mailbox` and
+positive 32-bit `uidvalidity` and `uid` from the same read, or the read fails.
+These fields are the input to the triage writes; they grant no write
+authority. Output shrinking removes whole items, so retained identity is exact.
+
+### `list_folders`
+
+`{"folders": [{"name", "delimiter"}], "truncated"}`, at most
+`bounds.maxFolderResults` (default 200, ceiling 1000) entries.
+
+### `search_mail`
+
+`{"results": [...], "truncated"}`. Each result carries `id`, `mailbox`,
+`uidvalidity`, `uid`, `subject`, `size`, `from`, `date`, `dateSource`,
+`readState` and, when `from` was cut, `metadataTruncated`. One metadata FETCH
+of `BODY.PEEK[HEADER]` and `FLAGS` supplies them; no body is read.
+
+- `from` is the decoded `From` header, at most 512 bytes; omitted when
+  missing, repeated or invalid. It is sender-controlled and proves nothing.
+- `date` is the header `Date` in RFC 3339 UTC, with `dateSource: "header"`;
+  otherwise it is omitted and `dateSource` is `unknown`. It is not arrival time.
+- `readState` is `read`, `unread`, or `unknown` when no `FLAGS` was seen.
+
+Results are in strictly descending UID order, not date order. A search walks
+at most 8 windows of 100 UIDs, newest first. A raw SEARCH response is capped
+at 4096 bytes; an oversize response or a zero, out-of-window or repeated UID
+fails the whole call. `truncated` is set when matches were dropped or an older
+UID range was not examined. There is no continuation cursor.
+
+### `get_message`
+
+Fetches the raw message with `BODY.PEEK[]` within `bounds.maxBodyBytes`
+(default 256 KiB, ceiling 1 MiB) and returns `id`, `mailbox`, `uidvalidity`,
+`uid`, `size`, `headers`, `text`, `textSource` (`plain`, `html` or `none`),
+attachment metadata and a `truncation` object. The parser uses fixed limits
+that no configuration changes: 256 KiB raw input, 16 KiB and 100 header
+fields, 50 MIME parts, depth 10, 256 KiB decoded text, 20 attachment entries
+and 50 references. A message beyond them may fail with a code instead of a
+result. Attachment bytes are dropped during normalization and never returned.
+
+`truncation` is always present and holds only `true` keys among `headers`,
+`headerCount`, `text`, `mimeParts`, `mimeDepth`, `attachments`, `references`
+and `output`. `truncated` is true whenever any key is.
+
+### `list_attachments`
+
+Reads only `UID BODYSTRUCTURE`, never the body, within a 128 KiB response
+budget, and returns `id`, `mailbox`, `uidvalidity`, `uid`, `attachments` and
+`truncation` (keys `mimeParts`, `mimeDepth`, `attachments`, `output`). Each
+entry has `filename`, `contentType`, `disposition` and `hasDeclaredSize`;
+`declaredSize` is present only when the sender declared a valid size, and is
+that declaration, not a byte count. No bytes, part identifiers, headers or
+read state are returned. An empty list with an empty `truncation` means the
+structure declared no attachments; with any reason it is incomplete.
+
+### `get_thread`
+
+Returns `id`, `mailbox`, `nodes`, `truncated` and optional
+`unavailableMembers`. The target and its same-subject candidates (base subject
+with repeated `Re:`, `Fw:` and `Fwd:` stripped) in the target mailbox are read
+with header-only `BODY.PEEK[HEADER]`; bodies are never fetched. Reply links
+come from `References` and `In-Reply-To`; an unlinked same-subject sibling is
+a root at depth 0.
+
+Each node carries `key`, `mailbox`, `uidvalidity`, `uid`, `messageId` (the RFC
+`Message-ID`; pass `key` to read tools), `parentKey`, `depth`, `subject`,
+`from`, `date` and a `truncation` object (`headers`, `headerCount`,
+`references`). `maxMessages` bounds the nodes and the reads: one target read
+plus at most `maxMessages - 1` sibling attempts.
+
+A sibling that is stale, lacks a positive tuple or has a malformed RFC 2047
+header is omitted and reported only as `{"reason": "stale_id" |
+"invalid_identity" | "malformed_header"}` in `unavailableMembers`. `truncated`
+is set when a node hit a header limit, a sibling was omitted, or eligible
+siblings were not attempted. A target that is stale fails with `stale_id`;
+one with a malformed encoded word or no positive tuple fails with
+`unavailable`.
+
+### `select_digest_candidates`
+
+Composes one `STATUS` and one bounded search since `sinceHours` ago, with no
+body fetch. Returns `mailbox`, `candidates` (same shape and order as
+`search_mail` results), `totalMessages`, `unseenCount` and `truncated`. The
+two counters are mailbox STATUS values, not the number of matches examined.
+
+## Triage writes (opt-in)
+
+With `"mutations": {"enabled": true}` in the configuration, five more tools
+are registered, with `readOnlyHint: false` and `openWorldHint: false`. Absent
+or false, the default, they do not exist and Croton sends no write. Croton
+never sends, deletes, expunges, copies or changes labels.
+
+| Tool | Write | Hints |
+| --- | --- | --- |
+| `mark_read` | `UID STORE <uid> +FLAGS.SILENT (\Seen)` | idempotent, not destructive |
+| `mark_unread` | `UID STORE <uid> -FLAGS.SILENT (\Seen)` | idempotent, not destructive |
+| `move_mail` | `UID MOVE <uid> <destination>` | destructive |
+| `archive_mail` | `UID MOVE` to the `\Archive` mailbox | destructive |
+| `trash_mail` | `UID MOVE` to the `\Trash` mailbox; nothing is deleted | destructive |
+
+Annotations describe the tools; they neither prompt for nor prove approval.
+Croton cannot verify that a human approved a call. The client owns approval,
+and each tool description asks the model to call only for an exact payload the
+user approved.
+
+### Arguments
+
+All five take exactly `mailbox`, `uidvalidity` (positive 32-bit) and `uids`
+(1 to 50 distinct positive 32-bit UIDs); `move_mail` also takes
+`destination`. There is no approval, ordinal or opaque-ID argument. A missing,
+null, zero, out-of-range, duplicate or unknown value fails the request with
+`invalid_argument` before any IMAP command. So does a destination that is
+empty, over 512 bytes, not UTF-8, or contains a control character, `*` or `%`.
+
+### Behaviour
+
+1. The source mailbox is selected read-write on the one session and its fresh
+   UIDVALIDITY compared with `uidvalidity`. A mismatch fails with `stale_id`
+   and nothing is written.
+2. UIDs are handled one at a time in input order. `UID SEARCH` confirms the
+   UID is present before its one write.
+3. `move_mail` refuses every UID as `unsupported`, before any IMAP command,
+   when `destination` equals the source; every move tool refuses every UID,
+   before any LIST or write, when the server lacks `MOVE`. No COPY, STORE or
+   EXPUNGE fallback exists.
+4. Before each UID, move tools resolve the destination from a fresh
+   `LIST "" "*"` on that session. `move_mail` needs exactly one listed match
+   (INBOX case-insensitively, others exactly) that is selectable (not
+   `\Noselect`, `\NonExistent`, `\All` or `\Flagged`) and is INBOX, under
+   `Folders/`, or a hierarchy root carrying `\Sent`, `\Drafts`, `\Junk`,
+   `\Archive` or `\Trash`. `Labels/` and everything else are refused.
+   `archive_mail` and `trash_mail` map the one mailbox carrying `\Archive` or
+   `\Trash`, which must pass the same rules and is never `All Mail` or
+   `Starred`; none or several holders, or a holder equal to the source, is
+   `unsupported` for that UID and every later one.
+
+### Result
+
+`{"results": [{"uid", "outcome", "code"}]}`, one row per UID in input order:
+
+- `applied`: the STORE or MOVE returned OK.
+- `refused`: the UID is gone (`not_found`) or the server answered NO or BAD
+  (`unavailable`); later UIDs continue. An unsupported destination or missing
+  `MOVE` is `unsupported` and refuses that UID and every later one.
 - `unknown`: the connection dropped or the command deadline expired after
-  dispatch (`unavailable`, `timed_out` or `canceled`). The session is
-  discarded, nothing is retried or replayed, and every later UID is
-  `not_attempted`.
-- `not_attempted`: never dispatched. If the presence check itself fails, that
-  UID carries a code and every later UID is also not attempted.
+  dispatch. The session is discarded, nothing is retried, and every later UID
+  is `not_attempted`. Run a fresh read before any new call.
+- `not_attempted`: never dispatched. A failing presence check or move `LIST`
+  marks that UID and every later one `not_attempted`; earlier writes stay
+  applied. A move call with nothing applied yet fails whole with that code.
 
-Each IMAP step has its own `imap.commandTimeoutMs` deadline, so a batch is
-bounded. To reconcile an `unknown`, run a fresh read such as `search_mail`,
-then make a new, separately approved call. The in-process tests in
-`internal/mcpserver/triage_test.go` witness, against the synthetic stateful
-fixture, the applied outcomes of each write tool, a destination missing
-before dispatch, and a connection dropped after a STORE or MOVE applied; no
-test times out a STORE or MOVE, and no live account write has been
-exercised.
-
-### Mail thread membership
-
-Thread results may include unlinked messages with the same base subject.
-`get_thread` gathers bounded same-subject candidates from the target mailbox;
-the base subject strips repeated `Re:`, `Fw:`, and `Fwd:` prefixes. Reply
-relationships are resolved from `References` and `In-Reply-To` headers.
-An unlinked subject sibling has depth 0 and no parent; subject similarity alone does not establish a reply relationship.
-
-Each member is read with one selected header-only `BODY.PEEK[HEADER]` FETCH
-whose same-attempt metadata supplies the node's tuple; the message body is
-never fetched, so a large body does not block thread metadata. An adapter
-without the header-only read fails with `unsupported` rather than falling back
-to body reads.
-The first `Subject`, `Message-ID`, `In-Reply-To` and `References` fields of
-that header block are retained independently of the generic header count
-bound, so a threading field after the counted fields still drives subject
-candidate search and reply links. This retention is limited to those four
-fields within the existing header byte, reference and value bounds; other
-omitted fields stay omitted, `headerCount` still reports the omission, and
-thread membership remains the same bounded candidate search rather than a
-complete inventory.
-`maxMessages` bounds the returned nodes and header reads: one target read plus
-at most `maxMessages - 1` attempted sibling reads after one bounded search, and
-failed attempts consume that budget. When matching siblings are omitted
-because of this bound, the result reports `truncated: true`.
-The `get_thread` result keys are `id`, `mailbox`, `nodes`, `truncated` and `unavailableMembers`.
-Each node carries `key`, `mailbox`, `uidvalidity`, `uid`, `messageId`, `parentKey`, `depth`, `subject`, `from`, `date` and `truncation`.
-A node's `truncation` object carries only the true reasons among `headers`, `headerCount` and `references`, and is empty when the node's headers are complete.
-The aggregate `truncated` is true when any node reports a header limit, when
-an attempted sibling is omitted for `stale_id`, `invalid_identity` or `malformed_header`,
-or when eligible siblings were not attempted.
-
-The optional `unavailableMembers` list has one record per attempted sibling
-that was omitted. Each `unavailableMembers` record is `{"reason": ...}` with one of `stale_id`, `invalid_identity` or `malformed_header`, at most 19 records.
-Records are nonselectable failed-attempt records, not a mailbox inventory:
-they carry no id, tuple, header or error text, and unattempted or
-subject-mismatched candidates are not listed. `stale_id` marks a sibling that
-no longer exists in its generation; `invalid_identity` is the existing
-defensive drop of a read without a positive tuple; `malformed_header` marks a
-sibling whose canonical header normalization rejected a malformed RFC 2047
-encoded word. Only that typed normalization failure is sibling-local: healthy
-siblings stay, and an omitted sibling's `Message-ID` never becomes a parent.
-A target whose own header has a malformed encoded word fails `get_thread` with `unavailable`, without a sibling scan, while `get_message` still maps it to `internal`.
-Malformed header syntax and over-bound header blocks still fail the whole call
-with the mapped `unavailable` (IMAP protocol) or `bounds_exceeded` error, as
-do transport, authentication, credential helper, timeout and cancellation
-failures and every other normalization code; no partial graph is returned.
-`TestThreadHeaderResults` witnesses these records and refusals.
-
-`TestGetThreadSyntheticWire` and `TestThreadHeaderTransport` verify linked and
-independent-root membership, the one-message bound, and read-only header-only
-PEEK fetches over loopback TLS using synthetic mail.
-
-## Output
-
-Serialized tool results are capped (100 000 bytes). Oversize results are
-truncated structurally — whole list items or text halved on rune boundaries —
-and re-marshaled, so output is always syntactically valid JSON with a
-`truncated` marker. Search-backed tools also set `truncated` when the bridge's
-bounded UID-window traversal leaves any mailbox range unexamined, even when the
-returned item count is below the tool's requested limit. Serialized JSON is
-never byte-sliced.
+Each IMAP step runs under `imap.commandTimeoutMs`, so a batch is bounded.
 
 ## Errors
 
-Adapter failures map to a stable, secret-free vocabulary:
-`invalid_argument`, `not_found`, `stale_id`, `bounds_exceeded`, `timed_out`,
-`canceled`, `unavailable`, `unsupported`, `internal`. Unknown or wrapped
-errors collapse to `internal`; no credentials, endpoints, mailbox data, or
-stack details can reach the protocol stream.
+Every failure is `{"error": {"code": ...}}` with `isError: true` and one code
+from `invalid_argument`, `not_found`, `stale_id`, `bounds_exceeded`,
+`timed_out`, `canceled`, `unavailable`, `unsupported` or `internal`. Unknown
+errors and handler panics collapse to `internal`; no error text, credential,
+endpoint or mailbox data reaches the client.
 
 ## Audit
 
-With `audit.enabled`, one JSON line per tool call is written to stderr using
-only the allowlisted vocabulary `event`, `tool`, `outcome`, `code`,
-`truncated`. Tool names, outcomes, and codes are re-validated against fixed
-sets before logging; caller inputs, folder names, identifiers, subjects,
-addresses, and error text never appear. A triage call that returns per-UID
-results logs `outcome` `ok`; its UIDs and per-UID outcomes are not logged.
-
-With the same opt-in setting, Mail `Serve` completion writes exactly one
-independent lifecycle JSON line to the diagnostic stream (stderr), never to
-the JSON-RPC stream. Its only fields are `event` (always `transport_end`) and
-`category`, from this closed vocabulary:
-
-- `normal_close`: nil, EOF, or MCP connection closed.
-- `canceled`: context cancellation.
-- `client_disconnected`: a broken pipe (`EPIPE`); this is not proof of user intent.
-- `transport_failure`: an unclassified transport failure.
-
-Classification uses typed error identity, including wrapped errors, and never
-error text. No underlying error detail is emitted. Normal closure and
-cancellation still return success; other failures still return the static
-`server unavailable` error. With audit disabled, no lifecycle event is
-written. Direct `Connect` behavior is unchanged.
+With `"audit": {"enabled": true}`, each tool call writes one stderr line with
+only `event` (`tool_call`), `tool`, `outcome` (`ok` or `error`), `code` and
+`truncated`. Arguments, mailbox names, IDs, subjects, addresses and error text
+never appear. A triage call that returns per-UID rows logs `ok`; its UIDs and
+row outcomes are not logged.

@@ -52,7 +52,7 @@ The configuration names a loopback IP endpoint, `starttls` or `implicit`, a
 `tls.trustAnchorFile` (the exact Bridge leaf PEM) or `tls.spkiSha256` pin, and
 an absolute `credentialCommand` that prints the Bridge username and password as
 JSON. Register the binary with your MCP client as a stdio server. See
-[docs/USER-INSTALL.md](docs/USER-INSTALL.md) for the full procedure.
+[docs/INSTALL.md](docs/INSTALL.md) for the full procedure.
 
 ## How it limits access
 
