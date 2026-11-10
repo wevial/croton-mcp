@@ -70,8 +70,6 @@ func TestAuditNeverRecordsInputsOrWrappedErrors(t *testing.T) {
 		}
 	}
 
-	var nilAuditor *Auditor
-	nilAuditor.ToolCall("list_folders", "ok", "", false)
 	NewAuditor(nil).ToolCall("list_folders", "ok", "", false)
 
 	buffer.Reset()

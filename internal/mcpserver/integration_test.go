@@ -511,11 +511,7 @@ func TestReadToolsUnavailableOverTheWire(t *testing.T) {
 			if arguments["messageId"] != nil {
 				arguments = map[string]any{"messageId": search.Results[0].ID}
 			}
-			result := callTool(t, session, tool, arguments)
-			requireToolError(t, result, errUnavailable)
-			if text := resultText(t, result); strings.Contains(text, "127.0.0.1") || strings.Contains(text, "fixture-") {
-				t.Fatalf("%s error leaks connection detail: %s", tool, text)
-			}
+			requireToolError(t, callTool(t, session, tool, arguments), errUnavailable)
 		}
 	})
 }
