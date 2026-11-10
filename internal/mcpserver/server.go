@@ -9,11 +9,6 @@ import (
 	"github.com/wevial/croton-mcp/bridge"
 )
 
-const (
-	currentProtocolVersion = "2026-07-28"
-	legacyProtocolVersion  = "2025-11-25"
-)
-
 // version is stamped at release with
 // -ldflags "-X github.com/wevial/croton-mcp/internal/mcpserver.version=<tag>".
 var version = "dev"
@@ -28,13 +23,8 @@ type Mail interface {
 	SearchMailPage(ctx context.Context, query bridge.SearchQuery) (bridge.SearchPage, error)
 	GetMessageMetadata(ctx context.Context, identifier string) (bridge.MessageMetadata, error)
 	GetMessageBody(ctx context.Context, identifier string) ([]byte, error)
-}
-
-// MessageHeaderReader is the optional selected header-only read beside Mail.
-// get_thread requires it and refuses as unsupported without falling back to
-// body reads; *bridge.Adapter satisfies it.
-type MessageHeaderReader interface {
 	GetMessageHeaders(ctx context.Context, identifier string) (bridge.MessageHeaders, error)
+	GetMessageAttachmentStructure(ctx context.Context, identifier string) (bridge.MessageAttachmentStructure, error)
 }
 
 // Options configures Croton's MCP server.
@@ -47,10 +37,9 @@ type Options struct {
 	Audit  *Auditor
 }
 
-// Server wraps the SDK server with per-connection cancellation behavior.
+// Server is Croton's configured SDK server.
 type Server struct {
-	sdk   *mcp.Server
-	audit *Auditor
+	sdk *mcp.Server
 }
 
 // New constructs Croton's MCP server exposing the six read-only tools, plus the
@@ -69,17 +58,34 @@ func New(options Options) *Server {
 
 	registerTools(sdkServer, options)
 
-	return &Server{sdk: sdkServer, audit: options.Audit}
+	return &Server{sdk: sdkServer}
 }
 
 // Serve runs an already-constructed server over a persistent MCP transport.
 func Serve(ctx context.Context, server *Server, transport mcp.Transport) error {
-	err := server.Run(ctx, transport)
-	server.audit.transportEnd(err)
+	err := server.sdk.Run(ctx, cancelingTransport{Transport: transport})
 
 	if err == nil || errors.Is(err, io.EOF) || errors.Is(err, mcp.ErrConnectionClosed) || errors.Is(err, context.Canceled) {
 		return nil
 	}
 
 	return errServerUnavailable
+}
+
+// cancelingTransport closes its connection when the Serve context ends. The
+// SDK's session Close waits for in-flight handlers; closing the connection
+// instead makes the SDK cancel them, so a canceled server unwinds.
+type cancelingTransport struct {
+	mcp.Transport
+}
+
+func (transport cancelingTransport) Connect(ctx context.Context) (mcp.Connection, error) {
+	connection, err := transport.Transport.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	context.AfterFunc(ctx, func() { _ = connection.Close() })
+
+	return connection, nil
 }

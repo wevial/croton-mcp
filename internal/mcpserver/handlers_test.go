@@ -47,24 +47,15 @@ func TestToolErrorsMapBridgeCodesStably(t *testing.T) {
 	}
 }
 
-func TestToolsRefuseMissingCapabilitiesAndPanics(t *testing.T) {
+func TestToolsRefuseMissingMailAndPanics(t *testing.T) {
 	t.Parallel()
 
-	// Embedding only Mail hides the optional header and structure readers;
-	// a nil embedded Mail panics on every call.
-	readerless := connectTestClient(t, Options{Mail: struct{ Mail }{&fakeMail{}}})
-	requireToolError(t, callTool(t, readerless, "get_thread", readCalls["get_thread"]), errUnsupported)
-	requireToolError(t, callTool(t, readerless, "list_attachments", readCalls["list_attachments"]), errUnsupported)
-
+	// A nil embedded Mail panics on every call.
 	absent := connectTestClient(t, Options{})
 	panicking := connectTestClient(t, Options{Mail: struct{ Mail }{}})
 	for tool, arguments := range readCalls {
 		requireToolError(t, callTool(t, absent, tool, arguments), errUnavailable)
-		want := errInternal
-		if tool == "get_thread" || tool == "list_attachments" {
-			want = errUnsupported
-		}
-		requireToolError(t, callTool(t, panicking, tool, arguments), want)
+		requireToolError(t, callTool(t, panicking, tool, arguments), errInternal)
 	}
 }
 

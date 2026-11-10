@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"unicode/utf8"
-
-	"github.com/wevial/croton-mcp/bridge"
 )
 
 // maxToolResultBytes caps every serialized tool result. It matches the bridge
@@ -18,23 +16,15 @@ type shrinkable interface {
 	shrinkForOutput() bool
 }
 
-type toolShapedFallback interface {
-	fallbackForOutput() any
-}
-
-// selectableResult marks results whose fallback carries one standalone
-// selectable message identity, which must fit exactly or not be returned.
-type selectableResult interface {
-	selectableIdentity()
-}
-
-// errUnretainableIdentity reports that a selectable identity cannot fit the
-// result budget unchanged; it maps to a static tool error.
-var errUnretainableIdentity = errors.New("mcpserver: read identity exceeds the result budget")
+// errOutputExceeded reports that a result still exceeds the budget after
+// every structural shrink; it maps to bounds_exceeded.
+var errOutputExceeded = errors.New("mcpserver: result exceeds the output budget")
 
 // encodeBounded serializes a tool result within maxToolResultBytes. Oversize
 // results are shrunk structurally and re-marshaled; serialized JSON is never
-// byte-sliced, so output remains syntactically valid.
+// byte-sliced, so output remains syntactically valid. A result that still
+// exceeds the budget once it cannot shrink further fails with
+// errOutputExceeded and nothing is written.
 func encodeBounded(result any) ([]byte, bool, error) {
 	truncated := false
 	for {
@@ -48,20 +38,7 @@ func encodeBounded(result any) ([]byte, bool, error) {
 
 		shrinker, ok := result.(shrinkable)
 		if !ok || !shrinker.shrinkForOutput() {
-			if fallback, ok := result.(toolShapedFallback); ok {
-				encoded, err := json.Marshal(fallback.fallbackForOutput())
-				if err != nil {
-					return nil, false, err
-				}
-				if len(encoded) <= maxToolResultBytes {
-					return encoded, true, nil
-				}
-			}
-			if _, ok := result.(selectableResult); ok {
-				return nil, false, errUnretainableIdentity
-			}
-
-			return []byte(`{"truncated":true}`), true, nil
+			return nil, false, errOutputExceeded
 		}
 
 		truncated = true
@@ -153,85 +130,4 @@ func (result *selectDigestResult) shrinkForOutput() bool {
 	result.Candidates = result.Candidates[:len(result.Candidates)/2]
 	result.Truncated = true
 	return true
-}
-
-func fallbackString(value string) string {
-	const maximum = 1024
-	if len(value) <= maximum {
-		return value
-	}
-
-	boundary := maximum
-	for boundary > 0 && !utf8.RuneStart(value[boundary]) {
-		boundary--
-	}
-	return value[:boundary]
-}
-
-func (result *listFoldersResult) fallbackForOutput() any {
-	return &listFoldersResult{Folders: []folderResult{}, Truncated: true}
-}
-
-func (result *searchMailResult) fallbackForOutput() any {
-	return &searchMailResult{Results: []messageResult{}, Truncated: true}
-}
-
-func (*getMessageResult) selectableIdentity() {}
-
-func (*listAttachmentsResult) selectableIdentity() {}
-
-// The message fallbacks keep the exact identity and every prior truncation
-// reason, adding the output reason; encodeBounded refuses them when even that
-// does not fit.
-func (result *getMessageResult) fallbackForOutput() any {
-	truncation := result.Truncation
-	truncation.Output = true
-
-	return &getMessageResult{
-		ID:          result.ID,
-		Mailbox:     result.Mailbox,
-		UIDValidity: result.UIDValidity,
-		UID:         result.UID,
-		Headers:     bridge.CanonicalHeaders{},
-		TextSource:  fallbackString(result.TextSource),
-		Attachments: []attachmentResult{},
-		Truncation:  truncation,
-		Truncated:   true,
-	}
-}
-
-// The thread fallback keeps only bounded, nonselectable aggregate context:
-// no node, unavailable-member record or selectable identity.
-func (result *getThreadResult) fallbackForOutput() any {
-	return &getThreadResult{
-		ID:        fallbackString(result.ID),
-		Mailbox:   fallbackString(result.Mailbox),
-		Nodes:     []threadNodeResult{},
-		Truncated: true,
-	}
-}
-
-func (result *listAttachmentsResult) fallbackForOutput() any {
-	truncation := result.Truncation
-	truncation.Output = true
-
-	return &listAttachmentsResult{
-		ID:          result.ID,
-		Mailbox:     result.Mailbox,
-		UIDValidity: result.UIDValidity,
-		UID:         result.UID,
-		Attachments: []attachmentResult{},
-		Truncation:  truncation,
-		Truncated:   true,
-	}
-}
-
-func (result *selectDigestResult) fallbackForOutput() any {
-	return &selectDigestResult{
-		Mailbox:       fallbackString(result.Mailbox),
-		Candidates:    []messageResult{},
-		TotalMessages: result.TotalMessages,
-		UnseenCount:   result.UnseenCount,
-		Truncated:     true,
-	}
 }
