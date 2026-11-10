@@ -22,7 +22,7 @@ gh release download "$RELEASE_TAG" --repo wevial/croton-mcp --pattern "$ASSET" -
 grep " $ASSET\$" SHA256SUMS | sha256sum -c -   # macOS: shasum -a 256 -c -
 ```
 
-On mismatch, STOP. Then follow User-owned layout in
-[USER-INSTALL.md](USER-INSTALL.md). Checksums provide integrity, not signatures
+On mismatch, STOP. Then install the binary as described in
+[INSTALL.md](INSTALL.md). Checksums provide integrity, not signatures
 or provenance. Publishing grants no authority to install, enable writes, or
 make a live `tools/call`.
