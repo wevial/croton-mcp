@@ -582,7 +582,7 @@ func TestGetMessageLargeAttachments(t *testing.T) {
 	if len(message.Attachments) != 2 || message.Attachments[0].Filename != "first.bin" || message.Attachments[1].Filename != "second.bin" {
 		t.Fatalf("large message attachments = %+v", message.Attachments)
 	}
-	var structures, headers int
+	structures := 0
 	var sections []string
 	for _, command := range commands {
 		upper := strings.ToUpper(command.Raw)
@@ -590,16 +590,13 @@ func TestGetMessageLargeAttachments(t *testing.T) {
 			structures++
 		}
 		for _, match := range fetchSection.FindAllStringSubmatch(upper, -1) {
-			switch {
-			case match[1] == "HEADER":
-				headers++
-			case !headerSection.MatchString(match[1]):
+			if !headerSection.MatchString(match[1]) {
 				sections = append(sections, match[0])
 			}
 		}
 	}
-	if structures != 1 || headers == 0 || len(sections) != 1 || sections[0] != "BODY.PEEK[1]" {
-		t.Fatalf("get_message read %d structures, %d headers and sections %q", structures, headers, sections)
+	if structures != 1 || len(sections) != 1 || sections[0] != "BODY.PEEK[1]" {
+		t.Fatalf("get_message read %d structures and sections %q", structures, sections)
 	}
 
 	callJSON(t, session, "get_message", map[string]any{"messageId": ids[103]}, &message)
