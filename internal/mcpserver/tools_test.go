@@ -15,6 +15,7 @@ import (
 type fakeMail struct {
 	folders     []bridge.Folder
 	searched    []bridge.MessageMetadata
+	partial     bool
 	metadata    bridge.MessageMetadata
 	body        []byte
 	headers     map[string]bridge.MessageHeaders
@@ -33,7 +34,7 @@ func (mail *fakeMail) Status(context.Context, string) (bridge.MailboxStatus, err
 }
 
 func (mail *fakeMail) SearchMailPage(context.Context, bridge.SearchQuery) (bridge.SearchPage, error) {
-	return bridge.SearchPage{Messages: mail.searched}, mail.err
+	return bridge.SearchPage{Messages: mail.searched, Truncated: mail.partial}, mail.err
 }
 
 func (mail *fakeMail) GetMessageMetadata(context.Context, string) (bridge.MessageMetadata, error) {

@@ -476,6 +476,28 @@ func TestReadToolsBoundsOverTheWire(t *testing.T) {
 	}
 
 	requireWire(t, server, 0, true)
+
+	// A sender-built structure with 21 attachments keeps the first 20 and
+	// names the attachment bound.
+	parts := []*testkit.BodyPart{{Kind: testkit.BodyPartText, Type: "text", Subtype: "plain", Size: 4, Lines: 1}}
+	for index := range 21 {
+		name := []testkit.BodyParam{{Name: "filename", Value: fmt.Sprintf("part-%02d.bin", index)}}
+		parts = append(parts, &testkit.BodyPart{Kind: testkit.BodyPartBasic, Type: "application", Subtype: "octet-stream", Size: 4, Disposition: &testkit.BodyDisposition{Value: "attachment", Params: name}})
+	}
+	_, adapter = startIntegrationAdapter(t, testkit.Options{
+		Messages:       []string{"From: Fixture <fixture@croton.test>\r\nSubject: Synthetic many parts\r\nContent-Type: multipart/mixed; boundary=many\r\n\r\n--many--\r\n"},
+		BodyStructures: []*testkit.BodyPart{{Kind: testkit.BodyPartMultipart, Subtype: "mixed", Params: []testkit.BodyParam{{Name: "boundary", Value: "many"}}, Children: parts}},
+	})
+	session = connectTestClient(t, Options{Mail: adapter})
+	callJSON(t, session, "search_mail", map[string]any{"mailbox": "INBOX"}, &search)
+	if len(search.Results) != 1 {
+		t.Fatalf("many-part search = %+v", search)
+	}
+	var listed listAttachmentsResult
+	callJSON(t, session, "list_attachments", map[string]any{"messageId": search.Results[0].ID}, &listed)
+	if len(listed.Attachments) != 20 || listed.Attachments[19].Filename != "part-19.bin" || listed.Truncation != (attachmentListTruncation{Attachments: true}) || !listed.Truncated {
+		t.Fatalf("21 attachments = %d entries, truncation %+v (truncated %v)", len(listed.Attachments), listed.Truncation, listed.Truncated)
+	}
 }
 
 func TestReadToolsUnavailableOverTheWire(t *testing.T) {

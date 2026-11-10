@@ -160,6 +160,22 @@ func TestFlatResultsPublishOnlyTrustedMetadata(t *testing.T) {
 	}
 }
 
+func TestSearchToolsPreservePartialPages(t *testing.T) {
+	t.Parallel()
+
+	// The bridge stopped scanning before the mailbox was exhausted; one
+	// result under a limit of 10 is still an incomplete sample.
+	session := connectTestClient(t, Options{Mail: &fakeMail{searched: []bridge.MessageMetadata{identity("opaque-1", 1)}, partial: true}})
+
+	var search wireSearch
+	decodeResult(t, callTool(t, session, "search_mail", map[string]any{"mailbox": "INBOX", "limit": 10}), &search)
+	var digest wireDigest
+	decodeResult(t, callTool(t, session, "select_digest_candidates", map[string]any{"mailbox": "INBOX", "limit": 10}), &digest)
+	if len(search.Results) != 1 || !search.Truncated || len(digest.Candidates) != 1 || !digest.Truncated {
+		t.Fatalf("partial page lost its truncation: search %+v, digest %+v", search, digest)
+	}
+}
+
 func TestDecodeArgumentsRejectsAmbiguousJSON(t *testing.T) {
 	t.Parallel()
 
