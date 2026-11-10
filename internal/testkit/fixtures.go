@@ -1,7 +1,6 @@
 package testkit
 
 import (
-	_ "embed"
 	"encoding/base64"
 	"fmt"
 	"time"
@@ -38,19 +37,6 @@ func SyntheticAttachmentMessages() []string {
 			"Content-Type: text/plain; charset=utf-8\r\n\r\n" +
 			SyntheticAttachmentFreeBody + "\r\n",
 	}
-}
-
-var (
-	//go:embed testdata/welcome.eml
-	welcomeMIME string
-
-	//go:embed testdata/status-report.eml
-	statusReportMIME string
-)
-
-// SyntheticMIMESeeds returns only invented MIME messages addressed within reserved .test domains.
-func SyntheticMIMESeeds() []string {
-	return []string{welcomeMIME, statusReportMIME}
 }
 
 // SyntheticLinkedThread returns a root, its reply, and unrelated same-subject

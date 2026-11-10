@@ -1,4 +1,3 @@
-// Package testkit provides deterministic IMAP fixtures.
 package testkit
 
 import (
@@ -66,8 +65,6 @@ type Scenario struct {
 	DisconnectOnPostLoginCapability bool
 	// DisconnectOnExactUIDSearch closes the first single-UID SEARCH command.
 	DisconnectOnExactUIDSearch bool
-	// MalformedResponse replaces normal command responses with this literal wire response.
-	MalformedResponse string
 	// OversizedResponseBytes emits an untagged response of this size before normal responses.
 	OversizedResponseBytes int
 	// OversizedResponseCommand limits an oversized response to a command name.
@@ -76,9 +73,6 @@ type Scenario struct {
 	// IgnoreBodyPartial makes UID FETCH return the complete body even when the
 	// client requested a BODY.PEEK partial range.
 	IgnoreBodyPartial bool
-	// OversizedLiteralBytes replaces a normal FETCH literal with a deterministic
-	// payload of this size.
-	OversizedLiteralBytes int
 	// OversizedBodyLiteralBytes replaces a body FETCH literal without changing
 	// metadata FETCH literals used to obtain an opaque message ID.
 	OversizedBodyLiteralBytes int
@@ -101,8 +95,6 @@ type Scenario struct {
 	// OmitExactUIDSearchResponse returns a conforming empty SEARCH response for
 	// single-UID existence checks.
 	OmitExactUIDSearchResponse bool
-	// OmitExactUIDSearchData sends tagged OK without the mandatory SEARCH data.
-	OmitExactUIDSearchData bool
 	// SearchWindowResult returns the highest requested UID from every search window.
 	SearchWindowResult bool
 	// StatusResponse replaces the normal untagged STATUS response. It must be a
@@ -130,9 +122,6 @@ type Scenario struct {
 	DuplicateFetchSection bool
 	// DuplicateBodyFetchSection emits only whole-body FETCH sections twice.
 	DuplicateBodyFetchSection bool
-	// FetchLiteralDeclaredBytes replaces a FETCH literal declaration without
-	// changing its payload. Zero preserves the payload length declaration.
-	FetchLiteralDeclaredBytes int
 	// BodyFetchLiteralDeclaredBytes replaces only whole-body FETCH declarations.
 	BodyFetchLiteralDeclaredBytes int
 	// UnexpectedFetchBinaryLiteralBytes appends an unrequested BINARY[] literal
@@ -176,17 +165,13 @@ type Options struct {
 	// responses that request FLAGS. Non-ordinary modes require Messages.
 	MetadataFlags MetadataFlagsMode
 
-	// Stateful opts into mutable synthetic mailboxes; see STATEFUL.md. It
+	// Stateful opts into mutable synthetic mailboxes. It
 	// cannot be combined with Messages, Seen or Scenario. Nil keeps legacy behavior.
 	Stateful *StatefulOptions
 
-	// Labels opts into the linked folder and label-view model; see STATEFUL.md.
-	// It cannot be combined with Stateful, Messages, Seen or Scenario.
-	Labels *LabelOptions
-
 	// BodyStructures optionally gives each custom Message, by index, a typed
-	// BODYSTRUCTURE tree and makes custom UID FETCH request-driven; see
-	// STATEFUL.md. Seen may accompany it. Nil keeps legacy custom FETCH.
+	// BODYSTRUCTURE tree and makes custom UID FETCH request-driven. Seen
+	// may accompany it. Nil keeps legacy custom FETCH.
 	BodyStructures []*BodyPart
 }
 
@@ -208,7 +193,6 @@ type Server struct {
 	spkiPin   [sha256.Size]byte
 	options   Options
 	stateful  *mailboxStore
-	labels    *labelStore
 	done      chan struct{}
 
 	// bodyStructures holds each custom message's rendered BODYSTRUCTURE.
@@ -221,7 +205,6 @@ type Server struct {
 	nextConnectionID int
 	commands         []Command
 	faults           []*FaultHandle
-	labelFaults      []*FaultHandle
 	connections      map[net.Conn]struct{}
 	closeOnce        sync.Once
 	closeErr         error
@@ -242,10 +225,6 @@ func Start(options Options) (*Server, error) {
 		return nil, errors.New("testkit: oversized response size must not be negative")
 	}
 
-	if options.Scenario.OversizedLiteralBytes < 0 {
-		return nil, errors.New("testkit: oversized literal size must not be negative")
-	}
-
 	if options.Scenario.OversizedBodyLiteralBytes < 0 {
 		return nil, errors.New("testkit: oversized body literal size must not be negative")
 	}
@@ -256,10 +235,6 @@ func Start(options Options) (*Server, error) {
 
 	if options.Scenario.ListMailboxLiteralBytes < 0 {
 		return nil, errors.New("testkit: list mailbox literal size must not be negative")
-	}
-
-	if options.Scenario.FetchLiteralDeclaredBytes < 0 {
-		return nil, errors.New("testkit: fetch literal declaration must not be negative")
 	}
 
 	if options.Scenario.BodyFetchLiteralDeclaredBytes < 0 {
@@ -290,19 +265,6 @@ func Start(options Options) (*Server, error) {
 
 		var err error
 		stateful, err = newMailboxStore(*options.Stateful)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	var labels *labelStore
-	if options.Labels != nil {
-		if options.Stateful != nil || len(options.Messages) > 0 || len(options.Seen) > 0 || options.Scenario != (Scenario{}) {
-			return nil, errors.New("testkit: label mode cannot be combined with Stateful, Messages, Seen or Scenario")
-		}
-
-		var err error
-		labels, err = newLabelStore(*options.Labels)
 		if err != nil {
 			return nil, err
 		}
@@ -342,7 +304,6 @@ func Start(options Options) (*Server, error) {
 		spkiPin:        sha256.Sum256(leaf.RawSubjectPublicKeyInfo),
 		options:        options,
 		stateful:       stateful,
-		labels:         labels,
 		done:           make(chan struct{}),
 		bodyStructures: bodyStructures,
 		connections:    make(map[net.Conn]struct{}),
@@ -509,22 +470,9 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 	authenticated := false
 	connectionCommands := 0
 	var session *statefulSession
-	if server.stateful != nil || server.labels != nil {
+	if server.stateful != nil {
 		session = &statefulSession{}
 	}
-
-	// Label faults consumed on this connection finish once it is closed.
-	var labelFaults []*FaultHandle
-	defer func() {
-		if len(labelFaults) == 0 {
-			return
-		}
-
-		_ = connection.Close()
-		for _, fault := range labelFaults {
-			fault.finish()
-		}
-	}()
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -540,12 +488,6 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 
 		if server.shouldDisconnectForScenario(name, raw, authenticated) || server.shouldDisconnect(connectionCommands) {
 			return
-		}
-		if server.options.Scenario.MalformedResponse != "" {
-			if err := server.writeLine(writer, server.options.Scenario.MalformedResponse); err != nil {
-				return
-			}
-			continue
 		}
 
 		if server.options.Scenario.OversizedResponseBytes > 0 && (server.options.Scenario.OversizedResponseCommand == "" || strings.EqualFold(server.options.Scenario.OversizedResponseCommand, name)) {
@@ -563,20 +505,7 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 				return
 			}
 
-			if fault := server.claimLabelFault(session, command, authenticated); fault != nil {
-				labelFaults = append(labelFaults, fault)
-				if server.runLabelFault(fault, session, reader, writer, command, tag) {
-					continue
-				}
-				return
-			}
-
-			serve := server.serveStateful
-			if server.labels != nil {
-				serve = server.serveLabels
-			}
-
-			handled, keep := serve(session, writer, tag, name, raw, tlsEstablished, authenticated)
+			handled, keep := server.serveStateful(session, writer, tag, name, raw, tlsEstablished, authenticated)
 			if !keep {
 				return
 			}
@@ -780,12 +709,6 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 			switch strings.ToUpper(fields[2]) {
 			case "SEARCH":
 				exactUIDSearch := searchWindowIsExact(raw)
-				if server.options.Scenario.OmitExactUIDSearchData && exactUIDSearch {
-					if err := server.writeLine(writer, tagged(tag, "OK SEARCH completed")); err != nil {
-						return
-					}
-					continue
-				}
 				searchResponse := "* SEARCH"
 				if strings.Contains(raw, "UID 3:102") {
 					searchResponse = "* SEARCH 101"
@@ -838,9 +761,6 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 				if header {
 					literal = syntheticMessageHeader
 				}
-				if server.options.Scenario.OversizedLiteralBytes > 0 {
-					literal = strings.Repeat("x", server.options.Scenario.OversizedLiteralBytes)
-				}
 				if !header && server.options.Scenario.OversizedBodyLiteralBytes > 0 {
 					literal = strings.Repeat("x", server.options.Scenario.OversizedBodyLiteralBytes)
 				}
@@ -854,8 +774,8 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 				if !header && server.options.Scenario.BodyFetchResponseSection != "" {
 					section = server.options.Scenario.BodyFetchResponseSection
 				}
-				declaredBytes := server.options.Scenario.FetchLiteralDeclaredBytes
-				if !header && server.options.Scenario.BodyFetchLiteralDeclaredBytes != 0 {
+				declaredBytes := 0
+				if !header {
 					declaredBytes = server.options.Scenario.BodyFetchLiteralDeclaredBytes
 				}
 				duplicate := server.options.Scenario.DuplicateFetchSection
