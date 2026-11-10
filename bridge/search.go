@@ -73,7 +73,7 @@ type messageIDPayload struct {
 // SearchQuery accepts structured, bounded search criteria. It deliberately
 // does not expose raw IMAP query syntax. Cursor is an opaque NextCursor from
 // an earlier page with the same Mailbox and filters; it carries the exclusive
-// upper UID of the next page. A positive Limit lowers the result budget.
+// upper UID of the next page.
 type SearchQuery struct {
 	Mailbox string
 	Since   time.Time
@@ -82,7 +82,6 @@ type SearchQuery struct {
 	Subject string
 	Unread  bool
 	Cursor  string
-	Limit   int
 }
 
 // searchCursorDomain separates cursor MACs from message-ID MACs under the
@@ -143,9 +142,6 @@ func (adapter *Adapter) SearchMailPage(ctx context.Context, query SearchQuery) (
 	}
 
 	budget := adapter.config.Bounds.MaxSearchResults
-	if query.Limit > 0 && query.Limit < budget {
-		budget = query.Limit
-	}
 
 	filters, err := searchFilterHash(query)
 	if err != nil {
@@ -284,7 +280,7 @@ func selectHighestUIDs(uids []uint32, window uidWindow, budget int) ([]uint32, e
 }
 
 // searchFilterHash binds a cursor to every filter except Mailbox, which the
-// sealed payload carries, and Limit, which may change between pages.
+// sealed payload carries.
 func searchFilterHash(query SearchQuery) ([]byte, error) {
 	encoded, err := json.Marshal([]any{query.Since, query.Before, query.Sender, query.Subject, query.Unread})
 	if err != nil {

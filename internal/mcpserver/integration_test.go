@@ -627,6 +627,29 @@ func TestSearchMailCursorPages(t *testing.T) {
 	if len(rest.Results) != 1 || rest.Results[0].UID != 101 {
 		t.Fatalf("page after oversized result has %d results", len(rest.Results))
 	}
+
+	// An oversized terminal result is cut, not the page.
+	_, adapter = startIntegrationAdapter(t, testkit.Options{Messages: oversized[1:]}, bridge.BoundsPatch{MaxHeaderBytes: bridge.Int(65536), MaxOutputBytes: bridge.Int(400000)})
+	session = connectTestClient(t, Options{Mail: adapter})
+	var terminal wireSearch
+	callJSON(t, session, "search_mail", map[string]any{"mailbox": "INBOX"}, &terminal)
+	if len(terminal.Results) != 1 || !terminal.Results[0].MetadataTruncated || terminal.Truncated || terminal.NextCursor != "" {
+		t.Fatalf("oversized terminal result = %d results, truncated %v, cursor %q", len(terminal.Results), terminal.Truncated, terminal.NextCursor)
+	}
+
+	// A limit below the configured bound still examines every window, so a
+	// lone match ends the search.
+	seenFlags := make([]bool, 100)
+	for index := range 99 {
+		seenFlags[index] = true
+	}
+	_, adapter = startIntegrationAdapter(t, testkit.Options{Messages: messages[:100], Seen: seenFlags})
+	session = connectTestClient(t, Options{Mail: adapter})
+	var lone wireSearch
+	callJSON(t, session, "search_mail", map[string]any{"mailbox": "INBOX", "unreadOnly": true, "limit": 1}, &lone)
+	if len(lone.Results) != 1 || lone.Results[0].UID != 200 || lone.Truncated || lone.NextCursor != "" {
+		t.Fatalf("lone match = %d results, truncated %v, cursor %q", len(lone.Results), lone.Truncated, lone.NextCursor)
+	}
 }
 
 func TestReadToolsUnavailableOverTheWire(t *testing.T) {

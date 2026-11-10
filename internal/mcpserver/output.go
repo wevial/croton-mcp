@@ -71,22 +71,23 @@ func (result *listFoldersResult) shrinkForOutput() bool {
 
 // Search shrinking keeps at least one result, halving its subject last, so
 // the cursor always resumes just below the last retained result and no
-// match becomes unreachable.
+// match becomes unreachable. A halved subject marks only that result.
 func (result *searchMailResult) shrinkForOutput() bool {
 	switch {
 	case len(result.Results) > 1:
 		result.Results = result.Results[:len(result.Results)/2]
+		result.Truncated = true
 		result.NextCursor = ""
 		if retained := len(result.Results); retained <= len(result.resume) {
 			result.NextCursor = result.resume[retained-1]
 		}
 	case len(result.Results) == 1 && result.Results[0].Subject != "":
 		result.Results[0].Subject = halveRunes(result.Results[0].Subject)
+		result.Results[0].MetadataTruncated = true
 	default:
 		return false
 	}
 
-	result.Truncated = true
 	return true
 }
 

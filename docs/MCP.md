@@ -54,7 +54,8 @@ Search results, digest candidates, `get_thread` nodes and the parent of
 positive 32-bit `uidvalidity` and `uid` from the same read, or the read fails.
 These fields are the input to the triage writes; they grant no write
 authority. Output shrinking removes whole items, so retained identity is exact;
-`search_mail` keeps at least one result and halves its `subject` instead.
+`search_mail` keeps at least one result and halves its `subject` instead,
+marking it `metadataTruncated`.
 
 ### `list_folders`
 
@@ -65,8 +66,9 @@ authority. Output shrinking removes whole items, so retained identity is exact;
 
 `{"results": [...], "truncated", "nextCursor"}`. Each result carries `id`, `mailbox`,
 `uidvalidity`, `uid`, `subject`, `size`, `from`, `date`, `dateSource`,
-`readState` and, when `from` was cut, `metadataTruncated`. One metadata FETCH
-of `BODY.PEEK[HEADER]` and `FLAGS` supplies them; no body is read.
+`readState` and, when `from` or `subject` was cut, `metadataTruncated`. One
+metadata FETCH of `BODY.PEEK[HEADER]` and `FLAGS` supplies them; no body is
+read.
 
 - `from` is the decoded `From` header, at most 512 bytes; omitted when
   missing, repeated or invalid. It is sender-controlled and proves nothing.

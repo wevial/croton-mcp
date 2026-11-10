@@ -199,7 +199,6 @@ func runSearchMail(ctx context.Context, deps Options, arguments json.RawMessage)
 		Subject: input.Subject,
 		Unread:  input.UnreadOnly,
 		Cursor:  input.Cursor,
-		Limit:   limit,
 	})
 	if err != nil {
 		return nil, mapAdapterError(err)
@@ -210,7 +209,12 @@ func runSearchMail(ctx context.Context, deps Options, arguments json.RawMessage)
 		return nil, errCode
 	}
 
-	return &searchMailResult{Results: results, Truncated: page.Truncated || limited, NextCursor: page.NextCursor, resume: page.Resume}, ""
+	result := &searchMailResult{Results: results, Truncated: page.Truncated || limited, NextCursor: page.NextCursor, resume: page.Resume}
+	if limited && len(results) <= len(page.Resume) {
+		result.NextCursor = page.Resume[len(results)-1]
+	}
+
+	return result, ""
 }
 
 func validMailboxArgument(mailbox string) bool {
