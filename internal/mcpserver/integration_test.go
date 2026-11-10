@@ -536,27 +536,25 @@ func TestSearchMailCursorPages(t *testing.T) {
 	seen := make(map[uint32]bool)
 	next := uint32(220)
 	arguments := map[string]any{"mailbox": "INBOX", "limit": 50}
-	for _, size := range []int{50, 50, 20} {
+	for index, size := range []int{50, 50, 20} {
 		var page wireSearch
 		callJSON(t, session, "search_mail", arguments, &page)
 		if len(page.Results) != size {
-			t.Fatalf("page %d has %d results, want %d", len(pages), len(page.Results), size)
+			t.Fatalf("page %d has %d results, want %d", index, len(page.Results), size)
 		}
 		for _, item := range page.Results {
 			if item.UID != next || seen[item.UID] {
-				t.Fatalf("page %d UID %d, want %d once", len(pages), item.UID, next)
+				t.Fatalf("page %d UID %d, want %d once", index, item.UID, next)
 			}
 			seen[item.UID] = true
 			next--
 		}
-		pages = append(pages, page)
-		arguments = map[string]any{"mailbox": "INBOX", "limit": 50, "cursor": page.NextCursor}
-	}
-	for index, page := range pages {
-		last := index == len(pages)-1
+		last := index == 2
 		if page.Truncated == last || (page.NextCursor == "") != last {
 			t.Fatalf("page %d truncated %v, nextCursor %q", index, page.Truncated, page.NextCursor)
 		}
+		pages = append(pages, page)
+		arguments = map[string]any{"mailbox": "INBOX", "limit": 50, "cursor": page.NextCursor}
 	}
 
 	cursor := pages[0].NextCursor
