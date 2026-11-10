@@ -193,8 +193,8 @@ func (selector *textSelector) visit(structure bodyStructure, part []int, depth i
 
 // decode sets message's text from raw, the first fetchLimit bytes of the
 // section. A cut base64 section is decoded only up to its last complete
-// quantum and a cut quoted-printable section only up to its last complete
-// line, so a split quantum or escape is never decoded.
+// quantum and a cut quoted-printable section drops only a trailing incomplete
+// escape, so a split quantum or escape is never decoded.
 func (section *textSection) decode(message *NormalizedMessage, raw []byte, fetchLimit int64, textLimit int) error {
 	cut := int64(section.size) > fetchLimit
 	encoding := strings.ToLower(strings.TrimSpace(section.encoding))
@@ -213,7 +213,9 @@ func (section *textSection) decode(message *NormalizedMessage, raw []byte, fetch
 		}
 		raw = raw[:keep]
 	case cut && encoding == "quoted-printable":
-		raw = raw[:bytes.LastIndexByte(raw, '\n')+1]
+		if escape := bytes.LastIndexByte(raw, '='); escape >= 0 && escape >= len(raw)-2 {
+			raw = raw[:escape]
+		}
 	}
 
 	decoded, transferTruncated, err := decodeTransfer(bytes.NewReader(raw), encoding, textLimit)
