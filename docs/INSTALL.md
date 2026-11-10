@@ -87,8 +87,7 @@ JSON: unknown, null, duplicate and case-folded-alias fields fail.
 | `bounds.maxSearchResults` | 50 | clamped to 250 |
 | `bounds.maxFolderResults` | 200 | clamped to 1000 |
 | `bounds.maxBodyBytes` | 262144 | clamped to 1048576 |
-| `bounds.maxHeaderBytes` | 16384 | clamped to 65536 |
-| `bounds.maxMimeParts`, `bounds.maxAttachmentCount` | 50, 20 | clamped to 200, 100 |
+| `bounds.maxHeaderBytes` | 16384 | header-only reads; clamped to 65536 |
 | `audit.enabled` | false | tool-call audit lines on stderr |
 | `mutations.enabled` | false | see [Enabling writes](#7-enabling-writes) |
 
@@ -132,7 +131,8 @@ Enabling makes the tools available; it approves no call. Croton cannot tell
 whether a human approved a write, so use a client that prompts before each
 write and leave auto-approval off; otherwise a prompt-injected client could
 mark, move, archive or trash mail. Nothing is sent or permanently deleted.
-To turn writes off, remove `mutations` or set it to false and restart.
+To turn writes off, remove `mutations` or set `"mutations": {"enabled": false}`
+and restart.
 
 ## Updating and rolling back
 

@@ -85,12 +85,11 @@ was examined and nothing was left out. There is no continuation cursor.
 Fetches the raw message with `BODY.PEEK[]` within `bounds.maxBodyBytes`
 (default 256 KiB, ceiling 1 MiB) and returns `id`, `mailbox`, `uidvalidity`,
 `uid`, `size`, `headers`, `text`, `textSource` (`plain`, `html` or `none`),
-attachment metadata and a `truncation` object. Headers are capped by
-`bounds.maxHeaderBytes` (default 16 KiB), MIME parts by `bounds.maxMimeParts`
-(default 50) and attachment entries by `bounds.maxAttachmentCount`
-(default 20). A message beyond the parser's bounds may fail with a code
-instead of a result. Attachment bytes are dropped during normalization and
-never returned.
+attachment metadata and a `truncation` object. The parser uses fixed limits
+that no configuration changes: 256 KiB raw input, 16 KiB and 100 header
+fields, 50 MIME parts, depth 10, 256 KiB decoded text, 20 attachment entries
+and 50 references. A message beyond them may fail with a code instead of a
+result. Attachment bytes are dropped during normalization and never returned.
 
 `truncation` is always present and holds only `true` keys among `headers`,
 `headerCount`, `text`, `mimeParts`, `mimeDepth`, `attachments`, `references`
@@ -172,18 +171,21 @@ empty, over 512 bytes, not UTF-8, or contains a control character, `*` or `%`.
    and nothing is written.
 2. UIDs are handled one at a time in input order. `UID SEARCH` confirms the
    UID is present before its one write.
-3. Move tools refuse every UID, before any LIST or write, when the server does
-   not advertise `MOVE` or the destination equals the source. There is no
-   COPY, STORE or EXPUNGE fallback.
+3. `move_mail` refuses every UID as `unsupported` before any IMAP command
+   when `destination` equals the source. All move tools refuse every UID,
+   before any LIST or write, when the server does not advertise `MOVE`. There
+   is no COPY, STORE or EXPUNGE fallback.
 4. Before each UID, move tools resolve the destination from a fresh
-   `LIST "" "*"` on that session. `move_mail` needs exactly one listed match
+   `LIST "" "*"` on that session, so a failing LIST fails the call before
+   any write. `move_mail` needs exactly one listed match
    (INBOX case-insensitively, others exactly) that is selectable (not
    `\Noselect`, `\NonExistent`, `\All` or `\Flagged`) and is INBOX, under
    `Folders/`, or a hierarchy root carrying `\Sent`, `\Drafts`, `\Junk`,
    `\Archive` or `\Trash`. `Labels/` and everything else are refused.
    `archive_mail` and `trash_mail` map the one mailbox carrying `\Archive` or
    `\Trash`, which must pass the same rules and is never `All Mail` or
-   `Starred`; none or several holders is `unsupported`.
+   `Starred`; none or several holders, or a holder equal to the source, is
+   `unsupported` for that UID and every later one.
 
 ### Result
 
