@@ -11,152 +11,53 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/wevial/croton-mcp/bridge"
 	"github.com/wevial/croton-mcp/internal/testkit"
 )
 
-func TestAttachmentsSyntheticWire(t *testing.T) {
-	t.Parallel()
-
-	// The helper uses only loopback test TLS and the test executable's
-	// synthetic credential helper; all mail is supplied by this named fixture
-	// and its explicit, independently written BODYSTRUCTURE descriptors.
-	server, adapter := startIntegrationAdapterWithOptions(t, testkit.Options{
-		Messages:       testkit.SyntheticAttachmentMessages(),
-		BodyStructures: syntheticAttachmentDescriptors(),
-	})
-	var audit bytes.Buffer
-	session := connectTestClient(t, Options{Mail: adapter, Audit: NewAuditor(&audit)})
-
-	var search searchMailDecoded
-	decodeResult(t, callTool(t, session, "search_mail", map[string]any{
-		"mailbox": "INBOX", "subject": "Synthetic attachment",
-	}), &search)
-	if len(search.Results) != 2 || search.Truncated {
-		t.Fatalf("want both synthetic messages, got %+v", search)
-	}
-
-	ids := make(map[string]string)
-	for _, candidate := range search.Results {
-		if candidate.ID == "" || ids[candidate.Subject] != "" {
-			t.Fatal("missing opaque ID or duplicate fixture subject")
-		}
-		ids[candidate.Subject] = candidate.ID
-	}
-	if ids["Synthetic attachment report"] == ids["Synthetic attachment-free message"] {
-		t.Fatal("fixture messages must have distinct opaque IDs")
-	}
-
-	sentinels := []string{
-		testkit.SyntheticAttachmentBody,
-		testkit.SyntheticAttachmentFreeBody,
-		testkit.SyntheticAttachmentDecoded,
-		base64.StdEncoding.EncodeToString([]byte(testkit.SyntheticAttachmentDecoded)),
-	}
-	for _, tc := range []struct {
-		subject string
-		count   int
-	}{
-		{"Synthetic attachment report", 1},
-		{"Synthetic attachment-free message", 0},
-	} {
-		t.Run(tc.subject, func(t *testing.T) {
-			id := ids[tc.subject]
-			if id == "" {
-				t.Fatal("search did not return fixture message")
-			}
-
-			before := len(server.Commands())
-			result := callTool(t, session, "list_attachments", map[string]any{"messageId": id})
-			// Inspect the entire SDK result, including any structured content.
-			raw, err := json.Marshal(result)
-			if err != nil {
-				t.Fatalf("marshal SDK result: %v", err)
-			}
-			for _, sentinel := range sentinels {
-				if bytes.Contains(raw, []byte(sentinel)) {
-					t.Fatal("synthetic content leaked into attachment result")
-				}
-			}
-
-			var decoded struct {
-				ID          string             `json:"id"`
-				Mailbox     string             `json:"mailbox"`
-				Attachments []attachmentResult `json:"attachments"`
-				Truncated   bool               `json:"truncated"`
-			}
-			decodeResult(t, result, &decoded)
-			if decoded.ID != id || decoded.Mailbox != "INBOX" || decoded.Truncated {
-				t.Fatalf("unexpected attachment result identity or truncation: %+v", decoded)
-			}
-			if decoded.Attachments == nil || len(decoded.Attachments) != tc.count {
-				t.Fatalf("attachments = %+v, want collection of length %d", decoded.Attachments, tc.count)
-			}
-			if tc.count == 1 {
-				attachment := decoded.Attachments[0]
-				if attachment.Filename != "report.pdf" || attachment.ContentType != "application/pdf" || attachment.Disposition != "attachment" {
-					t.Fatalf("unexpected attachment metadata: %+v", attachment)
-				}
-			}
-
-			sawStructure := false
-			for _, command := range server.Commands()[before:] {
-				upper := strings.ToUpper(command.Raw)
-				if strings.Contains(upper, "UID FETCH") && strings.Contains(upper, "BODYSTRUCTURE") {
-					sawStructure = true
-				}
-				if strings.Contains(upper, "FETCH") && (strings.Contains(upper, "BODY.PEEK[") || strings.Contains(upper, "BODY[") || strings.Contains(upper, "RFC822")) {
-					t.Fatalf("attachment listing fetched message bytes: %q", command.Raw)
-				}
-			}
-			if !sawStructure {
-				t.Fatal("attachment listing did not request UID BODYSTRUCTURE")
-			}
-		})
-	}
-
-	for _, sentinel := range sentinels {
-		if strings.Contains(audit.String(), sentinel) {
-			t.Fatal("synthetic content leaked into audit output")
-		}
-	}
-	attachmentEvents := 0
-	for _, event := range auditLines(t, &audit) {
-		requireAllowlistedKeys(t, event)
-		if event["tool"] == "list_attachments" {
-			attachmentEvents++
-			if event["event"] != "tool_call" || event["outcome"] != "ok" {
-				t.Fatalf("unexpected attachment audit event: %v", event)
-			}
-		}
-	}
-	if attachmentEvents != 2 {
-		t.Fatalf("attachment audit events = %d, want 2", attachmentEvents)
-	}
-
-	requireReadOnlyTranscript(t, server)
-	for _, command := range server.Commands() {
-		if !command.TLS {
-			t.Error("attachment test command used plaintext transport")
-		}
-	}
-	if err := server.AssertNoInsecureAuthentication(); err != nil {
-		t.Fatal(err)
-	}
+// wireItem is one search result or digest candidate with its closed
+// dateSource and readState tokens kept as text.
+type wireItem struct {
+	ID                string `json:"id"`
+	Mailbox           string `json:"mailbox"`
+	UIDValidity       uint32 `json:"uidvalidity"`
+	UID               uint32 `json:"uid"`
+	Subject           string `json:"subject"`
+	Size              int64  `json:"size"`
+	From              string `json:"from"`
+	Date              string `json:"date"`
+	DateSource        string `json:"dateSource"`
+	ReadState         string `json:"readState"`
+	MetadataTruncated bool   `json:"metadataTruncated"`
 }
 
-// mutatingIMAPCommands is the vocabulary that must never appear in any
-// transcript produced through the MCP tool surface.
-var mutatingIMAPCommands = []string{
-	"STORE", "APPEND", "EXPUNGE", "DELETE", "RENAME", "CREATE", "COPY", "MOVE", "SETACL", "SETQUOTA", "SUBSCRIBE", "UNSUBSCRIBE",
+type wireSearch struct {
+	Results   []wireItem `json:"results"`
+	Truncated bool       `json:"truncated"`
 }
 
-// syntheticAttachmentDescriptors are explicit typed BODYSTRUCTURE trees for
-// testkit.SyntheticAttachmentMessages: a multipart report with one PDF
-// attachment, then an attachment-free plain message.
-func syntheticAttachmentDescriptors() []*testkit.BodyPart {
+type wireDigest struct {
+	Mailbox       string     `json:"mailbox"`
+	Candidates    []wireItem `json:"candidates"`
+	TotalMessages int        `json:"totalMessages"`
+	UnseenCount   int        `json:"unseenCount"`
+	Truncated     bool       `json:"truncated"`
+}
+
+// The fixture mailbox: the linked thread at UIDs 101-103 (root read, reply,
+// unrelated same-subject message), then the attachment report at 104 and
+// the attachment-free message at 105, all in UIDVALIDITY 9001.
+const (
+	uidRoot       = 101
+	uidReply      = 102
+	uidUnrelated  = 103
+	uidReport     = 104
+	uidAttachFree = 105
+)
+
+func wireFixture() testkit.Options {
 	text := func() *testkit.BodyPart {
 		return &testkit.BodyPart{Kind: testkit.BodyPartText, Type: "text", Subtype: "plain", Params: []testkit.BodyParam{{Name: "charset", Value: "utf-8"}}, Size: 35, Lines: 1}
 	}
@@ -169,22 +70,14 @@ func syntheticAttachmentDescriptors() []*testkit.BodyPart {
 		}},
 	}
 
-	return []*testkit.BodyPart{report, text()}
+	return testkit.Options{
+		Messages:       append(testkit.SyntheticLinkedThread(), testkit.SyntheticAttachmentMessages()...),
+		Seen:           []bool{true},
+		BodyStructures: []*testkit.BodyPart{text(), text(), text(), report, text()},
+	}
 }
 
-func startIntegrationAdapter(t *testing.T) (*testkit.Server, *bridge.Adapter) {
-	t.Helper()
-
-	return startIntegrationAdapterWithMessages(t, nil)
-}
-
-func startIntegrationAdapterWithMessages(t *testing.T, messages []string) (*testkit.Server, *bridge.Adapter) {
-	t.Helper()
-
-	return startIntegrationAdapterWithOptions(t, testkit.Options{Messages: messages})
-}
-
-func startIntegrationAdapterWithOptions(t *testing.T, options testkit.Options) (*testkit.Server, *bridge.Adapter) {
+func startIntegrationAdapter(t *testing.T, options testkit.Options) (*testkit.Server, *bridge.Adapter) {
 	t.Helper()
 
 	options.Mode = testkit.ImplicitTLS
@@ -237,389 +130,438 @@ func TestMCPCredentialHelperProcess(t *testing.T) {
 	}
 }
 
-// selectedUIDFetch reports whether a UID FETCH names exactly one UID, as a
-// selected-message read does, rather than a search metadata range.
-func selectedUIDFetch(raw string) bool {
-	fields := strings.Fields(strings.ToUpper(raw))
-	for index, field := range fields {
-		if field == "FETCH" && index > 0 && fields[index-1] == "UID" && index+1 < len(fields) {
-			return !strings.ContainsAny(fields[index+1], ":,*")
-		}
-	}
-
-	return false
-}
-
-func requireReadOnlyTranscript(t *testing.T, server *testkit.Server) {
+// requireWire checks every command since before: TLS only, read-only, and a
+// UID FETCH that reads body or part bytes only when bodyAllowed. It returns the
+// commands for further checks.
+func requireWire(t *testing.T, server *testkit.Server, before int, bodyAllowed bool) []testkit.Command {
 	t.Helper()
 
 	if err := server.AssertReadOnlyCommands(); err != nil {
 		t.Fatalf("read-only transcript: %v", err)
 	}
-	for _, command := range server.Commands() {
-		upper := strings.ToUpper(command.Raw)
-		for _, mutation := range mutatingIMAPCommands {
-			for _, field := range strings.Fields(upper) {
-				if field == mutation {
-					t.Fatalf("mutating IMAP command %q reached the wire: %q", mutation, command.Raw)
-				}
-			}
-		}
-	}
-}
-
-func TestSelectDigestCandidatesComposesOnlyReadOnlyOperationsOnTheWire(t *testing.T) {
-	t.Parallel()
-
-	server, adapter := startIntegrationAdapter(t)
-	session := connectTestClient(t, Options{Mail: adapter})
-
-	result := callTool(t, session, "select_digest_candidates", map[string]any{"mailbox": "INBOX", "unreadOnly": false, "sinceHours": 100})
-
-	var decoded digestDecoded
-	decodeResult(t, result, &decoded)
-	if decoded.Mailbox != "INBOX" || decoded.TotalMessages != 2 {
-		t.Fatalf("unexpected digest summary: %+v", decoded)
-	}
-	if len(decoded.Candidates) != 1 || decoded.Candidates[0].Subject != "Welcome to Croton" {
-		t.Fatalf("unexpected candidates: %+v", decoded.Candidates)
-	}
-	if decoded.Candidates[0].ID == "" {
-		t.Fatal("candidate lacks opaque id")
-	}
-
-	transcript := server.Commands()
-	sawStatus, sawSearch, sawFetchBody := false, false, false
-	for _, command := range transcript {
-		upper := strings.ToUpper(command.Raw)
-		if strings.Contains(upper, "STATUS") {
-			sawStatus = true
-		}
-		if strings.Contains(upper, "UID SEARCH") {
-			sawSearch = true
-		}
-		if strings.Contains(upper, "BODY.PEEK[]") && !strings.Contains(upper, "HEADER") {
-			sawFetchBody = true
-		}
-	}
-	if !sawStatus || !sawSearch {
-		t.Fatalf("digest transcript missing composed read operations (status=%v search=%v)", sawStatus, sawSearch)
-	}
-	if sawFetchBody {
-		t.Fatal("metadata-first digest fetched a message body")
-	}
-
-	requireReadOnlyTranscript(t, server)
-}
-
-func TestAllSixToolsProduceReadOnlyWireTranscript(t *testing.T) {
-	t.Parallel()
-
-	// The default fixture does not answer BODYSTRUCTURE, so this transcript
-	// uses one custom welcome message with an explicit plain-text descriptor.
-	welcome := "From: Croton Fixture <fixture@croton.test>\r\nTo: Reader <reader@croton.test>\r\n" +
-		"Subject: Welcome to Croton\r\nDate: Thu, 01 Jan 2026 00:00:00 +0000\r\nMessage-ID: <welcome@croton.test>\r\n\r\n" +
-		"Welcome to Croton. This synthetic message exists only for adapter tests.\r\n"
-	server, adapter := startIntegrationAdapterWithOptions(t, testkit.Options{
-		Messages:       []string{welcome},
-		BodyStructures: []*testkit.BodyPart{{Kind: testkit.BodyPartText, Type: "text", Subtype: "plain", Size: 74, Lines: 1}},
-	})
-	session := connectTestClient(t, Options{Mail: adapter})
-
-	callTool(t, session, "list_folders", map[string]any{})
-
-	searchResult := callTool(t, session, "search_mail", map[string]any{"mailbox": "INBOX", "subject": "Welcome"})
-	var search searchMailDecoded
-	decodeResult(t, searchResult, &search)
-	if len(search.Results) != 1 {
-		t.Fatalf("search results = %+v", search)
-	}
-	identifier := search.Results[0].ID
-
-	message := callTool(t, session, "get_message", map[string]any{"messageId": identifier})
-	var decodedMessage getMessageDecoded
-	decodeResult(t, message, &decodedMessage)
-	if decodedMessage.Headers.Subject != "Welcome to Croton" {
-		t.Fatalf("unexpected message: %+v", decodedMessage)
-	}
-
-	thread := callTool(t, session, "get_thread", map[string]any{"messageId": identifier})
-	var decodedThread getThreadDecoded
-	decodeResult(t, thread, &decodedThread)
-	if len(decodedThread.Nodes) == 0 {
-		t.Fatalf("unexpected thread: %+v", decodedThread)
-	}
-
-	attachments := callTool(t, session, "list_attachments", map[string]any{"messageId": identifier})
-	var decodedAttachments struct {
-		ID          string             `json:"id"`
-		Attachments []attachmentResult `json:"attachments"`
-		Truncated   bool               `json:"truncated"`
-	}
-	decodeResult(t, attachments, &decodedAttachments)
-	if decodedAttachments.ID != identifier || decodedAttachments.Attachments == nil || len(decodedAttachments.Attachments) != 0 || decodedAttachments.Truncated {
-		t.Fatalf("unexpected attachments: %+v", decodedAttachments)
-	}
-
-	digest := callTool(t, session, "select_digest_candidates", map[string]any{"mailbox": "INBOX", "unreadOnly": false})
-	var decodedDigest digestDecoded
-	decodeResult(t, digest, &decodedDigest)
-
-	requireReadOnlyTranscript(t, server)
-	if err := server.AssertNoInsecureAuthentication(); err != nil {
-		t.Fatalf("insecure authentication: %v", err)
-	}
-}
-
-func TestGetThreadSyntheticWire(t *testing.T) {
-	t.Parallel()
-
-	server, adapter := startIntegrationAdapterWithMessages(t, testkit.SyntheticLinkedThread())
-	session := connectTestClient(t, Options{Mail: adapter})
-
-	var search searchMailDecoded
-	decodeResult(t, callTool(t, session, "search_mail", map[string]any{
-		"mailbox": "INBOX", "subject": "Synthetic planning",
-	}), &search)
-	if len(search.Results) != 3 || search.Truncated {
-		t.Fatalf("fixture search = %+v, want all three messages", search)
-	}
-
-	// Resolve each opaque ID through MCP, independently of search ordering.
-	ids := make(map[string]string)
-	seen := make(map[string]bool)
-	for _, candidate := range search.Results {
-		if candidate.ID == "" || seen[candidate.ID] {
-			t.Fatalf("missing or duplicate opaque ID: %q", candidate.ID)
-		}
-		seen[candidate.ID] = true
-
-		var message getMessageDecoded
-		decodeResult(t, callTool(t, session, "get_message", map[string]any{"messageId": candidate.ID}), &message)
-		ids[message.Headers.MessageID] = candidate.ID
-	}
-	for _, name := range []string{"root", "reply", "unrelated"} {
-		if ids["<"+name+"@croton.test>"] == "" {
-			t.Fatalf("missing synthetic %s ID: %v", name, ids)
-		}
-	}
-
-	rootID, replyID, unrelatedID := ids["<root@croton.test>"], ids["<reply@croton.test>"], ids["<unrelated@croton.test>"]
-	for _, limit := range []int{10, 1} {
-		t.Run(fmt.Sprintf("maxMessages=%d", limit), func(t *testing.T) {
-			before := len(server.Commands())
-
-			var thread getThreadDecoded
-			decodeResult(t, callTool(t, session, "get_thread", map[string]any{
-				"messageId": replyID, "maxMessages": limit,
-			}), &thread)
-			if thread.ID != replyID || thread.Mailbox != "INBOX" {
-				t.Errorf("unexpected thread identity: %+v", thread)
-			}
-			if limit == 1 {
-				if len(thread.Nodes) != 1 || thread.Nodes[0].Key != replyID || !thread.Truncated {
-					t.Errorf("bounded thread must retain target and report truncation: %+v", thread)
-				}
-			} else {
-				if len(thread.Nodes) != 3 || thread.Truncated {
-					t.Errorf("want three nodes without truncation, got %+v", thread)
-				}
-				foundRoot, foundReply, foundSibling := false, false, false
-				for _, node := range thread.Nodes {
-					switch node.Key {
-					case rootID:
-						foundRoot = true
-						if node.MessageID != "<root@croton.test>" || node.ParentKey != "" || node.Depth != 0 {
-							t.Errorf("unexpected root: %+v", node)
-						}
-					case replyID:
-						foundReply = true
-						if node.MessageID != "<reply@croton.test>" || node.ParentKey != rootID || node.Depth != 1 {
-							t.Errorf("unexpected reply: %+v", node)
-						}
-					case unrelatedID:
-						foundSibling = true
-						if node.MessageID != "<unrelated@croton.test>" || node.ParentKey != "" || node.Depth != 0 {
-							t.Errorf("unexpected independent subject sibling: %+v", node)
-						}
-					default:
-						t.Errorf("unexpected node: %+v", node)
-					}
-				}
-				if !foundRoot || !foundReply || !foundSibling {
-					t.Errorf("thread membership missing: root=%v reply=%v sibling=%v", foundRoot, foundReply, foundSibling)
-				}
-			}
-
-			headerFetches := 0
-			for _, command := range server.Commands()[before:] {
-				if !command.TLS {
-					t.Error("thread command used plaintext transport")
-				}
-				upper := strings.ToUpper(command.Raw)
-				if !strings.Contains(upper, "UID FETCH") {
-					continue
-				}
-				if !strings.Contains(upper, "BODY.PEEK[HEADER]") || strings.Contains(upper, "BODY.PEEK[]") {
-					t.Errorf("thread FETCH %q is not header-only", command.Raw)
-				}
-				if selectedUIDFetch(command.Raw) {
-					headerFetches++
-				}
-			}
-			if headerFetches == 0 || headerFetches > limit {
-				t.Errorf("selected header PEEK fetches = %d, want 1..%d", headerFetches, limit)
-			}
-
-			requireReadOnlyTranscript(t, server)
-		})
-	}
-
 	if err := server.AssertNoInsecureAuthentication(); err != nil {
 		t.Fatal(err)
 	}
+
+	commands := server.Commands()[before:]
+	for _, command := range commands {
+		upper := strings.ToUpper(command.Raw)
+		if !command.TLS {
+			t.Fatalf("command used plaintext transport: %q", command.Raw)
+		}
+		for _, field := range strings.Fields(upper) {
+			switch field {
+			case "STORE", "APPEND", "EXPUNGE", "DELETE", "RENAME", "CREATE", "COPY", "MOVE", "SUBSCRIBE", "UNSUBSCRIBE":
+				t.Fatalf("mutating IMAP command reached the wire: %q", command.Raw)
+			}
+		}
+		if strings.Contains(upper, "FETCH") && !bodyAllowed && fetchesContent(upper) {
+			t.Fatalf("metadata-only read fetched message bytes: %q", command.Raw)
+		}
+	}
+
+	return commands
 }
 
-func TestDigestSyntheticWire(t *testing.T) {
+var (
+	fetchSection   = regexp.MustCompile(`(?:BODY|BINARY)(?:\.PEEK)?\[([^\]]*)\]`)
+	headerSection  = regexp.MustCompile(`^(?:\d+\.)*(?:HEADER|MIME)`)
+	wholeOrTextRFC = regexp.MustCompile(`(?:^|[ (])RFC822(?:\.TEXT)?(?:[ )]|$)`)
+)
+
+// fetchesContent reports whether an upper-cased FETCH asks for message or
+// part bytes: any section other than a header or MIME header, or RFC822 and
+// RFC822.TEXT.
+func fetchesContent(upper string) bool {
+	for _, match := range fetchSection.FindAllStringSubmatch(upper, -1) {
+		if !headerSection.MatchString(match[1]) {
+			return true
+		}
+	}
+
+	return wholeOrTextRFC.MatchString(upper)
+}
+
+func callJSON(t *testing.T, session *mcp.ClientSession, name string, arguments map[string]any, target any) []byte {
+	t.Helper()
+
+	result := callTool(t, session, name, arguments)
+	decodeResult(t, result, target)
+
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal SDK result: %v", err)
+	}
+	return raw
+}
+
+func requireItems(t *testing.T, label string, items []wireItem, uids ...uint32) map[uint32]string {
+	t.Helper()
+
+	if items == nil || len(items) != len(uids) {
+		t.Fatalf("%s = %+v, want UIDs %v", label, items, uids)
+	}
+	ids := make(map[uint32]string, len(items))
+	for index, item := range items {
+		if item.ID == "" || item.Mailbox != "INBOX" || item.UIDValidity != 9001 || item.UID != uids[index] || item.Size <= 0 {
+			t.Fatalf("%s[%d] identity = %+v, want INBOX/9001/%d", label, index, item, uids[index])
+		}
+		if item.From != "Fixture <fixture@croton.test>" || item.DateSource != "header" || !strings.HasPrefix(item.Date, "2026-01-01T00:00:0") || item.MetadataTruncated {
+			t.Fatalf("%s[%d] metadata = %+v", label, index, item)
+		}
+		wantState := "unread"
+		if item.UID == uidRoot {
+			wantState = "read"
+		}
+		if item.ReadState != wantState {
+			t.Fatalf("%s[%d] readState = %q, want %q", label, index, item.ReadState, wantState)
+		}
+		ids[item.UID] = item.ID
+	}
+	return ids
+}
+
+func TestReadToolsOverTheWire(t *testing.T) {
 	t.Parallel()
 
-	now := time.Now()
-	sentinels := []string{
-		testkit.SyntheticDigestUnreadFirstBody,
-		testkit.SyntheticDigestUnreadSecondBody,
-		testkit.SyntheticDigestReadBody,
+	server, adapter := startIntegrationAdapter(t, wireFixture())
+	var audit bytes.Buffer
+	session := connectTestClient(t, Options{Mail: adapter, Audit: NewAuditor(&audit)})
+	privateSentinels := []string{
+		testkit.SyntheticAttachmentDecoded,
+		base64.StdEncoding.EncodeToString([]byte(testkit.SyntheticAttachmentDecoded)),
+		"fixture-user", "fixture-password",
 	}
-	boundedUID := regexp.MustCompile(`\bUID [1-9][0-9]*(?::[1-9][0-9]*)? `)
-	dateBounds := regexp.MustCompile(`\bSINCE "[0-9]{1,2}-[A-Z]{3}-[0-9]{4}" BEFORE "[0-9]{1,2}-[A-Z]{3}-[0-9]{4}"`)
+	bodySentinels := append([]string{testkit.SyntheticAttachmentBody, testkit.SyntheticAttachmentFreeBody, "Synthetic reply message."}, privateSentinels...)
+	requireAbsent := func(t *testing.T, label string, raw []byte, sentinels []string) {
+		t.Helper()
+		for _, sentinel := range sentinels {
+			if bytes.Contains(raw, []byte(sentinel)) {
+				t.Fatalf("%s leaked %q", label, sentinel)
+			}
+		}
+	}
 
-	for _, fixture := range []struct {
-		name    string
-		options testkit.Options
-		total   int
-		unseen  int
+	var folders listFoldersResult
+	callJSON(t, session, "list_folders", map[string]any{}, &folders)
+	if len(folders.Folders) != 1 || folders.Folders[0].Name != "INBOX" || folders.Truncated {
+		t.Fatalf("list_folders = %+v", folders)
+	}
+
+	var ids map[uint32]string
+	t.Run("search_mail", func(t *testing.T) {
+		before := len(server.Commands())
+
+		var all, unread, bounded wireSearch
+		requireAbsent(t, "search_mail", callJSON(t, session, "search_mail", map[string]any{"mailbox": "INBOX"}, &all), bodySentinels)
+		callJSON(t, session, "search_mail", map[string]any{"mailbox": "INBOX", "unreadOnly": true}, &unread)
+		callJSON(t, session, "search_mail", map[string]any{"mailbox": "INBOX", "limit": 2}, &bounded)
+		requireWire(t, server, before, false)
+
+		ids = requireItems(t, "search", all.Results, 105, 104, 103, 102, 101)
+		requireItems(t, "unread search", unread.Results, 105, 104, 103, 102)
+		requireItems(t, "bounded search", bounded.Results, 105, 104)
+		if all.Truncated || unread.Truncated || !bounded.Truncated {
+			t.Fatalf("search truncation = %v/%v/%v, want false/false/true", all.Truncated, unread.Truncated, bounded.Truncated)
+		}
+	})
+	if ids == nil {
+		t.FailNow()
+	}
+
+	t.Run("select_digest_candidates", func(t *testing.T) {
+		before := len(server.Commands())
+
+		var all, unread, bounded wireDigest
+		requireAbsent(t, "digest", callJSON(t, session, "select_digest_candidates", map[string]any{"mailbox": "INBOX", "unreadOnly": false, "sinceHours": 168}, &all), bodySentinels)
+		callJSON(t, session, "select_digest_candidates", map[string]any{"mailbox": "INBOX"}, &unread)
+		callJSON(t, session, "select_digest_candidates", map[string]any{"mailbox": "INBOX", "unreadOnly": false, "limit": 1}, &bounded)
+		commands := requireWire(t, server, before, false)
+
+		requireItems(t, "digest", all.Candidates, 105, 104, 103, 102, 101)
+		requireItems(t, "unread digest", unread.Candidates, 105, 104, 103, 102)
+		requireItems(t, "bounded digest", bounded.Candidates, 105)
+		for _, digest := range []wireDigest{all, unread, bounded} {
+			if digest.Mailbox != "INBOX" || digest.TotalMessages != 5 || digest.UnseenCount != 4 {
+				t.Fatalf("digest summary = %+v", digest)
+			}
+		}
+		if all.Truncated || unread.Truncated || !bounded.Truncated {
+			t.Fatalf("digest truncation = %v/%v/%v, want false/false/true", all.Truncated, unread.Truncated, bounded.Truncated)
+		}
+		statuses := 0
+		for _, command := range commands {
+			upper := strings.ToUpper(command.Raw)
+			if command.Name == "STATUS" {
+				statuses++
+			}
+			if strings.Contains(upper, "UID SEARCH") && (!strings.Contains(upper, " SINCE ") || !strings.Contains(upper, " BEFORE ")) {
+				t.Fatalf("digest search lacks its date window: %q", command.Raw)
+			}
+		}
+		if statuses != 3 {
+			t.Fatalf("digest STATUS commands = %d, want 3", statuses)
+		}
+	})
+
+	t.Run("get_message", func(t *testing.T) {
+		before := len(server.Commands())
+
+		var message getMessageResult
+		requireAbsent(t, "get_message", callJSON(t, session, "get_message", map[string]any{"messageId": ids[uidReport]}, &message), privateSentinels)
+		requireWire(t, server, before, true)
+
+		if message.ID != ids[uidReport] || message.Mailbox != "INBOX" || message.UIDValidity != 9001 || message.UID != uidReport || message.Truncated {
+			t.Fatalf("get_message identity = %+v", message)
+		}
+		if message.Headers.Subject != "Synthetic attachment report" || message.Headers.MessageID != "<attachment-report@croton.test>" || !strings.Contains(message.Text, testkit.SyntheticAttachmentBody) {
+			t.Fatalf("get_message content = %+v", message)
+		}
+		if len(message.Attachments) != 1 || message.Attachments[0].Filename != "report.pdf" || message.Attachments[0].ContentType != "application/pdf" {
+			t.Fatalf("get_message attachments = %+v", message.Attachments)
+		}
+	})
+
+	t.Run("get_thread", func(t *testing.T) {
+		for _, limit := range []int{10, 1} {
+			before := len(server.Commands())
+
+			var thread getThreadResult
+			requireAbsent(t, "get_thread", callJSON(t, session, "get_thread", map[string]any{"messageId": ids[uidReply], "maxMessages": limit}, &thread), bodySentinels)
+			commands := requireWire(t, server, before, false)
+
+			if thread.ID != ids[uidReply] || thread.Mailbox != "INBOX" || thread.UnavailableMembers != nil {
+				t.Fatalf("thread identity = %+v", thread)
+			}
+			parents := map[string]string{}
+			for _, node := range thread.Nodes {
+				if node.Mailbox != "INBOX" || node.UIDValidity != 9001 || ids[node.UID] != node.Key {
+					t.Fatalf("thread node identity = %+v", node)
+				}
+				parents[node.Key] = node.ParentKey
+			}
+			want := map[string]string{ids[uidRoot]: "", ids[uidReply]: ids[uidRoot], ids[uidUnrelated]: ""}
+			if limit == 1 {
+				want = map[string]string{ids[uidReply]: ""}
+			}
+			if fmt.Sprint(parents) != fmt.Sprint(want) || thread.Truncated != (limit == 1) {
+				t.Fatalf("maxMessages=%d thread = %+v, want parents %v", limit, thread, want)
+			}
+
+			headerReads := 0
+			for _, command := range commands {
+				upper := strings.ToUpper(command.Raw)
+				if strings.Contains(upper, "UID FETCH") && strings.Contains(upper, "BODY.PEEK[HEADER]") && !strings.ContainsAny(strings.Fields(upper)[3], ":,*") {
+					headerReads++
+				}
+			}
+			if headerReads == 0 || headerReads > limit {
+				t.Fatalf("maxMessages=%d made %d selected header reads", limit, headerReads)
+			}
+		}
+	})
+
+	t.Run("list_attachments", func(t *testing.T) {
+		for _, tc := range []struct {
+			uid   uint32
+			count int
+		}{{uidReport, 1}, {uidAttachFree, 0}} {
+			before := len(server.Commands())
+
+			var listed listAttachmentsResult
+			requireAbsent(t, "list_attachments", callJSON(t, session, "list_attachments", map[string]any{"messageId": ids[tc.uid]}, &listed), bodySentinels)
+			commands := requireWire(t, server, before, false)
+
+			if listed.ID != ids[tc.uid] || listed.Mailbox != "INBOX" || listed.UIDValidity != 9001 || listed.UID != tc.uid || listed.Truncated {
+				t.Fatalf("list_attachments identity = %+v", listed)
+			}
+			if listed.Attachments == nil || len(listed.Attachments) != tc.count {
+				t.Fatalf("list_attachments(%d) = %+v, want %d entries", tc.uid, listed.Attachments, tc.count)
+			}
+			if tc.count == 1 && (listed.Attachments[0].Filename != "report.pdf" || listed.Attachments[0].Disposition != "attachment" || listed.Attachments[0].HasDeclaredSize) {
+				t.Fatalf("attachment metadata = %+v", listed.Attachments[0])
+			}
+			structure := false
+			for _, command := range commands {
+				structure = structure || strings.Contains(strings.ToUpper(command.Raw), "BODYSTRUCTURE")
+			}
+			if !structure {
+				t.Fatal("list_attachments did not read BODYSTRUCTURE")
+			}
+		}
+	})
+
+	requireAbsent(t, "audit", audit.Bytes(), append(bodySentinels, "INBOX", "Synthetic"))
+	for _, event := range auditLines(t, &audit) {
+		requireAllowlistedKeys(t, event)
+		if event["event"] != "tool_call" || event["outcome"] != "ok" {
+			t.Fatalf("unexpected audit event: %v", event)
+		}
+	}
+}
+
+func TestReadToolsEmptyOverTheWire(t *testing.T) {
+	t.Parallel()
+
+	// The fixture LIST always names INBOX, so an empty folder list comes
+	// from an adapter that reports none.
+	var folders listFoldersResult
+	empty := connectTestClient(t, Options{Mail: &fakeMail{}})
+	if raw := callJSON(t, empty, "list_folders", map[string]any{}, &folders); !bytes.Contains(raw, []byte(`{\"folders\":[]}`)) {
+		t.Fatalf("empty folder list is not an empty array: %s", raw)
+	}
+
+	options := wireFixture()
+	options.Messages, options.BodyStructures = options.Messages[4:], options.BodyStructures[4:]
+	server, adapter := startIntegrationAdapter(t, options)
+	session := connectTestClient(t, Options{Mail: adapter})
+
+	var all, unread wireSearch
+	callJSON(t, session, "search_mail", map[string]any{"mailbox": "INBOX"}, &all)
+	callJSON(t, session, "search_mail", map[string]any{"mailbox": "INBOX", "unreadOnly": true}, &unread)
+	if len(all.Results) != 1 || unread.Results == nil || len(unread.Results) != 0 || unread.Truncated {
+		t.Fatalf("search = %+v, unread = %+v; want one message and an empty unread page", all, unread)
+	}
+	id := all.Results[0].ID
+
+	var digest wireDigest
+	callJSON(t, session, "select_digest_candidates", map[string]any{"mailbox": "INBOX"}, &digest)
+	if digest.Candidates == nil || len(digest.Candidates) != 0 || digest.TotalMessages != 1 || digest.UnseenCount != 0 || digest.Truncated {
+		t.Fatalf("empty digest = %+v", digest)
+	}
+
+	var thread getThreadResult
+	callJSON(t, session, "get_thread", map[string]any{"messageId": id}, &thread)
+	if len(thread.Nodes) != 1 || thread.Nodes[0].Key != id || thread.Truncated {
+		t.Fatalf("single-message thread = %+v", thread)
+	}
+
+	var message getMessageResult
+	callJSON(t, session, "get_message", map[string]any{"messageId": id}, &message)
+	if message.Attachments != nil || message.Truncated || message.TextSource != "plain" {
+		t.Fatalf("attachment-free message = %+v", message)
+	}
+
+	var listed listAttachmentsResult
+	if raw := callJSON(t, session, "list_attachments", map[string]any{"messageId": id}, &listed); !bytes.Contains(raw, []byte(`\"attachments\":[]`)) {
+		t.Fatalf("empty attachment list is not an empty array: %s", raw)
+	}
+
+	requireWire(t, server, 0, true)
+}
+
+func TestReadToolsBoundsOverTheWire(t *testing.T) {
+	t.Parallel()
+
+	// UID 101 fits the 256 KiB body budget but not the result budget; UID
+	// 102 exceeds the body budget.
+	message := func(kib int) string {
+		return "From: Fixture <fixture@croton.test>\r\nSubject: Synthetic oversize\r\nDate: Thu, 01 Jan 2026 00:00:00 +0000\r\n" +
+			"Content-Type: text/plain; charset=utf-8\r\n\r\n" + strings.Repeat("Synthetic oversize line of plain text.\r\n", (kib<<10)/40)
+	}
+	server, adapter := startIntegrationAdapter(t, testkit.Options{Messages: []string{message(150), message(300)}, Scenario: testkit.Scenario{ListResponseCount: 201}})
+	session := connectTestClient(t, Options{Mail: adapter})
+
+	requireToolError(t, callTool(t, session, "list_folders", map[string]any{}), errBoundsExceeded)
+
+	var search wireSearch
+	callJSON(t, session, "search_mail", map[string]any{"mailbox": "INBOX"}, &search)
+	if len(search.Results) != 2 || search.Results[1].UID != 101 {
+		t.Fatalf("search = %+v", search)
+	}
+
+	result := callTool(t, session, "get_message", map[string]any{"messageId": search.Results[1].ID})
+	var decoded getMessageResult
+	decodeResult(t, result, &decoded)
+	if len(resultText(t, result)) > maxToolResultBytes || !decoded.Truncated || !decoded.Truncation.Text && !decoded.Truncation.Output || decoded.UID != 101 {
+		t.Fatalf("oversize message: %d bytes, truncation %+v", len(resultText(t, result)), decoded.Truncation)
+	}
+	requireToolError(t, callTool(t, session, "get_message", map[string]any{"messageId": search.Results[0].ID}), errBoundsExceeded)
+
+	for _, tc := range []struct {
+		tool      string
+		arguments map[string]any
 	}{
-		{"mixed", testkit.SyntheticDigestMixedMailbox(now), 3, 2},
-		{"all_read", testkit.SyntheticDigestAllReadMailbox(now), 1, 0},
+		{"search_mail", map[string]any{"mailbox": "INBOX", "limit": 0}},
+		{"search_mail", map[string]any{"mailbox": strings.Repeat("m", maxMailboxArgumentBytes+1)}},
+		{"search_mail", map[string]any{"mailbox": "INBOX", "subject": strings.Repeat("s", maxSearchTermBytes+1)}},
+		{"search_mail", map[string]any{"mailbox": "INBOX", "since": "yesterday"}},
+		{"select_digest_candidates", map[string]any{"mailbox": "INBOX", "sinceHours": -1}},
+		{"get_message", map[string]any{"messageId": strings.Repeat("x", maxMessageIDArgumentBytes+1)}},
+		{"get_thread", map[string]any{"messageId": search.Results[0].ID, "maxMessages": 0}},
+		{"list_attachments", map[string]any{"messageId": ""}},
+		{"list_folders", map[string]any{"pattern": "*"}},
 	} {
-		t.Run(fixture.name, func(t *testing.T) {
-			server, adapter := startIntegrationAdapterWithOptions(t, fixture.options)
-			var audit bytes.Buffer
-			session := connectTestClient(t, Options{Mail: adapter, Audit: NewAuditor(&audit)})
-
-			cases := []struct {
-				name      string
-				unread    bool
-				limit     int
-				subjects  []string
-				truncated bool
-			}{
-				{"unread", true, 10, []string{"Synthetic digest unread first", "Synthetic digest unread second"}, false},
-				{"all", false, 10, []string{"Synthetic digest unread first", "Synthetic digest unread second", "Synthetic digest read"}, false},
-				{"bounded", true, 1, []string{"Synthetic digest unread first", "Synthetic digest unread second"}, true},
-			}
-			if fixture.unseen == 0 {
-				cases = cases[:1]
-				cases[0].subjects = nil
-			}
-
-			for _, tc := range cases {
-				t.Run(tc.name, func(t *testing.T) {
-					before := len(server.Commands())
-					result := callTool(t, session, "select_digest_candidates", map[string]any{
-						"mailbox": "INBOX", "sinceHours": 72, "unreadOnly": tc.unread, "limit": tc.limit,
-					})
-					raw, err := json.Marshal(result)
-					if err != nil {
-						t.Fatalf("marshal SDK result: %v", err)
-					}
-					for _, sentinel := range sentinels {
-						if bytes.Contains(raw, []byte(sentinel)) {
-							t.Fatal("synthetic body leaked into digest result")
-						}
-					}
-
-					var decoded digestDecoded
-					decodeResult(t, result, &decoded)
-					if decoded.Mailbox != "INBOX" || decoded.TotalMessages != fixture.total || decoded.UnseenCount != fixture.unseen {
-						t.Fatalf("unexpected digest summary: %+v", decoded)
-					}
-					wantCount := min(len(tc.subjects), tc.limit)
-					if decoded.Candidates == nil || len(decoded.Candidates) != wantCount || decoded.Truncated != tc.truncated {
-						t.Fatalf("want %d candidates, truncated=%v: %+v", wantCount, tc.truncated, decoded)
-					}
-
-					allowed := make(map[string]bool)
-					for _, subject := range tc.subjects {
-						allowed[subject] = true
-					}
-					ids := make(map[string]bool)
-					for _, candidate := range decoded.Candidates {
-						if !allowed[candidate.Subject] || candidate.ID == "" || ids[candidate.ID] || candidate.Mailbox != "INBOX" || candidate.Size <= 0 {
-							t.Fatalf("unexpected or duplicate candidate metadata: %+v", candidate)
-						}
-						delete(allowed, candidate.Subject)
-						ids[candidate.ID] = true
-					}
-
-					sawStatus, sawSearch, fetches := false, false, 0
-					for _, command := range server.Commands()[before:] {
-						upper := strings.ToUpper(command.Raw)
-						if !command.TLS {
-							t.Error("digest command used plaintext transport")
-						}
-						if command.Name == "STATUS" {
-							sawStatus = true
-							if !strings.Contains(upper, "MESSAGES") || !strings.Contains(upper, "UNSEEN") {
-								t.Fatalf("STATUS omitted summary fields: %s", command.Raw)
-							}
-						}
-						if strings.Contains(upper, "UID SEARCH ") {
-							sawSearch = true
-							if !boundedUID.MatchString(upper) || !dateBounds.MatchString(upper) || strings.Contains(upper, " UNSEEN") != tc.unread {
-								t.Fatalf("unexpected digest search bounds or unread criterion: %s", command.Raw)
-							}
-						}
-						if strings.Contains(upper, " FETCH ") {
-							fetches++
-							// Permit only UID, FLAGS, size and a non-mutating header read. A
-							// body read fails even if combined with a permitted header read.
-							if !strings.Contains(upper, "UID FETCH ") || !strings.Contains(upper, "BODY.PEEK[HEADER]") {
-								t.Fatalf("unexpected metadata fetch: %s", command.Raw)
-							}
-							_, items, _ := strings.Cut(upper, "(")
-							for _, item := range strings.Fields(strings.TrimSuffix(items, ")")) {
-								if item != "UID" && item != "FLAGS" && item != "RFC822.SIZE" && item != "BODY.PEEK[HEADER]" {
-									t.Fatalf("digest requested non-metadata fetch item: %s", command.Raw)
-								}
-							}
-						}
-					}
-					if !sawStatus || !sawSearch || (fetches > 0) != (wantCount > 0) {
-						t.Fatalf("unexpected wire operations: status=%v search=%v fetches=%d", sawStatus, sawSearch, fetches)
-					}
-
-					requireReadOnlyTranscript(t, server)
-				})
-			}
-
-			for _, sentinel := range sentinels {
-				if strings.Contains(audit.String(), sentinel) {
-					t.Fatal("synthetic body leaked into audit output")
-				}
-			}
-			events := auditLines(t, &audit)
-			if len(events) != len(cases) {
-				t.Fatalf("audit events = %d, want %d", len(events), len(cases))
-			}
-			for _, event := range events {
-				requireAllowlistedKeys(t, event)
-				if event["tool"] != "select_digest_candidates" || event["event"] != "tool_call" || event["outcome"] != "ok" {
-					t.Fatalf("unexpected digest audit event: %v", event)
-				}
-			}
-			if err := server.AssertNoInsecureAuthentication(); err != nil {
-				t.Fatal(err)
-			}
-		})
+		requireToolError(t, callTool(t, session, tc.tool, tc.arguments), errInvalidArgument)
 	}
+
+	requireWire(t, server, 0, true)
+
+	// A sender-built structure with 21 attachments keeps the first 20 and
+	// names the attachment bound.
+	parts := []*testkit.BodyPart{{Kind: testkit.BodyPartText, Type: "text", Subtype: "plain", Size: 4, Lines: 1}}
+	for index := range 21 {
+		name := []testkit.BodyParam{{Name: "filename", Value: fmt.Sprintf("part-%02d.bin", index)}}
+		parts = append(parts, &testkit.BodyPart{Kind: testkit.BodyPartBasic, Type: "application", Subtype: "octet-stream", Size: 4, Disposition: &testkit.BodyDisposition{Value: "attachment", Params: name}})
+	}
+	_, adapter = startIntegrationAdapter(t, testkit.Options{
+		Messages:       []string{"From: Fixture <fixture@croton.test>\r\nSubject: Synthetic many parts\r\nContent-Type: multipart/mixed; boundary=many\r\n\r\n--many--\r\n"},
+		BodyStructures: []*testkit.BodyPart{{Kind: testkit.BodyPartMultipart, Subtype: "mixed", Params: []testkit.BodyParam{{Name: "boundary", Value: "many"}}, Children: parts}},
+	})
+	session = connectTestClient(t, Options{Mail: adapter})
+	callJSON(t, session, "search_mail", map[string]any{"mailbox": "INBOX"}, &search)
+	if len(search.Results) != 1 {
+		t.Fatalf("many-part search = %+v", search)
+	}
+	var listed listAttachmentsResult
+	callJSON(t, session, "list_attachments", map[string]any{"messageId": search.Results[0].ID}, &listed)
+	if len(listed.Attachments) != 20 || listed.Attachments[19].Filename != "part-19.bin" || listed.Truncation != (attachmentListTruncation{Attachments: true}) || !listed.Truncated {
+		t.Fatalf("21 attachments = %d entries, truncation %+v (truncated %v)", len(listed.Attachments), listed.Truncation, listed.Truncated)
+	}
+}
+
+func TestReadToolsUnavailableOverTheWire(t *testing.T) {
+	t.Parallel()
+
+	t.Run("stale_id", func(t *testing.T) {
+		t.Parallel()
+
+		// The generation changes after the search's EXAMINE; every selected
+		// read refuses before any FETCH, so no BODYSTRUCTURE is needed.
+		options := wireFixture()
+		options.BodyStructures, options.Scenario.UIDValidityAfterExamine = nil, 9002
+		_, adapter := startIntegrationAdapter(t, options)
+		session := connectTestClient(t, Options{Mail: adapter})
+
+		var search wireSearch
+		callJSON(t, session, "search_mail", map[string]any{"mailbox": "INBOX"}, &search)
+		if len(search.Results) == 0 {
+			t.Fatal("fixture search is empty")
+		}
+		for _, tool := range []string{"get_message", "get_thread", "list_attachments"} {
+			requireToolError(t, callTool(t, session, tool, map[string]any{"messageId": search.Results[0].ID}), errStaleID)
+		}
+	})
+
+	t.Run("bridge_gone", func(t *testing.T) {
+		t.Parallel()
+
+		server, adapter := startIntegrationAdapter(t, wireFixture())
+		session := connectTestClient(t, Options{Mail: adapter})
+		var search wireSearch
+		callJSON(t, session, "search_mail", map[string]any{"mailbox": "INBOX"}, &search)
+		if len(search.Results) == 0 {
+			t.Fatal("fixture search is empty")
+		}
+		if err := server.Close(); err != nil {
+			t.Fatalf("close fake server: %v", err)
+		}
+
+		for tool, arguments := range readCalls {
+			if arguments["messageId"] != nil {
+				arguments = map[string]any{"messageId": search.Results[0].ID}
+			}
+			requireToolError(t, callTool(t, session, tool, arguments), errUnavailable)
+		}
+	})
 }

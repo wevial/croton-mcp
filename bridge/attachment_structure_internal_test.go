@@ -2,7 +2,10 @@ package bridge
 
 import (
 	"context"
+	"net"
+	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -23,6 +26,49 @@ type attachmentStructureResult struct {
 
 type attachmentStructureView struct {
 	Metadata AttachmentMetadata
+}
+
+func startTLSHeaderAdapter(t *testing.T, mode testkit.TLSMode, options testkit.Options) (*testkit.Server, *Adapter) {
+	t.Helper()
+
+	options.Mode = mode
+	server, err := testkit.Start(options)
+	if err != nil {
+		t.Fatalf("start fake server: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	host, port, err := net.SplitHostPort(server.Addr())
+	if err != nil {
+		t.Fatalf("split fake server address: %v", err)
+	}
+	number, err := strconv.Atoi(port)
+	if err != nil {
+		t.Fatalf("parse fake server port: %v", err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+
+	tlsMode := TLSModeStartTLS
+	if mode == testkit.ImplicitTLS {
+		tlsMode = TLSModeImplicit
+	}
+	adapter, err := NewAdapter(Config{IMAP: IMAPConfig{
+		Host:              host,
+		Port:              number,
+		TLSMode:           tlsMode,
+		CredentialCommand: []string{executable, "-test.run=TestCredentialHelperProcess", "--", "valid"},
+		TLS:               TLSConfig{SPKISHA256: server.SPKISHA256()},
+		ConnectTimeoutMs:  1000,
+	}})
+	if err != nil {
+		t.Fatalf("NewAdapter: %v", err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+
+	return server, adapter
 }
 
 // callAttachmentStructure invokes Adapter.GetMessageAttachmentStructure

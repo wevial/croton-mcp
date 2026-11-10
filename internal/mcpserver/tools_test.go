@@ -1,7 +1,6 @@
 package mcpserver
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"testing"
@@ -11,116 +10,55 @@ import (
 )
 
 // fakeMail is a deterministic Mail implementation for protocol-level tests.
+// It answers headers and attachment structure so every read tool is
+// reachable; err fails every call.
 type fakeMail struct {
-	folders         []bridge.Folder
-	status          bridge.MailboxStatus
-	searched        []bridge.MessageMetadata
-	searchTruncated bool
-	metadata        bridge.MessageMetadata
-	body            []byte
-	metadataByID    map[string]bridge.MessageMetadata
-	bodyByID        map[string][]byte
-	err             error
-	searchCalls     []bridge.SearchQuery
-	bodyCalls       []string
-	metaCalls       []string
-	headerCalls     []string
-	headerErrByID   map[string]error
+	folders     []bridge.Folder
+	searched    []bridge.MessageMetadata
+	partial     bool
+	metadata    bridge.MessageMetadata
+	body        []byte
+	headers     map[string]bridge.MessageHeaders
+	headerErr   map[string]error
+	headerReads int
+	structure   bridge.MessageAttachmentStructure
+	err         error
 }
 
-func (mail *fakeMail) ListFolders(ctx context.Context) ([]bridge.Folder, error) {
-	if mail.err != nil {
-		return nil, mail.err
-	}
-	return mail.folders, nil
+func (mail *fakeMail) ListFolders(context.Context) ([]bridge.Folder, error) {
+	return mail.folders, mail.err
 }
 
-func (mail *fakeMail) Status(ctx context.Context, mailbox string) (bridge.MailboxStatus, error) {
-	if mail.err != nil {
-		return bridge.MailboxStatus{}, mail.err
-	}
-	return mail.status, nil
+func (mail *fakeMail) Status(context.Context, string) (bridge.MailboxStatus, error) {
+	return bridge.MailboxStatus{}, mail.err
 }
 
-func (mail *fakeMail) SearchMail(ctx context.Context, query bridge.SearchQuery) ([]bridge.MessageMetadata, error) {
-	mail.searchCalls = append(mail.searchCalls, query)
-	if mail.err != nil {
-		return nil, mail.err
-	}
-	return mail.searched, nil
+func (mail *fakeMail) SearchMailPage(context.Context, bridge.SearchQuery) (bridge.SearchPage, error) {
+	return bridge.SearchPage{Messages: mail.searched, Truncated: mail.partial}, mail.err
 }
 
-func (mail *fakeMail) SearchMailPage(ctx context.Context, query bridge.SearchQuery) (bridge.SearchPage, error) {
-	mail.searchCalls = append(mail.searchCalls, query)
-	if mail.err != nil {
-		return bridge.SearchPage{}, mail.err
-	}
-	return bridge.SearchPage{Messages: mail.searched, Truncated: mail.searchTruncated}, nil
+func (mail *fakeMail) GetMessageMetadata(context.Context, string) (bridge.MessageMetadata, error) {
+	return mail.metadata, mail.err
 }
 
-func (mail *fakeMail) GetMessageMetadata(ctx context.Context, identifier string) (bridge.MessageMetadata, error) {
-	mail.metaCalls = append(mail.metaCalls, identifier)
-	if mail.err != nil {
-		return bridge.MessageMetadata{}, mail.err
-	}
-	if mail.metadataByID != nil {
-		metadata, ok := mail.metadataByID[identifier]
-		if !ok {
-			return bridge.MessageMetadata{}, &bridge.Error{Code: bridge.CodeStaleMessageID}
-		}
-		return metadata, nil
-	}
-	return mail.metadata, nil
+func (mail *fakeMail) GetMessageBody(context.Context, string) ([]byte, error) {
+	return mail.body, mail.err
 }
 
-func (mail *fakeMail) GetMessageBody(ctx context.Context, identifier string) ([]byte, error) {
-	mail.bodyCalls = append(mail.bodyCalls, identifier)
-	if mail.err != nil {
-		return nil, mail.err
-	}
-	if mail.bodyByID != nil {
-		body, ok := mail.bodyByID[identifier]
-		if !ok {
-			return nil, &bridge.Error{Code: bridge.CodeStaleMessageID}
-		}
-		return body, nil
-	}
-	return mail.body, nil
-}
-
-// GetMessageHeaders derives the fixture message's canonical headers without
-// recording a body or metadata call.
-func (mail *fakeMail) GetMessageHeaders(ctx context.Context, identifier string) (bridge.MessageHeaders, error) {
-	mail.headerCalls = append(mail.headerCalls, identifier)
+func (mail *fakeMail) GetMessageHeaders(_ context.Context, identifier string) (bridge.MessageHeaders, error) {
+	mail.headerReads++
 	if mail.err != nil {
 		return bridge.MessageHeaders{}, mail.err
 	}
-	if err := mail.headerErrByID[identifier]; err != nil {
+	if err := mail.headerErr[identifier]; err != nil {
 		return bridge.MessageHeaders{}, err
 	}
 
-	metadata, raw := mail.metadata, mail.body
-	if mail.metadataByID != nil {
-		found, ok := mail.metadataByID[identifier]
-		if !ok {
-			return bridge.MessageHeaders{}, &bridge.Error{Code: bridge.CodeStaleMessageID}
-		}
-		metadata = found
-	}
-	if mail.bodyByID != nil {
-		found, ok := mail.bodyByID[identifier]
-		if !ok {
-			return bridge.MessageHeaders{}, &bridge.Error{Code: bridge.CodeStaleMessageID}
-		}
-		raw = found
-	}
+	return mail.headers[identifier], nil
+}
 
-	normalized, err := bridge.NormalizeMessage(bytes.NewReader(raw), bridge.NormalizeOptions{})
-	if err != nil {
-		return bridge.MessageHeaders{}, err
-	}
-
-	return bridge.MessageHeaders{Metadata: metadata, Headers: normalized.Headers}, nil
+func (mail *fakeMail) GetMessageAttachmentStructure(context.Context, string) (bridge.MessageAttachmentStructure, error) {
+	return mail.structure, mail.err
 }
 
 func connectTestClient(t *testing.T, options Options) *mcp.ClientSession {
@@ -143,6 +81,49 @@ func connectTestClient(t *testing.T, options Options) *mcp.ClientSession {
 	return clientSession
 }
 
+func callTool(t *testing.T, session *mcp.ClientSession, name string, arguments any) *mcp.CallToolResult {
+	t.Helper()
+
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: arguments})
+	if err != nil {
+		t.Fatalf("call %s: %v", name, err)
+	}
+	return result
+}
+
+func resultText(t *testing.T, result *mcp.CallToolResult) string {
+	t.Helper()
+
+	if len(result.Content) != 1 {
+		t.Fatalf("content items = %d, want 1", len(result.Content))
+	}
+	text, ok := result.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("content type = %T, want *mcp.TextContent", result.Content[0])
+	}
+	return text.Text
+}
+
+func decodeResult(t *testing.T, result *mcp.CallToolResult, target any) {
+	t.Helper()
+
+	if result.IsError {
+		t.Fatalf("unexpected tool error: %s", resultText(t, result))
+	}
+	if err := json.Unmarshal([]byte(resultText(t, result)), target); err != nil {
+		t.Fatalf("tool result is not valid JSON: %v: %s", err, resultText(t, result))
+	}
+}
+
+func requireToolError(t *testing.T, result *mcp.CallToolResult, wantCode string) {
+	t.Helper()
+
+	text := resultText(t, result)
+	if !result.IsError || text != `{"error":{"code":"`+wantCode+`"}}` {
+		t.Fatalf("result = %s (isError %v), want tool error %q", text, result.IsError, wantCode)
+	}
+}
+
 func TestToolCatalogIsExactlySixReadOnlyTools(t *testing.T) {
 	t.Parallel()
 
@@ -153,133 +134,57 @@ func TestToolCatalogIsExactlySixReadOnlyTools(t *testing.T) {
 		t.Fatalf("list tools: %v", err)
 	}
 
-	want := []string{
-		"get_message",
-		"get_thread",
-		"list_attachments",
-		"list_folders",
-		"search_mail",
-		"select_digest_candidates",
+	want := map[string]bool{"get_message": true, "get_thread": true, "list_attachments": true, "list_folders": true, "search_mail": true, "select_digest_candidates": true}
+	if len(listed.Tools) != len(want) {
+		t.Fatalf("tool count = %d, want %d", len(listed.Tools), len(want))
 	}
-	var got []string
-	byName := make(map[string]*mcp.Tool)
 	for _, tool := range listed.Tools {
-		got = append(got, tool.Name)
-		byName[tool.Name] = tool
-	}
-	if len(got) != len(want) {
-		t.Fatalf("tool count = %d (%v), want %d", len(got), got, len(want))
-	}
-	for _, name := range want {
-		tool, ok := byName[name]
-		if !ok {
-			t.Fatalf("tool %q missing from catalog %v", name, got)
+		if !want[tool.Name] {
+			t.Fatalf("unexpected tool %q", tool.Name)
 		}
-		if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
-			t.Errorf("tool %q does not carry readOnlyHint=true", name)
-		}
-		if tool.Annotations != nil && tool.Annotations.OpenWorldHint != nil && *tool.Annotations.OpenWorldHint {
-			t.Errorf("tool %q advertises an open world", name)
+		if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint || tool.Annotations.OpenWorldHint == nil || *tool.Annotations.OpenWorldHint {
+			t.Errorf("tool %q is not annotated read-only and closed-world", tool.Name)
 		}
 
-		schemaJSON, err := json.Marshal(tool.InputSchema)
-		if err != nil {
-			t.Fatalf("marshal %q input schema: %v", name, err)
-		}
-		var schema struct {
-			Type                 string          `json:"type"`
-			AdditionalProperties *bool           `json:"additionalProperties"`
-			Properties           json.RawMessage `json:"properties"`
-		}
-		if err := json.Unmarshal(schemaJSON, &schema); err != nil {
-			t.Fatalf("decode %q input schema: %v", name, err)
-		}
-		if schema.Type != "object" {
-			t.Errorf("tool %q schema type = %q, want object", name, schema.Type)
-		}
-		if schema.AdditionalProperties == nil || *schema.AdditionalProperties {
-			t.Errorf("tool %q schema does not reject additional properties", name)
-		}
-	}
-}
-
-func TestSchemaStringInputsCarryBoundedMaxLength(t *testing.T) {
-	t.Parallel()
-
-	session := connectTestClient(t, Options{Mail: &fakeMail{}})
-
-	listed, err := session.ListTools(context.Background(), &mcp.ListToolsParams{})
-	if err != nil {
-		t.Fatalf("list tools: %v", err)
-	}
-
-	for _, tool := range listed.Tools {
 		schemaJSON, err := json.Marshal(tool.InputSchema)
 		if err != nil {
 			t.Fatalf("marshal %q input schema: %v", tool.Name, err)
 		}
 		var schema struct {
-			Properties map[string]struct {
-				Type      string   `json:"type"`
-				MaxLength *int     `json:"maxLength"`
-				MaxBytes  *int     `json:"x-maxBytes"`
-				Maximum   *float64 `json:"maximum"`
-				Minimum   *float64 `json:"minimum"`
+			Type                 string `json:"type"`
+			AdditionalProperties *bool  `json:"additionalProperties"`
+			Properties           map[string]struct {
+				Type      string `json:"type"`
+				MaxLength *int   `json:"maxLength"`
+				MaxBytes  *int   `json:"x-maxBytes"`
+				Maximum   *int   `json:"maximum"`
+				Minimum   *int   `json:"minimum"`
 			} `json:"properties"`
 		}
 		if err := json.Unmarshal(schemaJSON, &schema); err != nil {
 			t.Fatalf("decode %q input schema: %v", tool.Name, err)
 		}
-		for propertyName, property := range schema.Properties {
-			switch property.Type {
-			case "string":
-				if property.MaxLength == nil || *property.MaxLength <= 0 {
-					t.Errorf("%s.%s: string property lacks positive maxLength", tool.Name, propertyName)
-				}
-				if property.MaxBytes == nil || *property.MaxBytes <= 0 {
-					t.Errorf("%s.%s: string property lacks positive x-maxBytes", tool.Name, propertyName)
-				}
-			case "integer":
-				if property.Maximum == nil || property.Minimum == nil {
-					t.Errorf("%s.%s: integer property lacks minimum/maximum", tool.Name, propertyName)
-				}
-			case "boolean":
+		if schema.Type != "object" || schema.AdditionalProperties == nil || *schema.AdditionalProperties {
+			t.Errorf("tool %q schema is not a closed object", tool.Name)
+		}
+		for name, property := range schema.Properties {
+			switch {
+			case property.Type == "string" && property.MaxLength != nil && property.MaxBytes != nil && *property.MaxLength > 0:
+			case property.Type == "integer" && property.Minimum != nil && property.Maximum != nil:
+			case property.Type == "boolean":
 			default:
-				t.Errorf("%s.%s: unexpected schema property type %q", tool.Name, propertyName, property.Type)
+				t.Errorf("%s.%s is not a bounded property: %+v", tool.Name, name, property)
 			}
 		}
 	}
-}
 
-func TestServerAdvertisesOnlyToolCapability(t *testing.T) {
-	t.Parallel()
-
-	session := connectTestClient(t, Options{Mail: &fakeMail{}})
-
-	result := session.InitializeResult()
-	if result == nil {
-		t.Fatal("no initialize result")
-	}
-	capabilitiesJSON, err := json.Marshal(result.Capabilities)
+	capabilities, err := json.Marshal(session.InitializeResult().Capabilities)
 	if err != nil {
 		t.Fatalf("marshal capabilities: %v", err)
 	}
-	var advertised map[string]json.RawMessage
-	if err := json.Unmarshal(capabilitiesJSON, &advertised); err != nil {
-		t.Fatalf("decode capabilities: %v", err)
+	if string(capabilities) != `{"tools":{}}` {
+		t.Fatalf("capabilities = %s, want only a fixed tool catalog", capabilities)
 	}
-	if _, ok := advertised["tools"]; !ok {
-		t.Errorf("capabilities missing tools: %s", capabilitiesJSON)
-	}
-	for name := range advertised {
-		if name != "tools" && name != "completions" {
-			t.Errorf("unexpected capability %q advertised: %s", name, capabilitiesJSON)
-		}
-	}
-	if _, ok := advertised["completions"]; ok {
-		t.Errorf("completions capability advertised: %s", capabilitiesJSON)
-	}
-
 	if _, err := session.ListResources(context.Background(), &mcp.ListResourcesParams{}); err == nil {
 		t.Error("resources/list unexpectedly succeeded")
 	}
