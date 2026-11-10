@@ -8,7 +8,7 @@ statement of the product vision is realized in the tree, and what deliberately
 lives outside the module.
 
 Tool contracts live in [docs/MCP.md](MCP.md); trust boundaries and residual risks live in
-[docs/THREAT_MODEL.md](THREAT_MODEL.md); deployment steps live in
+[SECURITY.md](../SECURITY.md); deployment steps live in
 [docs/DEPLOYMENT.md](DEPLOYMENT.md). This page does not restate them.
 
 ## Product form
