@@ -533,7 +533,6 @@ func TestSearchMailCursorPages(t *testing.T) {
 	session := connectTestClient(t, Options{Mail: adapter})
 
 	var pages []wireSearch
-	seen := make(map[uint32]bool)
 	next := uint32(220)
 	arguments := map[string]any{"mailbox": "INBOX", "limit": 50}
 	for index, size := range []int{50, 50, 20} {
@@ -543,10 +542,9 @@ func TestSearchMailCursorPages(t *testing.T) {
 			t.Fatalf("page %d has %d results, want %d", index, len(page.Results), size)
 		}
 		for _, item := range page.Results {
-			if item.UID != next || seen[item.UID] {
-				t.Fatalf("page %d UID %d, want %d once", index, item.UID, next)
+			if item.UID != next {
+				t.Fatalf("page %d UID %d, want %d", index, item.UID, next)
 			}
-			seen[item.UID] = true
 			next--
 		}
 		last := index == 2
