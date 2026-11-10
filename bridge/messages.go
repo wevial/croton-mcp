@@ -6,6 +6,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"unicode/utf8"
 )
 
 // GetMessageMetadata resolves an opaque message identifier only after a fresh
@@ -194,7 +195,8 @@ func (selector *textSelector) visit(structure bodyStructure, part []int, depth i
 // decode sets message's text from raw, the first fetchLimit bytes of the
 // section. A cut base64 section is decoded only up to its last complete
 // quantum and a cut quoted-printable section drops only a trailing incomplete
-// escape, so a split quantum or escape is never decoded.
+// escape, so a split quantum or escape is never decoded. A cut UTF-8, US-ASCII
+// or unlabelled section drops a trailing incomplete rune.
 func (section *textSection) decode(message *NormalizedMessage, raw []byte, fetchLimit int64, textLimit int) error {
 	cut := int64(section.size) > fetchLimit
 	encoding := strings.ToLower(strings.TrimSpace(section.encoding))
@@ -221,6 +223,15 @@ func (section *textSection) decode(message *NormalizedMessage, raw []byte, fetch
 	decoded, transferTruncated, err := decodeTransfer(bytes.NewReader(raw), encoding, textLimit)
 	if err != nil {
 		return err
+	}
+	if cut && (section.charset == "" || strings.EqualFold(section.charset, "utf-8") || strings.EqualFold(section.charset, "us-ascii")) {
+		start := len(decoded) - 1
+		for start > 0 && start > len(decoded)-utf8.UTFMax && !utf8.RuneStart(decoded[start]) {
+			start--
+		}
+		if start >= 0 && !utf8.FullRune(decoded[start:]) {
+			decoded = decoded[:start]
+		}
 	}
 
 	text, charsetTruncated, err := decodeCharset(decoded, section.charset, textLimit)
