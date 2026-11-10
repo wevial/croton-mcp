@@ -9,9 +9,8 @@ import (
 	"github.com/wevial/croton-mcp/bridge"
 )
 
-// fakeMail is a deterministic Mail implementation for protocol-level tests.
-// It answers headers and attachment structure so every read tool is
-// reachable; err fails every call.
+// fakeMail is a deterministic Mail implementation for protocol-level tests;
+// err fails every call.
 type fakeMail struct {
 	folders     []bridge.Folder
 	searched    []bridge.MessageMetadata
@@ -65,7 +64,7 @@ func connectTestClient(t *testing.T, options Options) *mcp.ClientSession {
 	t.Helper()
 
 	clientTransport, serverTransport := mcp.NewInMemoryTransports()
-	serverSession, err := New(options).Connect(context.Background(), serverTransport, nil)
+	serverSession, err := New(options).sdk.Connect(context.Background(), serverTransport, nil)
 	if err != nil {
 		t.Fatalf("connect server: %v", err)
 	}

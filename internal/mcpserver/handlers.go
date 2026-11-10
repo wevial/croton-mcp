@@ -469,12 +469,7 @@ func runGetThread(ctx context.Context, deps Options, arguments json.RawMessage) 
 		return nil, errInvalidArgument
 	}
 
-	reader, ok := deps.Mail.(MessageHeaderReader)
-	if !ok {
-		return nil, errUnsupported
-	}
-
-	target, err := reader.GetMessageHeaders(ctx, input.MessageID)
+	target, err := deps.Mail.GetMessageHeaders(ctx, input.MessageID)
 	if err != nil {
 		if threadHeaderLocalFailure(err) {
 			return nil, errUnavailable
@@ -489,7 +484,7 @@ func runGetThread(ctx context.Context, deps Options, arguments json.RawMessage) 
 	identities := map[string]bridge.MessageMetadata{input.MessageID: target.Metadata}
 	truncations := map[string]threadNodeTruncation{input.MessageID: newThreadNodeTruncation(target.Truncation)}
 	members := []bridge.ThreadMessage{{Key: input.MessageID, Headers: target.Headers}}
-	members, unavailable, siblingsTruncated, errCode := appendThreadSiblings(ctx, reader, deps, members, identities, truncations, target.Metadata, limit)
+	members, unavailable, siblingsTruncated, errCode := appendThreadSiblings(ctx, deps, members, identities, truncations, target.Metadata, limit)
 	if errCode != "" {
 		return nil, errCode
 	}
@@ -536,7 +531,7 @@ func runGetThread(ctx context.Context, deps Options, arguments json.RawMessage) 
 // attempted sibling omitted as stale, without a complete read identity, or
 // with a malformed encoded header. Every such omission marks the result
 // truncated.
-func appendThreadSiblings(ctx context.Context, reader MessageHeaderReader, deps Options, members []bridge.ThreadMessage, identities map[string]bridge.MessageMetadata, truncations map[string]threadNodeTruncation, target bridge.MessageMetadata, limit int) ([]bridge.ThreadMessage, []threadUnavailableMember, bool, string) {
+func appendThreadSiblings(ctx context.Context, deps Options, members []bridge.ThreadMessage, identities map[string]bridge.MessageMetadata, truncations map[string]threadNodeTruncation, target bridge.MessageMetadata, limit int) ([]bridge.ThreadMessage, []threadUnavailableMember, bool, string) {
 	subject := baseSubject(target.Subject)
 	if subject == "" || target.Mailbox == "" {
 		return members, nil, false, ""
@@ -575,7 +570,7 @@ func appendThreadSiblings(ctx context.Context, reader MessageHeaderReader, deps 
 		}
 		attempts++
 
-		sibling, err := reader.GetMessageHeaders(ctx, candidate.ID)
+		sibling, err := deps.Mail.GetMessageHeaders(ctx, candidate.ID)
 		if err != nil {
 			if threadHeaderLocalFailure(err) {
 				unavailable = append(unavailable, threadUnavailableMember{Reason: threadUnavailableMalformedHeader})
@@ -640,13 +635,6 @@ func baseSubject(subject string) string {
 	return trimmed
 }
 
-// MessageAttachmentStructureReader is the optional selected structure-only
-// read beside Mail. list_attachments requires it and refuses as unsupported
-// without falling back to body reads; *bridge.Adapter satisfies it.
-type MessageAttachmentStructureReader interface {
-	GetMessageAttachmentStructure(ctx context.Context, identifier string) (bridge.MessageAttachmentStructure, error)
-}
-
 type listAttachmentsResult struct {
 	ID          string                   `json:"id"`
 	Mailbox     string                   `json:"mailbox"`
@@ -665,12 +653,7 @@ func runListAttachments(ctx context.Context, deps Options, arguments json.RawMes
 		return nil, errInvalidArgument
 	}
 
-	reader, ok := deps.Mail.(MessageAttachmentStructureReader)
-	if !ok {
-		return nil, errUnsupported
-	}
-
-	structure, err := reader.GetMessageAttachmentStructure(ctx, input.MessageID)
+	structure, err := deps.Mail.GetMessageAttachmentStructure(ctx, input.MessageID)
 	if err != nil {
 		return nil, mapAdapterError(err)
 	}

@@ -17,10 +17,8 @@ package stdioframe
 
 import (
 	"bufio"
-	"encoding/json"
 	"errors"
 	"io"
-	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/wevial/croton-mcp/internal/strictjson"
@@ -101,7 +99,7 @@ func (reader *boundedFrameReader) Read(destination []byte) (int, error) {
 			reader.terminalErr = err
 			return 0, err
 		}
-		if !strictjson.ValidateObject(frame, reader.maximum) || !validProtocolAliases(frame) {
+		if !strictjson.ValidateObject(frame, reader.maximum) {
 			reader.terminalErr = errStdioFrameInvalid
 			return 0, reader.terminalErr
 		}
@@ -115,55 +113,4 @@ func (reader *boundedFrameReader) Read(destination []byte) (int, error) {
 	count := copy(destination, reader.pending)
 	reader.pending = reader.pending[count:]
 	return count, nil
-}
-
-// validProtocolAliases rejects case-folded aliases throughout the protocol
-// envelope while preserving case-sensitive identifiers in SDK-defined open
-// maps. Exact duplicates and depth limits are enforced first by strictjson.
-func validProtocolAliases(frame []byte) bool {
-	var value any
-	if json.Unmarshal(frame, &value) != nil {
-		return false
-	}
-	return validAliasesAt(value, nil)
-}
-
-func validAliasesAt(value any, path []string) bool {
-	switch typed := value.(type) {
-	case map[string]any:
-		if openProtocolMap(path) {
-			return true
-		}
-		keys := make([]string, 0, len(typed))
-		for key, nested := range typed {
-			for _, existing := range keys {
-				if strings.EqualFold(existing, key) {
-					return false
-				}
-			}
-			keys = append(keys, key)
-			if !validAliasesAt(nested, append(path, key)) {
-				return false
-			}
-		}
-	case []any:
-		for _, nested := range typed {
-			if !validAliasesAt(nested, path) {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-func openProtocolMap(path []string) bool {
-	if len(path) == 0 {
-		return false
-	}
-	last := path[len(path)-1]
-	if strings.EqualFold(last, "_meta") || strings.EqualFold(last, "arguments") {
-		return true
-	}
-	return len(path) >= 2 && strings.EqualFold(path[len(path)-2], "capabilities") &&
-		(strings.EqualFold(last, "experimental") || strings.EqualFold(last, "extensions"))
 }

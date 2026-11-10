@@ -1,14 +1,9 @@
 package mcpserver
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"sync"
-	"syscall"
-
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // Auditor emits allowlisted, metadata-only audit events as JSON lines. A nil
@@ -39,9 +34,9 @@ type auditEvent struct {
 	Truncated bool   `json:"truncated,omitempty"`
 }
 
-// ToolCall records one tool invocation outcome. Metadata-only: the tool name,
-// outcome, and error code are each re-validated against fixed allowlists so
-// even an unexpected upstream value cannot smuggle content into the log.
+// ToolCall records one tool invocation outcome. Callers pass only the static
+// tool name, outcome and error code constants, never caller input or error
+// detail.
 func (auditor *Auditor) ToolCall(tool, outcome, code string, truncated bool) {
 	if auditor == nil {
 		return
@@ -49,9 +44,9 @@ func (auditor *Auditor) ToolCall(tool, outcome, code string, truncated bool) {
 
 	event := auditEvent{
 		Event:     "tool_call",
-		Tool:      sanitizeToolName(tool),
-		Outcome:   sanitizeOutcome(outcome),
-		Code:      sanitizeErrorCode(code),
+		Tool:      tool,
+		Outcome:   outcome,
+		Code:      code,
 		Truncated: truncated,
 	}
 
@@ -67,55 +62,4 @@ func (auditor *Auditor) writeEvent(event any) {
 	auditor.mu.Lock()
 	defer auditor.mu.Unlock()
 	_, _ = auditor.writer.Write(append(encoded, '\n'))
-}
-
-func sanitizeToolName(tool string) string {
-	switch tool {
-	case "list_folders", "search_mail", "get_message", "get_thread", "list_attachments", "select_digest_candidates", "mark_read", "mark_unread", "move_mail", "archive_mail", "trash_mail":
-		return tool
-	default:
-		return "unknown_tool"
-	}
-}
-
-func sanitizeOutcome(outcome string) string {
-	if outcome == "ok" {
-		return "ok"
-	}
-
-	return "error"
-}
-
-func sanitizeErrorCode(code string) string {
-	switch code {
-	case "", errInvalidArgument, errNotFound, errStaleID, errBoundsExceeded, errTimedOut, errCanceled, errUnavailable, errUnsupported, errInternal:
-		return code
-	default:
-		return errInternal
-	}
-}
-
-// transportEndEvent is independent of tool audit metadata and contains no
-// transport error detail.
-type transportEndEvent struct {
-	Event    string `json:"event"`
-	Category string `json:"category"`
-}
-
-func (auditor *Auditor) transportEnd(err error) {
-	if auditor == nil {
-		return
-	}
-
-	category := "transport_failure"
-	switch {
-	case err == nil, errors.Is(err, io.EOF), errors.Is(err, mcp.ErrConnectionClosed):
-		category = "normal_close"
-	case errors.Is(err, context.Canceled):
-		category = "canceled"
-	case errors.Is(err, syscall.EPIPE):
-		category = "client_disconnected"
-	}
-
-	auditor.writeEvent(transportEndEvent{Event: "transport_end", Category: category})
 }

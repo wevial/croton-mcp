@@ -15,6 +15,7 @@ import (
 	"github.com/wevial/croton-mcp/bridge"
 	"github.com/wevial/croton-mcp/internal/config"
 	"github.com/wevial/croton-mcp/internal/mcpserver"
+	"github.com/wevial/croton-mcp/internal/stdioframe"
 )
 
 func main() {
@@ -61,5 +62,5 @@ func run(ctx context.Context, arguments []string, stderr io.Writer) error {
 
 	server := mcpserver.New(options)
 
-	return mcpserver.Serve(ctx, server, mcpserver.NewStdioTransport(os.Stdin, os.Stdout))
+	return mcpserver.Serve(ctx, server, stdioframe.NewTransport(os.Stdin, os.Stdout))
 }

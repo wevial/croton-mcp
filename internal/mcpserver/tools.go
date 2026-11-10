@@ -189,7 +189,7 @@ func makeHandler(definition toolDefinition, options Options) mcp.ToolHandler {
 		}
 
 		encoded, truncated, encodeErr := encodeBounded(result)
-		if errors.Is(encodeErr, errUnretainableIdentity) {
+		if errors.Is(encodeErr, errOutputExceeded) {
 			options.Audit.ToolCall(definition.name, "error", errBoundsExceeded, false)
 			return errorResult(errBoundsExceeded), nil
 		}

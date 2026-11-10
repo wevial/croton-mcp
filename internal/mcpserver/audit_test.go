@@ -73,10 +73,4 @@ func TestAuditNeverRecordsInputsOrWrappedErrors(t *testing.T) {
 	}
 
 	NewAuditor(nil).ToolCall("list_folders", "ok", "", false)
-
-	buffer.Reset()
-	NewAuditor(&buffer).ToolCall("evil tool hunter2", "maybe", "secret code", false)
-	if got := strings.TrimSpace(buffer.String()); got != `{"event":"tool_call","tool":"unknown_tool","outcome":"error","code":"internal"}` {
-		t.Fatalf("unsanitized audit event: %s", got)
-	}
 }

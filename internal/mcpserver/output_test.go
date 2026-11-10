@@ -53,33 +53,32 @@ func TestOversizeResultsShrinkToValidBoundedJSON(t *testing.T) {
 	}
 }
 
-func TestEncodeBoundedFallbacks(t *testing.T) {
+func TestUnshrinkableOversizeResultIsBoundsExceeded(t *testing.T) {
 	t.Parallel()
 
 	huge := strings.Repeat("é", maxToolResultBytes)
+	var audit bytes.Buffer
+	session := connectTestClient(t, Options{Audit: NewAuditor(&audit), Mail: &fakeMail{
+		metadata:  bridge.MessageMetadata{ID: huge, Mailbox: "INBOX", UIDValidity: 3001, UID: 7},
+		body:      []byte("Subject: Oversize identity\r\n\r\nbody\r\n"),
+		structure: bridge.MessageAttachmentStructure{ID: "opaque-target", Mailbox: huge, UIDValidity: 3001, UID: 7},
+	}})
 
-	encoded, truncated, err := encodeBounded(map[string]string{"blob": huge})
-	if err != nil || !truncated || string(encoded) != `{"truncated":true}` {
-		t.Fatalf("unshrinkable value = %s, %v, %v", encoded, truncated, err)
+	for _, tool := range []string{"get_message", "list_attachments"} {
+		result := callTool(t, session, tool, map[string]any{"messageId": "opaque-target"})
+		requireToolError(t, result, errBoundsExceeded)
+		if strings.Contains(resultText(t, result), "é") {
+			t.Fatalf("%s wrote oversize content: %.80s", tool, resultText(t, result))
+		}
 	}
 
-	thread := &getThreadResult{ID: huge, Mailbox: "INBOX", Nodes: []threadNodeResult{{Key: "opaque-only", Mailbox: "INBOX", UIDValidity: 3001, UID: 7, Subject: huge}},
-		UnavailableMembers: []threadUnavailableMember{{Reason: threadUnavailableStaleID}}}
-	encoded, truncated, err = encodeBounded(thread)
-	var fallback map[string]any
-	if err != nil || !truncated || json.Unmarshal(encoded, &fallback) != nil {
-		t.Fatalf("thread fallback = %.80s, %v, %v", encoded, truncated, err)
+	events := auditLines(t, &audit)
+	if len(events) != 2 {
+		t.Fatalf("audit events = %d, want 2", len(events))
 	}
-	if id, _ := fallback["id"].(string); len(fallback) != 4 || len(id) > 1024 || !strings.HasPrefix(huge, id) || fallback["truncated"] != true || len(fallback["nodes"].([]any)) != 0 {
-		t.Fatalf("thread fallback is not empty bounded context: %.200s", encoded)
-	}
-
-	for _, result := range []any{
-		&getMessageResult{ID: huge, Mailbox: "INBOX", UIDValidity: 3001, UID: 7},
-		&listAttachmentsResult{ID: huge, Mailbox: "INBOX", UIDValidity: 3001, UID: 7},
-	} {
-		if _, _, err := encodeBounded(result); err != errUnretainableIdentity {
-			t.Fatalf("unretainable identity %T: err = %v", result, err)
+	for _, event := range events {
+		if event["outcome"] != "error" || event["code"] != errBoundsExceeded {
+			t.Fatalf("audit event = %v, want bounds_exceeded", event)
 		}
 	}
 
@@ -87,7 +86,7 @@ func TestEncodeBoundedFallbacks(t *testing.T) {
 	for range 4000 {
 		attachments.Attachments = append(attachments.Attachments, attachmentResult{Filename: strings.Repeat("f", 100)})
 	}
-	encoded, truncated, err = encodeBounded(attachments)
+	encoded, truncated, err := encodeBounded(attachments)
 	var kept listAttachmentsResult
 	if err != nil || !truncated || json.Unmarshal(encoded, &kept) != nil || kept.ID != "opaque-att" || kept.UID != 7 || kept.Truncation != (attachmentListTruncation{MIMEParts: true, Output: true}) {
 		t.Fatalf("attachment shrink = %.120s, %v, %v", encoded, truncated, err)
