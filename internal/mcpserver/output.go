@@ -74,9 +74,14 @@ func (result *searchMailResult) shrinkForOutput() bool {
 		return false
 	}
 
+	// The cursor must resume just below the last retained result, or the
+	// dropped matches would never be returned.
 	result.Results = result.Results[:len(result.Results)/2]
 	result.Truncated = true
 	result.NextCursor = ""
+	if retained := len(result.Results); retained > 0 && retained <= len(result.resume) {
+		result.NextCursor = result.resume[retained-1]
+	}
 	return true
 }
 

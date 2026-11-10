@@ -154,6 +154,8 @@ type searchMailResult struct {
 	Results    []messageResult `json:"results"`
 	Truncated  bool            `json:"truncated,omitempty"`
 	NextCursor string          `json:"nextCursor,omitempty"`
+
+	resume []string
 }
 
 func runSearchMail(ctx context.Context, deps Options, arguments json.RawMessage) (any, string) {
@@ -208,7 +210,7 @@ func runSearchMail(ctx context.Context, deps Options, arguments json.RawMessage)
 		return nil, errCode
 	}
 
-	return &searchMailResult{Results: results, Truncated: page.Truncated || limited, NextCursor: page.NextCursor}, ""
+	return &searchMailResult{Results: results, Truncated: page.Truncated || limited, NextCursor: page.NextCursor, resume: page.Resume}, ""
 }
 
 func validMailboxArgument(mailbox string) bool {

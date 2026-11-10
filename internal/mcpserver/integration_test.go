@@ -78,7 +78,7 @@ func wireFixture() testkit.Options {
 	}
 }
 
-func startIntegrationAdapter(t *testing.T, options testkit.Options) (*testkit.Server, *bridge.Adapter) {
+func startIntegrationAdapter(t *testing.T, options testkit.Options, bounds ...bridge.BoundsPatch) (*testkit.Server, *bridge.Adapter) {
 	t.Helper()
 
 	options.Mode = testkit.ImplicitTLS
@@ -101,7 +101,11 @@ func startIntegrationAdapter(t *testing.T, options testkit.Options) (*testkit.Se
 		t.Fatalf("resolve test executable: %v", err)
 	}
 
-	adapter, err := bridge.NewAdapter(bridge.Config{IMAP: bridge.IMAPConfig{
+	var patch bridge.BoundsPatch
+	if len(bounds) > 0 {
+		patch = bounds[0]
+	}
+	adapter, err := bridge.NewAdapter(bridge.Config{Bounds: patch, IMAP: bridge.IMAPConfig{
 		Host:              host,
 		Port:              port,
 		TLSMode:           bridge.TLSModeImplicit,
@@ -579,6 +583,36 @@ func TestSearchMailCursorPages(t *testing.T) {
 	var first wireSearch
 	callJSON(t, session, "search_mail", map[string]any{"mailbox": "INBOX", "limit": 50}, &first)
 	requireToolError(t, callTool(t, session, "search_mail", map[string]any{"mailbox": "INBOX", "limit": 50, "cursor": first.NextCursor}), errStaleID)
+
+	// Pages the output budget shrinks still resume below their last result.
+	for index := range messages {
+		messages[index] = fmt.Sprintf("From: Fixture <fixture@croton.test>\r\nSubject: Synthetic page %d %s\r\n\r\nSynthetic page body.\r\n", index, strings.Repeat("s", 3000))
+	}
+	_, adapter = startIntegrationAdapter(t, testkit.Options{Messages: messages}, bridge.BoundsPatch{MaxOutputBytes: bridge.Int(400000)})
+	session = connectTestClient(t, Options{Mail: adapter})
+	next, shrunk := uint32(220), false
+	arguments = map[string]any{"mailbox": "INBOX", "limit": 50}
+	for calls := 0; ; calls++ {
+		if calls == 20 {
+			t.Fatal("shrunk pages did not finish")
+		}
+		var page wireSearch
+		callJSON(t, session, "search_mail", arguments, &page)
+		shrunk = shrunk || len(page.Results) < 50 && page.NextCursor != ""
+		for _, item := range page.Results {
+			if item.UID != next {
+				t.Fatalf("shrunk page UID %d, want %d", item.UID, next)
+			}
+			next--
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		arguments = map[string]any{"mailbox": "INBOX", "limit": 50, "cursor": page.NextCursor}
+	}
+	if next != 100 || !shrunk {
+		t.Fatalf("shrunk pages ended at UID %d (shrunk %v), want every match", next+1, shrunk)
+	}
 }
 
 func TestReadToolsUnavailableOverTheWire(t *testing.T) {

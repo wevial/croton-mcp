@@ -120,11 +120,13 @@ type MessageMetadata struct {
 // SearchPage returns bounded message metadata in descending UID order and
 // reports whether matches were omitted or a UID range was left unexamined.
 // NextCursor is set exactly when Truncated is and resumes below the omitted
-// matches or the unexamined range.
+// matches or the unexamined range. Resume[i] resumes just below Messages[i],
+// for callers that keep only a prefix of Messages.
 type SearchPage struct {
 	Messages   []MessageMetadata
 	Truncated  bool
 	NextCursor string
+	Resume     []string
 }
 
 // SearchMailPage searches a finite sequence of descending UID windows and
@@ -162,6 +164,7 @@ func (adapter *Adapter) SearchMailPage(ctx context.Context, query SearchQuery) (
 	var page SearchPage
 	err = adapter.execute(ctx, func(operationContext context.Context, session bridgeSession) error {
 		attemptResults := make([]MessageMetadata, 0)
+		resume := make([]string, 0)
 		attemptOutputBytes := 2 // JSON array brackets.
 		omitted := false
 
@@ -228,11 +231,17 @@ func (adapter *Adapter) SearchMailPage(ctx context.Context, query SearchQuery) (
 				}
 				attemptOutputBytes += len(encodedItem) + separatorBytes
 				attemptResults = append(attemptResults, item)
+
+				next, err := adapter.sealPayload(filters, payload)
+				if err != nil {
+					return err
+				}
+				resume = append(resume, next)
 			}
 			remaining = start
 		}
 
-		page = SearchPage{Messages: attemptResults, Truncated: omitted || remaining > 1}
+		page = SearchPage{Messages: attemptResults, Truncated: omitted || remaining > 1, Resume: resume}
 		if page.Truncated {
 			next := messageIDPayload{Mailbox: query.Mailbox, UIDValidity: snapshot.UIDValidity, UID: remaining}
 			page.NextCursor, err = adapter.sealPayload(filters, next)

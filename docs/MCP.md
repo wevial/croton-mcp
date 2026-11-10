@@ -86,7 +86,8 @@ Each match appears on exactly one page. The cursor is opaque and HMAC-bound
 to the mailbox, UIDVALIDITY, the filters and the page's exclusive upper UID.
 A cursor reused with another mailbox or other filters, or a forged one, fails
 with `invalid_argument` before any IMAP command; a UIDVALIDITY change fails
-with `stale_id`. Output shrinking drops `nextCursor`.
+with `stale_id`. When output shrinking drops results, `nextCursor` resumes
+just below the last result kept.
 
 ### `get_message`
 
