@@ -549,17 +549,30 @@ func TestGetMessageLargeAttachments(t *testing.T) {
 	// UID 103: an HTML-only body.
 	html := "<html><head><style>p{}</style></head><body><p>Synthetic =\r\nHTML body</p></body></html>"
 
+	// UID 104: a base64 plain body whose 74-column encoding is longer than a
+	// 16 KiB body bound.
+	encodedText := strings.Repeat("Synthetic base64 text.\n", 22000/23)
+	encoded := base64.StdEncoding.EncodeToString([]byte(encodedText))
+	var wrapped strings.Builder
+	for len(encoded) > 74 {
+		wrapped.WriteString(encoded[:74] + "\r\n")
+		encoded = encoded[74:]
+	}
+	wrapped.WriteString(encoded + "\r\n")
+
 	options := testkit.Options{
 		Seen: []bool{true},
 		Messages: []string{
 			large,
 			header + "Content-Type: text/plain; charset=utf-8\r\n\r\n" + long,
 			header + "Content-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n" + html,
+			header + "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n" + wrapped.String(),
 		},
 		BodyStructures: []*testkit.BodyPart{
 			{Kind: testkit.BodyPartMultipart, Subtype: "mixed", Params: []testkit.BodyParam{{Name: "boundary", Value: "large"}}, Children: parts},
 			{Kind: testkit.BodyPartText, Type: "text", Subtype: "plain", Params: textParam, Size: uint32(len(long)), Lines: uint32(len(long) / 80)},
 			{Kind: testkit.BodyPartText, Type: "text", Subtype: "html", Params: textParam, Encoding: "quoted-printable", Size: uint32(len(html)), Lines: 2},
+			{Kind: testkit.BodyPartText, Type: "text", Subtype: "plain", Params: textParam, Encoding: "base64", Size: uint32(wrapped.Len()), Lines: uint32(wrapped.Len() / 76)},
 		},
 	}
 	server, adapter := startIntegrationAdapter(t, options)
@@ -570,7 +583,7 @@ func TestGetMessageLargeAttachments(t *testing.T) {
 
 	var search wireSearch
 	callJSON(t, session, "search_mail", map[string]any{"mailbox": "INBOX"}, &search)
-	ids := requireItems(t, "search", search.Results, 103, 102, 101)
+	ids := requireItems(t, "search", search.Results, 104, 103, 102, 101)
 
 	before := len(server.Commands())
 	var message getMessageResult
@@ -607,10 +620,14 @@ func TestGetMessageLargeAttachments(t *testing.T) {
 	_, adapter = startIntegrationAdapter(t, options, bridge.BoundsPatch{MaxBodyBytes: bridge.Int(16 << 10)})
 	session = connectTestClient(t, Options{Mail: adapter})
 	callJSON(t, session, "search_mail", map[string]any{"mailbox": "INBOX"}, &search)
-	ids = requireItems(t, "bounded search", search.Results, 103, 102, 101)
+	ids = requireItems(t, "bounded search", search.Results, 104, 103, 102, 101)
 	callJSON(t, session, "get_message", map[string]any{"messageId": ids[102]}, &message)
 	if len(message.Text) != 16<<10 || message.Text != long[:16<<10] || message.TextSource != "plain" || message.Truncation != (messageTruncation{Text: true}) || !message.Truncated {
 		t.Fatalf("long message text is %d bytes, truncation %+v", len(message.Text), message.Truncation)
+	}
+	callJSON(t, session, "get_message", map[string]any{"messageId": ids[104]}, &message)
+	if len(message.Text) < 11<<10 || !strings.HasPrefix(encodedText, message.Text) || message.TextSource != "plain" || message.Truncation != (messageTruncation{Text: true}) {
+		t.Fatalf("long base64 message text is %d bytes, truncation %+v", len(message.Text), message.Truncation)
 	}
 }
 
