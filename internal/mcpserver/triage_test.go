@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -74,20 +75,16 @@ func requireOutcomes(t *testing.T, result *mcp.CallToolResult, uids []uint32, ou
 func dispatches(t *testing.T, server *testkit.Server, verb string) []testkit.TranscriptCommand {
 	t.Helper()
 
-	commands, err := testkit.ParseTranscript(server.Commands())
-	if err != nil {
-		t.Fatalf("parse transcript: %v", err)
-	}
-
 	var out []testkit.TranscriptCommand
-	for _, command := range commands {
-		if command.Verb == "UID STORE" && (len(command.Flags) != 1 || command.Flags[0] != `\Seen`) {
+	for _, recorded := range server.Commands() {
+		command := testkit.ParseTranscriptCommand(recorded)
+		if command.Verb == "UID STORE" && !strings.HasSuffix(command.Raw, ` (\Seen)`) {
 			t.Fatalf("STORE changed more than Seen: %+v", command)
 		}
 		if command.Verb != verb {
 			continue
 		}
-		if !command.TLS || len(command.Ranges) != 1 || command.Ranges[0].Start != command.Ranges[0].Stop {
+		if _, err := strconv.ParseUint(command.Set, 10, 32); !command.TLS || err != nil {
 			t.Fatalf("%s is not one exact UID over TLS: %+v", verb, command)
 		}
 		out = append(out, command)
@@ -292,7 +289,7 @@ func TestTriageDroppedConnectionStopsBatchWithoutReplay(t *testing.T) {
 
 			server, session := startTriage(t, triageSeeds())
 			before := server.Snapshot()
-			fault, err := server.InjectFault(testkit.MutationFault{Command: test.verb, UIDs: "103", Boundary: testkit.AfterApplication, Action: testkit.DropConnection})
+			fault, err := server.InjectFault(testkit.MutationFault{Command: test.verb, UIDs: "103"})
 			if err != nil {
 				t.Fatalf("inject fault: %v", err)
 			}

@@ -5,13 +5,13 @@
 // seed must be synthetic: reserved .test addresses and invented content only.
 // Commands records each client command, refused ones included, so tests can
 // assert transcripts with AssertReadOnlyCommands, AssertNoInsecureAuthentication
-// and ParseTranscript.
+// and ParseTranscriptCommand.
 //
 // The fake has three mutually exclusive shapes:
 //
 //   - The default fixture serves two built-in messages. Scenario injects
 //     deterministic protocol faults such as delays, disconnects, oversized
-//     responses and mismatched FETCH items.
+//     responses and extra FETCH UID items.
 //   - Messages serves custom MIME messages at UIDs from 101, with Seen marking
 //     read ones. MetadataFlags picks the FLAGS shape of metadata FETCH, and
 //     BodyStructures gives each message a typed BODYSTRUCTURE tree.
@@ -21,9 +21,9 @@
 //     other mutation is refused without changing state. Snapshot and the
 //     mailbox controls let tests witness and alter that state directly.
 //
-// InjectFault arms a one-shot fault on a stateful UID STORE or UID MOVE, before
-// or after the fixture applies it, that drops the connection or holds the
-// response, so tests can witness the outcome of an unacknowledged mutation.
+// InjectFault arms a one-shot fault on a stateful UID STORE or UID MOVE that
+// applies the mutation and drops the connection before any response, so tests
+// can witness the outcome of an unacknowledged mutation.
 //
 // The fake is test infrastructure only. It does not enable mutation in Croton
 // and does not describe the real Bridge mailbox layout.

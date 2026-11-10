@@ -61,10 +61,6 @@ type Scenario struct {
 	// DisconnectAfterCommand closes the first matching connection after this
 	// connection-local command number, allowing reconnect-once tests to recover.
 	DisconnectAfterCommand int
-	// DisconnectOnPostLoginCapability closes the first authenticated CAPABILITY.
-	DisconnectOnPostLoginCapability bool
-	// DisconnectOnExactUIDSearch closes the first single-UID SEARCH command.
-	DisconnectOnExactUIDSearch bool
 	// OversizedResponseBytes emits an untagged response of this size before normal responses.
 	OversizedResponseBytes int
 	// OversizedResponseCommand limits an oversized response to a command name.
@@ -95,8 +91,6 @@ type Scenario struct {
 	// OmitExactUIDSearchResponse returns a conforming empty SEARCH response for
 	// single-UID existence checks.
 	OmitExactUIDSearchResponse bool
-	// SearchWindowResult returns the highest requested UID from every search window.
-	SearchWindowResult bool
 	// StatusResponse replaces the normal untagged STATUS response. It must be a
 	// complete untagged STATUS response without a trailing CRLF.
 	StatusResponse string
@@ -104,32 +98,10 @@ type Scenario struct {
 	OmitStatusResponse bool
 	// OmitMetadataFetchResponse sends only tagged completion for every metadata FETCH.
 	OmitMetadataFetchResponse bool
-	// FetchResponseSection replaces the BODY section label returned by UID FETCH.
-	FetchResponseSection string
-	// BodyFetchResponseSection replaces only whole-body FETCH response labels.
-	BodyFetchResponseSection string
-	// FetchResponseUID replaces the UID in every metadata FETCH response.
-	// Zero preserves the requested UID.
-	FetchResponseUID uint32
 	// FetchExtraUIDBefore emits an additional UID item before the normal UID.
 	FetchExtraUIDBefore uint32
 	// FetchExtraUIDAfter emits an additional UID item after the normal UID.
 	FetchExtraUIDAfter uint32
-	// BodyFetchResponseUID replaces only whole-body FETCH response UIDs.
-	// Zero preserves the requested UID.
-	BodyFetchResponseUID uint32
-	// DuplicateFetchSection emits the requested FETCH body section twice.
-	DuplicateFetchSection bool
-	// DuplicateBodyFetchSection emits only whole-body FETCH sections twice.
-	DuplicateBodyFetchSection bool
-	// BodyFetchLiteralDeclaredBytes replaces only whole-body FETCH declarations.
-	BodyFetchLiteralDeclaredBytes int
-	// UnexpectedFetchBinaryLiteralBytes appends an unrequested BINARY[] literal
-	// to every FETCH response. Zero preserves the requested response shape.
-	UnexpectedFetchBinaryLiteralBytes int
-	// UnexpectedBodyFetchBinaryLiteralBytes appends an unrequested BINARY[]
-	// literal only to whole-body FETCH responses.
-	UnexpectedBodyFetchBinaryLiteralBytes int
 }
 
 // MetadataFlagsMode selects how custom-message metadata FETCH responses carry
@@ -235,18 +207,6 @@ func Start(options Options) (*Server, error) {
 
 	if options.Scenario.ListMailboxLiteralBytes < 0 {
 		return nil, errors.New("testkit: list mailbox literal size must not be negative")
-	}
-
-	if options.Scenario.BodyFetchLiteralDeclaredBytes < 0 {
-		return nil, errors.New("testkit: body fetch literal declaration must not be negative")
-	}
-
-	if options.Scenario.UnexpectedFetchBinaryLiteralBytes < 0 {
-		return nil, errors.New("testkit: unexpected FETCH binary literal size must not be negative")
-	}
-
-	if options.Scenario.UnexpectedBodyFetchBinaryLiteralBytes < 0 {
-		return nil, errors.New("testkit: unexpected body FETCH binary literal size must not be negative")
 	}
 
 	if options.MetadataFlags < MetadataFlagsOrdinary || options.MetadataFlags > MetadataFlagsDuplicated {
@@ -486,7 +446,7 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 		command := server.record(raw, name, tlsEstablished, connectionID)
 		connectionCommands++
 
-		if server.shouldDisconnectForScenario(name, raw, authenticated) || server.shouldDisconnect(connectionCommands) {
+		if server.shouldDisconnect(connectionCommands) {
 			return
 		}
 
@@ -499,7 +459,7 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 
 		if session != nil {
 			if fault := server.claimFault(command, authenticated); fault != nil {
-				server.runFault(fault, session, reader, command, tag)
+				server.runFault(session, command, tag)
 				_ = connection.Close()
 				fault.finish()
 				return
@@ -735,8 +695,6 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 					searchResponse = "* SEARCH"
 				} else if server.options.Scenario.SearchResponse != "" {
 					searchResponse = strings.ReplaceAll(server.options.Scenario.SearchResponse, "{TAG}", tag)
-				} else if server.options.Scenario.SearchWindowResult {
-					searchResponse = fmt.Sprintf("* SEARCH %d", searchWindowEnd(raw))
 				}
 				if !server.writeLines(writer, searchResponse, tagged(tag, "OK SEARCH completed")) {
 					return
@@ -768,37 +726,12 @@ func (server *Server) handle(rawConnection net.Conn, connectionID int) {
 					literal = partialBodyLiteral(raw, literal)
 				}
 				section := fetchResponseSection(raw, header)
-				if server.options.Scenario.FetchResponseSection != "" {
-					section = server.options.Scenario.FetchResponseSection
-				}
-				if !header && server.options.Scenario.BodyFetchResponseSection != "" {
-					section = server.options.Scenario.BodyFetchResponseSection
-				}
-				declaredBytes := 0
-				if !header {
-					declaredBytes = server.options.Scenario.BodyFetchLiteralDeclaredBytes
-				}
-				duplicate := server.options.Scenario.DuplicateFetchSection
-				if !header && server.options.Scenario.DuplicateBodyFetchSection {
-					duplicate = true
-				}
-				unexpectedBinaryLiteralBytes := server.options.Scenario.UnexpectedFetchBinaryLiteralBytes
-				if !header && server.options.Scenario.UnexpectedBodyFetchBinaryLiteralBytes > 0 {
-					unexpectedBinaryLiteralBytes = server.options.Scenario.UnexpectedBodyFetchBinaryLiteralBytes
-				}
-				responseUID := fetchResponseUID(raw)
-				if server.options.Scenario.FetchResponseUID != 0 {
-					responseUID = server.options.Scenario.FetchResponseUID
-				}
-				if !header && server.options.Scenario.BodyFetchResponseUID != 0 {
-					responseUID = server.options.Scenario.BodyFetchResponseUID
-				}
 				extraUIDBefore, extraUIDAfter := uint32(0), uint32(0)
 				if header {
 					extraUIDBefore = server.options.Scenario.FetchExtraUIDBefore
 					extraUIDAfter = server.options.Scenario.FetchExtraUIDAfter
 				}
-				if !server.writeFetch(writer, tag, responseUID, extraUIDBefore, extraUIDAfter, literal, section, declaredBytes, duplicate, unexpectedBinaryLiteralBytes) {
+				if !server.writeFetch(writer, tag, fetchResponseUID(raw), extraUIDBefore, extraUIDAfter, literal, section) {
 					return
 				}
 			default:
@@ -832,22 +765,6 @@ func (server *Server) record(raw, name string, tlsEstablished bool, connectionID
 	server.commands = append(server.commands, command)
 
 	return command
-}
-
-func (server *Server) shouldDisconnectForScenario(name, raw string, authenticated bool) bool {
-	matched := server.options.Scenario.DisconnectOnPostLoginCapability && authenticated && name == "CAPABILITY"
-	matched = matched || server.options.Scenario.DisconnectOnExactUIDSearch && name == "UID" && strings.Contains(strings.ToUpper(raw), " SEARCH ") && searchWindowIsExact(raw)
-	if !matched {
-		return false
-	}
-
-	server.mu.Lock()
-	defer server.mu.Unlock()
-	if server.disconnectUsed {
-		return false
-	}
-	server.disconnectUsed = true
-	return true
 }
 
 func (server *Server) shouldDisconnect(connectionSequence int) bool {
@@ -942,7 +859,7 @@ func (server *Server) writeLine(writer *bufio.Writer, line string) error {
 	return writer.Flush()
 }
 
-func (server *Server) writeFetch(writer *bufio.Writer, tag string, uid, extraUIDBefore, extraUIDAfter uint32, literal, section string, declaredBytes int, duplicate bool, unexpectedBinaryLiteralBytes int) bool {
+func (server *Server) writeFetch(writer *bufio.Writer, tag string, uid, extraUIDBefore, extraUIDAfter uint32, literal, section string) bool {
 	if delay := server.options.Scenario.ResponseDelay; delay > 0 {
 		timer := time.NewTimer(delay)
 		defer timer.Stop()
@@ -953,18 +870,7 @@ func (server *Server) writeFetch(writer *bufio.Writer, tag string, uid, extraUID
 		}
 	}
 
-	if declaredBytes == 0 {
-		declaredBytes = len(literal)
-	}
-
-	items := fmt.Sprintf("BODY%s {%d}\r\n%s", section, declaredBytes, literal)
-	if duplicate {
-		items += fmt.Sprintf(" BODY%s {%d}\r\n%s", section, declaredBytes, literal)
-	}
-	if unexpectedBinaryLiteralBytes > 0 {
-		unexpectedLiteral := strings.Repeat("x", unexpectedBinaryLiteralBytes)
-		items += fmt.Sprintf(" BINARY[] {%d}\r\n%s", len(unexpectedLiteral), unexpectedLiteral)
-	}
+	items := fmt.Sprintf("BODY%s {%d}\r\n%s", section, len(literal), literal)
 
 	uidItems := fmt.Sprintf("UID %d", uid)
 	if extraUIDBefore != 0 {
