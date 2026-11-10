@@ -42,7 +42,8 @@ Requires Go 1.26.10 and a running, logged-in Proton Mail Bridge.
 
 ```sh
 go build -o ~/bin/croton-mcp ./cmd/croton-mcp
-install -m 0600 /dev/null ~/.config/croton.json   # then edit it, see below
+test -e ~/.config/croton.json || install -m 0600 /dev/null ~/.config/croton.json
+# edit ~/.config/croton.json as described below
 ~/bin/croton-mcp --config "$HOME/.config/croton.json"
 ```
 
