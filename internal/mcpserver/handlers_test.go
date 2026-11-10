@@ -41,8 +41,7 @@ func TestToolErrorsMapBridgeCodesStably(t *testing.T) {
 	} {
 		session := connectTestClient(t, Options{Mail: &fakeMail{err: underlying}})
 		for tool, arguments := range readCalls {
-			result := callTool(t, session, tool, arguments)
-			requireToolError(t, result, want)
+			requireToolError(t, callTool(t, session, tool, arguments), want)
 		}
 	}
 }
