@@ -53,7 +53,8 @@ Search results, digest candidates, `get_thread` nodes and the parent of
 `get_message` and `list_attachments` also carry the exact `mailbox` and
 positive 32-bit `uidvalidity` and `uid` from the same read, or the read fails.
 These fields are the input to the triage writes; they grant no write
-authority. Output shrinking removes whole items, so retained identity is exact.
+authority. Output shrinking removes whole items, so retained identity is exact;
+`search_mail` keeps at least one result and halves its `subject` instead.
 
 ### `list_folders`
 

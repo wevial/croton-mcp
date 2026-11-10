@@ -613,6 +613,20 @@ func TestSearchMailCursorPages(t *testing.T) {
 	if next != 100 || !shrunk {
 		t.Fatalf("shrunk pages ended at UID %d (shrunk %v), want every match", next+1, shrunk)
 	}
+
+	// A single result over the output budget keeps its identity and cursor.
+	oversized := []string{messages[0], "From: Fixture <fixture@croton.test>\r\nSubject: " + strings.Repeat("<", 20000) + "\r\n\r\nSynthetic page body.\r\n"}
+	_, adapter = startIntegrationAdapter(t, testkit.Options{Messages: oversized}, bridge.BoundsPatch{MaxHeaderBytes: bridge.Int(65536), MaxOutputBytes: bridge.Int(400000)})
+	session = connectTestClient(t, Options{Mail: adapter})
+	var single, rest wireSearch
+	callJSON(t, session, "search_mail", map[string]any{"mailbox": "INBOX", "limit": 1}, &single)
+	if len(single.Results) != 1 || single.Results[0].UID != 102 || !single.Truncated || single.NextCursor == "" {
+		t.Fatalf("oversized single result = %d results, truncated %v, cursor %q", len(single.Results), single.Truncated, single.NextCursor)
+	}
+	callJSON(t, session, "search_mail", map[string]any{"mailbox": "INBOX", "limit": 1, "cursor": single.NextCursor}, &rest)
+	if len(rest.Results) != 1 || rest.Results[0].UID != 101 {
+		t.Fatalf("page after oversized result has %d results", len(rest.Results))
+	}
 }
 
 func TestReadToolsUnavailableOverTheWire(t *testing.T) {
