@@ -151,8 +151,9 @@ func flatMessageResults(messages []bridge.MessageMetadata, limit int) ([]message
 }
 
 type searchMailResult struct {
-	Results   []messageResult `json:"results"`
-	Truncated bool            `json:"truncated,omitempty"`
+	Results    []messageResult `json:"results"`
+	Truncated  bool            `json:"truncated,omitempty"`
+	NextCursor string          `json:"nextCursor,omitempty"`
 }
 
 func runSearchMail(ctx context.Context, deps Options, arguments json.RawMessage) (any, string) {
@@ -164,6 +165,7 @@ func runSearchMail(ctx context.Context, deps Options, arguments json.RawMessage)
 		Subject    string `json:"subject"`
 		UnreadOnly bool   `json:"unreadOnly"`
 		Limit      *int   `json:"limit"`
+		Cursor     string `json:"cursor"`
 	}
 	if !decodeArguments(arguments, &input) {
 		return nil, errInvalidArgument
@@ -171,7 +173,7 @@ func runSearchMail(ctx context.Context, deps Options, arguments json.RawMessage)
 	if !validMailboxArgument(input.Mailbox) {
 		return nil, errInvalidArgument
 	}
-	if len(input.Sender) > maxSearchTermBytes || len(input.Subject) > maxSearchTermBytes {
+	if len(input.Sender) > maxSearchTermBytes || len(input.Subject) > maxSearchTermBytes || len(input.Cursor) > maxMessageIDArgumentBytes {
 		return nil, errInvalidArgument
 	}
 	since, ok := parseTimestamp(input.Since)
@@ -194,6 +196,8 @@ func runSearchMail(ctx context.Context, deps Options, arguments json.RawMessage)
 		Sender:  input.Sender,
 		Subject: input.Subject,
 		Unread:  input.UnreadOnly,
+		Cursor:  input.Cursor,
+		Limit:   limit,
 	})
 	if err != nil {
 		return nil, mapAdapterError(err)
@@ -204,7 +208,7 @@ func runSearchMail(ctx context.Context, deps Options, arguments json.RawMessage)
 		return nil, errCode
 	}
 
-	return &searchMailResult{Results: results, Truncated: page.Truncated || limited}, ""
+	return &searchMailResult{Results: results, Truncated: page.Truncated || limited, NextCursor: page.NextCursor}, ""
 }
 
 func validMailboxArgument(mailbox string) bool {

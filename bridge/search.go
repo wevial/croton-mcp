@@ -71,7 +71,9 @@ type messageIDPayload struct {
 }
 
 // SearchQuery accepts structured, bounded search criteria. It deliberately
-// does not expose raw IMAP query syntax.
+// does not expose raw IMAP query syntax. Cursor is an opaque NextCursor from
+// an earlier page with the same Mailbox and filters; it carries the exclusive
+// upper UID of the next page. A positive Limit lowers the result budget.
 type SearchQuery struct {
 	Mailbox string
 	Since   time.Time
@@ -79,7 +81,13 @@ type SearchQuery struct {
 	Sender  string
 	Subject string
 	Unread  bool
+	Cursor  string
+	Limit   int
 }
+
+// searchCursorDomain separates cursor MACs from message-ID MACs under the
+// same key, so neither value is accepted as the other.
+const searchCursorDomain = "search-cursor\x00"
 
 // MessageMetadata is bounded metadata for one message. ID is an adapter-scoped
 // opaque identifier that binds the mailbox, UIDVALIDITY and UID. UIDValidity
@@ -111,9 +119,12 @@ type MessageMetadata struct {
 
 // SearchPage returns bounded message metadata in descending UID order and
 // reports whether matches were omitted or a UID range was left unexamined.
+// NextCursor is set exactly when Truncated is and resumes below the omitted
+// matches or the unexamined range.
 type SearchPage struct {
-	Messages  []MessageMetadata
-	Truncated bool
+	Messages   []MessageMetadata
+	Truncated  bool
+	NextCursor string
 }
 
 // SearchMailPage searches a finite sequence of descending UID windows and
@@ -129,8 +140,27 @@ func (adapter *Adapter) SearchMailPage(ctx context.Context, query SearchQuery) (
 		return SearchPage{}, errorCode(CodeBoundsExceeded)
 	}
 
+	budget := adapter.config.Bounds.MaxSearchResults
+	if query.Limit > 0 && query.Limit < budget {
+		budget = query.Limit
+	}
+
+	filters, err := searchFilterHash(query)
+	if err != nil {
+		return SearchPage{}, err
+	}
+
+	var cursor messageIDPayload
+	if query.Cursor != "" {
+		var ok bool
+		cursor, ok = adapter.openPayload(filters, query.Cursor)
+		if !ok || cursor.Mailbox != query.Mailbox {
+			return SearchPage{}, errorCode(CodeInvalidRequest)
+		}
+	}
+
 	var page SearchPage
-	err := adapter.execute(ctx, func(operationContext context.Context, session bridgeSession) error {
+	err = adapter.execute(ctx, func(operationContext context.Context, session bridgeSession) error {
 		attemptResults := make([]MessageMetadata, 0)
 		attemptOutputBytes := 2 // JSON array brackets.
 		omitted := false
@@ -139,9 +169,15 @@ func (adapter *Adapter) SearchMailPage(ctx context.Context, query SearchQuery) (
 		if err != nil {
 			return err
 		}
+		if query.Cursor != "" && cursor.UIDValidity != snapshot.UIDValidity {
+			return errorCode(CodeStaleMessageID)
+		}
 
 		remaining := snapshot.UIDNext
-		for windows := 0; remaining > 1 && windows < maxSearchWindows && len(attemptResults) < adapter.config.Bounds.MaxSearchResults; windows++ {
+		if query.Cursor != "" && cursor.UID < remaining {
+			remaining = cursor.UID
+		}
+		for windows := 0; remaining > 1 && windows < maxSearchWindows && len(attemptResults) < budget; windows++ {
 			start := uint32(1)
 			if remaining > searchWindowWidth {
 				start = remaining - searchWindowWidth
@@ -152,11 +188,14 @@ func (adapter *Adapter) SearchMailPage(ctx context.Context, query SearchQuery) (
 				return err
 			}
 
-			selected, err := selectHighestUIDs(uids, window, adapter.config.Bounds.MaxSearchResults-len(attemptResults))
+			selected, err := selectHighestUIDs(uids, window, budget-len(attemptResults))
 			if err != nil {
 				return err
 			}
-			omitted = omitted || len(selected) < len(uids)
+			if len(selected) < len(uids) {
+				omitted = true
+				start = selected[len(selected)-1]
+			}
 
 			metadata, err := session.UIDFetchMetadata(operationContext, query.Mailbox, selected, adapter.config.Bounds.MaxHeaderBytes)
 			if err != nil {
@@ -194,7 +233,11 @@ func (adapter *Adapter) SearchMailPage(ctx context.Context, query SearchQuery) (
 		}
 
 		page = SearchPage{Messages: attemptResults, Truncated: omitted || remaining > 1}
-		return nil
+		if page.Truncated {
+			next := messageIDPayload{Mailbox: query.Mailbox, UIDValidity: snapshot.UIDValidity, UID: remaining}
+			page.NextCursor, err = adapter.sealPayload(filters, next)
+		}
+		return err
 	})
 	if err != nil {
 		return SearchPage{}, err
@@ -231,7 +274,24 @@ func selectHighestUIDs(uids []uint32, window uidWindow, budget int) ([]uint32, e
 	return sorted, nil
 }
 
+// searchFilterHash binds a cursor to every filter except Mailbox, which the
+// sealed payload carries, and Limit, which may change between pages.
+func searchFilterHash(query SearchQuery) ([]byte, error) {
+	encoded, err := json.Marshal([]any{query.Since, query.Before, query.Sender, query.Subject, query.Unread})
+	if err != nil {
+		return nil, errorCode(CodeInvalidRequest)
+	}
+	sum := sha256.Sum256(encoded)
+	return append([]byte(searchCursorDomain), sum[:]...), nil
+}
+
 func (adapter *Adapter) encodeMessageID(payload messageIDPayload) (string, error) {
+	return adapter.sealPayload(nil, payload)
+}
+
+// sealPayload MACs domain followed by the encoded payload; only the payload
+// and MAC are emitted.
+func (adapter *Adapter) sealPayload(domain []byte, payload messageIDPayload) (string, error) {
 	if payload.Mailbox == "" || payload.UIDValidity == 0 || payload.UID == 0 {
 		return "", errorCode(CodeIMAPProtocol)
 	}
@@ -243,6 +303,7 @@ func (adapter *Adapter) encodeMessageID(payload messageIDPayload) (string, error
 		return "", errorCode(CodeBoundsExceeded)
 	}
 	mac := hmac.New(sha256.New, adapter.idKey[:])
+	_, _ = mac.Write(domain)
 	_, _ = mac.Write(encoded)
 	value := base64.RawURLEncoding.EncodeToString(append(encoded, mac.Sum(nil)...))
 	if len(value) > maxMessageIDEncodedBytes {
@@ -252,25 +313,35 @@ func (adapter *Adapter) encodeMessageID(payload messageIDPayload) (string, error
 }
 
 func (adapter *Adapter) decodeMessageID(value string) (messageIDPayload, error) {
-	if len(value) > maxMessageIDEncodedBytes {
+	payload, ok := adapter.openPayload(nil, value)
+	if !ok {
 		return messageIDPayload{}, errorCode(CodeStaleMessageID)
+	}
+	return payload, nil
+}
+
+// openPayload verifies a sealPayload value under the same domain.
+func (adapter *Adapter) openPayload(domain []byte, value string) (messageIDPayload, bool) {
+	if len(value) > maxMessageIDEncodedBytes {
+		return messageIDPayload{}, false
 	}
 
 	decoded, err := base64.RawURLEncoding.DecodeString(value)
 	if err != nil || len(decoded) <= sha256.Size || len(decoded) > maxMessageIDBytes {
-		return messageIDPayload{}, errorCode(CodeStaleMessageID)
+		return messageIDPayload{}, false
 	}
 	payloadBytes := decoded[:len(decoded)-sha256.Size]
 	mac := hmac.New(sha256.New, adapter.idKey[:])
+	_, _ = mac.Write(domain)
 	_, _ = mac.Write(payloadBytes)
 	if !hmac.Equal(decoded[len(payloadBytes):], mac.Sum(nil)) {
-		return messageIDPayload{}, errorCode(CodeStaleMessageID)
+		return messageIDPayload{}, false
 	}
 	var payload messageIDPayload
 	if err := json.Unmarshal(payloadBytes, &payload); err != nil || payload.Mailbox == "" || payload.UIDValidity == 0 || payload.UID == 0 {
-		return messageIDPayload{}, errorCode(CodeStaleMessageID)
+		return messageIDPayload{}, false
 	}
-	return payload, nil
+	return payload, true
 }
 
 func newAdapterIDKey() ([sha256.Size]byte, error) {

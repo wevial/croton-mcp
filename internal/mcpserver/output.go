@@ -76,6 +76,7 @@ func (result *searchMailResult) shrinkForOutput() bool {
 
 	result.Results = result.Results[:len(result.Results)/2]
 	result.Truncated = true
+	result.NextCursor = ""
 	return true
 }
 

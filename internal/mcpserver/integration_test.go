@@ -34,8 +34,9 @@ type wireItem struct {
 }
 
 type wireSearch struct {
-	Results   []wireItem `json:"results"`
-	Truncated bool       `json:"truncated"`
+	Results    []wireItem `json:"results"`
+	Truncated  bool       `json:"truncated"`
+	NextCursor string     `json:"nextCursor"`
 }
 
 type wireDigest struct {
@@ -518,6 +519,70 @@ func TestReadToolsBoundsOverTheWire(t *testing.T) {
 	if len(listed.Attachments) != 20 || listed.Attachments[19].Filename != "part-19.bin" || listed.Truncation != (attachmentListTruncation{Attachments: true}) || !listed.Truncated {
 		t.Fatalf("21 attachments = %d entries, truncation %+v (truncated %v)", len(listed.Attachments), listed.Truncation, listed.Truncated)
 	}
+}
+
+func TestSearchMailCursorPages(t *testing.T) {
+	t.Parallel()
+
+	// 120 matching messages take UIDs 101-220.
+	messages := make([]string, 120)
+	for index := range messages {
+		messages[index] = fmt.Sprintf("From: Fixture <fixture@croton.test>\r\nSubject: Synthetic page %d\r\nDate: Thu, 01 Jan 2026 00:00:00 +0000\r\n\r\nSynthetic page body.\r\n", index)
+	}
+	server, adapter := startIntegrationAdapter(t, testkit.Options{Messages: messages})
+	session := connectTestClient(t, Options{Mail: adapter})
+
+	var pages []wireSearch
+	seen := make(map[uint32]bool)
+	next := uint32(220)
+	arguments := map[string]any{"mailbox": "INBOX", "limit": 50}
+	for _, size := range []int{50, 50, 20} {
+		var page wireSearch
+		callJSON(t, session, "search_mail", arguments, &page)
+		if len(page.Results) != size {
+			t.Fatalf("page %d has %d results, want %d", len(pages), len(page.Results), size)
+		}
+		for _, item := range page.Results {
+			if item.UID != next || seen[item.UID] {
+				t.Fatalf("page %d UID %d, want %d once", len(pages), item.UID, next)
+			}
+			seen[item.UID] = true
+			next--
+		}
+		pages = append(pages, page)
+		arguments = map[string]any{"mailbox": "INBOX", "limit": 50, "cursor": page.NextCursor}
+	}
+	for index, page := range pages {
+		last := index == len(pages)-1
+		if page.Truncated == last || (page.NextCursor == "") != last {
+			t.Fatalf("page %d truncated %v, nextCursor %q", index, page.Truncated, page.NextCursor)
+		}
+	}
+
+	cursor := pages[0].NextCursor
+	tampered := []byte(cursor)
+	tampered[len(tampered)/2] ^= 1
+	before := len(server.Commands())
+	for _, arguments := range []map[string]any{
+		{"mailbox": "Archive", "cursor": cursor},
+		{"mailbox": "INBOX", "unreadOnly": true, "cursor": cursor},
+		{"mailbox": "INBOX", "subject": "Synthetic", "cursor": cursor},
+		{"mailbox": "INBOX", "cursor": string(tampered)},
+		{"mailbox": "INBOX", "cursor": pages[0].Results[0].ID},
+	} {
+		requireToolError(t, callTool(t, session, "search_mail", arguments), errInvalidArgument)
+	}
+	if commands := server.Commands()[before:]; len(commands) != 0 {
+		t.Fatalf("rejected cursors reached the wire: %+v", commands)
+	}
+	requireWire(t, server, 0, false)
+
+	// The generation changes after the first page's EXAMINE.
+	_, adapter = startIntegrationAdapter(t, testkit.Options{Messages: messages, Scenario: testkit.Scenario{UIDValidityAfterExamine: 9002}})
+	session = connectTestClient(t, Options{Mail: adapter})
+	var first wireSearch
+	callJSON(t, session, "search_mail", map[string]any{"mailbox": "INBOX", "limit": 50}, &first)
+	requireToolError(t, callTool(t, session, "search_mail", map[string]any{"mailbox": "INBOX", "limit": 50, "cursor": first.NextCursor}), errStaleID)
 }
 
 func TestReadToolsUnavailableOverTheWire(t *testing.T) {
