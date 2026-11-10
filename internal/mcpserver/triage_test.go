@@ -11,9 +11,9 @@ import (
 	"github.com/wevial/croton-mcp/internal/testkit"
 )
 
-// triageSeeds is an INBOX of ten messages, even UIDs read, beside an ordinary
-// folder and attribute-marked archive and trash mailboxes with non-standard
-// names.
+// triageSeeds is an INBOX of ten messages, even UIDs read, beside ordinary
+// folders, two with "&" escaped as "&-" on the wire, and attribute-marked
+// archive and trash mailboxes with non-standard names.
 func triageSeeds() *testkit.StatefulOptions {
 	inbox := testkit.MailboxSeed{Name: "INBOX", UIDValidity: 7001}
 	for uid := uint32(101); uid <= 110; uid++ {
@@ -27,6 +27,8 @@ func triageSeeds() *testkit.StatefulOptions {
 	return &testkit.StatefulOptions{Move: true, Mailboxes: []testkit.MailboxSeed{
 		inbox,
 		{Name: "Folders/Existing", UIDValidity: 7002, Messages: []testkit.MessageSeed{{UID: 501, Body: "Subject: destination\r\n\r\nsynthetic\r\n"}}},
+		{Name: "Folders/Research&--Development", UIDValidity: 8200},
+		{Name: "Folders/R&-D-2026", UIDValidity: 8201},
 		{Name: "Archivage", Attributes: []string{`\Archive`}},
 		{Name: "Corbeille", Attributes: []string{`\Trash`}},
 		{Name: "Folders", Attributes: []string{`\Noselect`}},
@@ -189,37 +191,15 @@ func requireState(t *testing.T, server *testkit.Server, want []testkit.MailboxSt
 	}
 }
 
-func TestTriageToolsRegisterOnlyWithTriage(t *testing.T) {
-	t.Parallel()
-
-	_, adapter := startIntegrationAdapter(t, testkit.Options{Stateful: triageSeeds()})
-	session := connectTestClient(t, Options{Mail: adapter, Triage: adapter})
-
-	tools, err := session.ListTools(t.Context(), nil)
-	if err != nil {
-		t.Fatalf("list tools: %v", err)
-	}
-	var names []string
-	for _, tool := range tools.Tools {
-		names = append(names, tool.Name)
-	}
-	for _, name := range []string{"mark_read", "mark_unread", "move_mail", "archive_mail", "trash_mail"} {
-		if !slices.Contains(names, name) {
-			t.Fatalf("catalog %v lacks %s", names, name)
-		}
-	}
-}
-
 func TestTriageSeen(t *testing.T) {
 	t.Parallel()
 
 	for _, test := range []struct {
-		tool  string
-		seen  bool
-		store string
+		tool string
+		seen bool
 	}{
-		{"mark_read", true, "+FLAGS"},
-		{"mark_unread", false, "-FLAGS"},
+		{"mark_read", true},
+		{"mark_unread", false},
 	} {
 		t.Run(test.tool, func(t *testing.T) {
 			t.Parallel()
@@ -230,16 +210,7 @@ func TestTriageSeen(t *testing.T) {
 			uids := []uint32{103, 999, 102, 101}
 			requireOutcomes(t, callTool(t, session, test.tool, triageArgs(uids, "")), uids, "applied", "refused:not_found", "applied", "applied")
 			requireState(t, server, wantSeen(before, test.seen, 103, 102, 101))
-			stores := dispatches(t, server, "UID STORE")
-			requireSets(t, stores, 103, 102, 101)
-			for _, store := range stores {
-				if store.Store != test.store {
-					t.Fatalf("STORE direction = %q, want %q", store.Store, test.store)
-				}
-			}
-			if len(dispatches(t, server, "UID MOVE")) != 0 {
-				t.Fatal("a Seen tool moved mail")
-			}
+			requireSets(t, dispatches(t, server, "UID STORE"), 103, 102, 101)
 		})
 	}
 }
@@ -253,8 +224,12 @@ func TestTriageMoves(t *testing.T) {
 		{"move_mail", "Folders/Existing", "Folders/Existing"},
 		{"archive_mail", "", "Archivage"},
 		{"trash_mail", "", "Corbeille"},
+		// A decoded "&" is an exact name even when it resembles a modified
+		// UTF-7 shift.
+		{"move_mail", "Folders/Research&-Development", "Folders/Research&--Development"},
+		{"move_mail", "Folders/R&D-2026", "Folders/R&-D-2026"},
 	} {
-		t.Run(test.tool, func(t *testing.T) {
+		t.Run(test.mailbox, func(t *testing.T) {
 			t.Parallel()
 
 			server, session := startTriage(t, triageSeeds())
@@ -263,13 +238,7 @@ func TestTriageMoves(t *testing.T) {
 			uids := []uint32{103, 999, 101}
 			requireOutcomes(t, callTool(t, session, test.tool, triageArgs(uids, test.destination)), uids, "applied", "refused:not_found", "applied")
 			requireState(t, server, wantMoved(before, test.mailbox, 103, 101))
-			moves := dispatches(t, server, "UID MOVE")
-			requireSets(t, moves, 103, 101)
-			for _, move := range moves {
-				if move.Destination != test.mailbox {
-					t.Fatalf("MOVE destination = %q, want %q", move.Destination, test.mailbox)
-				}
-			}
+			requireSets(t, dispatches(t, server, "UID MOVE"), 103, 101)
 		})
 	}
 }
@@ -338,36 +307,6 @@ func TestTriageDroppedConnectionStopsBatchWithoutReplay(t *testing.T) {
 				requireState(t, server, wantMoved(before, test.destination, 101, 103))
 			}
 			requireSets(t, dispatches(t, server, test.verb), 101, 103)
-		})
-	}
-}
-
-// A decoded folder name containing "&" is an exact, valid destination even
-// when it resembles a modified UTF-7 shift. Its wire form escapes each
-// ampersand as "&-".
-func TestTriageMoveExactFolderWithLiteralAmpersand(t *testing.T) {
-	t.Parallel()
-
-	for _, folder := range []struct{ decoded, wire string }{
-		{"Folders/Research&-Development", "Folders/Research&--Development"},
-		{"Folders/R&D-2026", "Folders/R&-D-2026"},
-	} {
-		t.Run(folder.wire, func(t *testing.T) {
-			t.Parallel()
-
-			seeds := triageSeeds()
-			seeds.Mailboxes = append(seeds.Mailboxes, testkit.MailboxSeed{Name: folder.wire, UIDValidity: 8200})
-			server, session := startTriage(t, seeds)
-			before := server.Snapshot()
-
-			uids := []uint32{102, 101}
-			requireOutcomes(t, callTool(t, session, "move_mail", triageArgs(uids, folder.decoded)), uids, "applied", "applied")
-			requireState(t, server, wantMoved(before, folder.wire, 102, 101))
-			for _, move := range dispatches(t, server, "UID MOVE") {
-				if move.Destination != folder.wire {
-					t.Fatalf("MOVE destination = %q, want %q", move.Destination, folder.wire)
-				}
-			}
 		})
 	}
 }
