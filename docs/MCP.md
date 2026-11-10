@@ -422,8 +422,11 @@ vocabulary below:
 Each IMAP step has its own `imap.commandTimeoutMs` deadline, so a batch is
 bounded. To reconcile an `unknown`, run a fresh read such as `search_mail`,
 then make a new, separately approved call. The in-process tests in
-`internal/mcpserver/triage_test.go` witness these boundaries against the
-synthetic stateful fixture; no live account write has been exercised.
+`internal/mcpserver/triage_test.go` witness, against the synthetic stateful
+fixture, the applied outcomes of each write tool, a destination missing
+before dispatch, and a connection dropped after a STORE or MOVE applied; no
+test times out a STORE or MOVE, and no live account write has been
+exercised.
 
 ### Mail thread membership
 
