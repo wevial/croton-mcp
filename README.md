@@ -41,6 +41,7 @@ sends mail. Labels are not supported.
 Requires Go 1.26.10 and a running, logged-in Proton Mail Bridge.
 
 ```sh
+mkdir -p ~/bin ~/.config
 go build -o ~/bin/croton-mcp ./cmd/croton-mcp
 test -e ~/.config/croton.json || install -m 0600 /dev/null ~/.config/croton.json
 # edit ~/.config/croton.json as described below
