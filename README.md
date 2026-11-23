@@ -38,7 +38,7 @@ sends mail. Labels are not supported.
 
 ## Quick start
 
-Requires Go 1.26.10 and a running, logged-in Proton Mail Bridge.
+Use Go 1.27.4 to build Croton. To run it, start Proton Mail Bridge and log in.
 
 ```sh
 mkdir -p ~/bin ~/.config

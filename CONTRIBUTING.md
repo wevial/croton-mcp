@@ -2,12 +2,12 @@
 
 ## Checks
 
-Use Go 1.26.10 (`toolchain go1.26.10` in `go.mod`). CI runs these on Linux and
+Use Go 1.27.4 (`toolchain go1.27.4` in `go.mod`). CI runs these on Linux and
 macOS; run them locally before opening a pull request:
 
 ```sh
 export GOBIN="$PWD/.bin"
-go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
+go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
 go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
 
 test -z "$(gofmt -l $(git ls-files '*.go'))"
