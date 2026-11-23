@@ -65,9 +65,8 @@ func NewHTTP(origin string, mail Mail, audit *Auditor, timeout time.Duration, au
 		}
 
 		w.Header().Set("Cache-Control", "no-store")
-		bearers := r.Header.Values("Authorization")
 		scheme, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
-		if len(bearers) != 1 || !strings.EqualFold(scheme, "Bearer") || token == "" || !authorize(token) {
+		if len(r.Header.Values("Authorization")) != 1 || !strings.EqualFold(scheme, "Bearer") || token == "" || !authorize(token) {
 			w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="`+origin+owneroauth.ResourceMetadataPath+`"`)
 			w.WriteHeader(http.StatusUnauthorized)
 			return

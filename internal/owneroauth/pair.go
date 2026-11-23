@@ -90,8 +90,8 @@ func validRedirect(raw string) bool {
 	if err != nil || u.Hostname() == "" || u.User != nil || len(raw) > 2048 || strings.ContainsAny(raw, "#\\") || !oauth2.IsValidRedirectURI(u) {
 		return false
 	}
-	if u.Port() != "" {
-		if n, err := strconv.ParseUint(u.Port(), 10, 16); err != nil || n == 0 {
+	if port := u.Port(); port != "" {
+		if n, err := strconv.ParseUint(port, 10, 16); err != nil || n == 0 {
 			return false
 		}
 	}
@@ -168,10 +168,10 @@ func (a *Authority) authorize(q url.Values) (*authorization, error) {
 
 	challenge := q.Get("code_challenge")
 	decoded, err := base64.RawURLEncoding.Strict().DecodeString(challenge)
-	if err != nil || len(challenge) != 43 || len(decoded) != 32 || q.Get("code_challenge_method") != "S256" || q.Get("response_type") != "code" || q.Get("resource") != a.issuer+"/mcp" || !validRedirect(raw) {
+	if err != nil || len(challenge) != 43 || len(decoded) != 32 || q.Get("code_challenge_method") != "S256" || q.Get("response_type") != "code" || q.Get("resource") != a.issuer+"/mcp" {
 		return nil, errInvalid
 	}
-	if !client.matchesRedirect(raw) {
+	if !validRedirect(raw) || !client.matchesRedirect(raw) {
 		return nil, errInvalid
 	}
 
@@ -248,9 +248,7 @@ func (a *Authority) approve(id, comparison string) error {
 	}
 
 	target, _ := url.Parse(g.Redirect)
-	query := url.Values{}
-	query.Set("code", code)
-	query.Set("iss", a.issuer)
+	query := url.Values{"code": {code}, "iss": {a.issuer}}
 	if r.state != "" {
 		query.Set("state", r.state)
 	}

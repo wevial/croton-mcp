@@ -92,6 +92,7 @@ func (a *Authority) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; base-uri 'none'")
 
 	err := a.route(w, r)
+	var limit *http.MaxBytesError
 	switch {
 	case err == nil:
 		return
@@ -99,12 +100,9 @@ func (a *Authority) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": "invalid_grant"})
 	case errors.Is(err, errDenied):
 		writeJSON(w, 403, map[string]string{"error": "access_denied"})
+	case errors.As(err, &limit):
+		w.WriteHeader(413)
 	default:
-		var limit *http.MaxBytesError
-		if errors.As(err, &limit) {
-			w.WriteHeader(413)
-			return
-		}
 		writeJSON(w, 400, map[string]string{"error": "invalid_request"})
 	}
 }

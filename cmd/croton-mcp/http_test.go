@@ -346,8 +346,10 @@ func TestHTTPTransportBridgeQueue(t *testing.T) {
 			config := writeServerConfig(t, fixtureBridge(t))
 			marker := filepath.Join(canonicalTempDir(t), "active")
 			budget := 2 * time.Second
+			version := "2025-11-25"
 			if shutdown {
 				budget = 30 * time.Second
+				version = "2026-07-28"
 			}
 			editConfig(t, config, func(cfg map[string]any) {
 				imap := cfg["imap"].(map[string]any)
@@ -355,10 +357,6 @@ func TestHTTPTransportBridgeQueue(t *testing.T) {
 				imap["credentialCommand"] = []string{"/bin/sh", "-c", `echo started >> "$1"; exec /bin/sleep 45`, "fixture.test", marker}
 			})
 			p := startHTTP(t, config)
-			version := "2025-11-25"
-			if shutdown {
-				version = "2026-07-28"
-			}
 			session := p.session(t, p.pair(t), version)
 			results := make(chan bool, 2)
 			call := func() {
