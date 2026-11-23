@@ -25,7 +25,7 @@ read-only by default; the triage writes in `docs/MCP.md` exist only behind
 
 ## Workflow
 
-- Use Go 1.26.10.
+- Use Go 1.27.4.
 - Use blank lines to separate validation, setup, state transitions, I/O, and return paths inside functions.
 - Run `go build ./...`, `go vet ./...`, and `go test -race ./...` before submitting.
 - Follow Conventional Commits and `.github/PULL_REQUEST_TEMPLATE.md`.
