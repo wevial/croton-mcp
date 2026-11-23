@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -241,7 +242,6 @@ func TestAttachmentStructureAdapter(t *testing.T) {
 			{
 				name:       "plain_nonattachment_leaf",
 				descriptor: &testkit.BodyPart{Kind: testkit.BodyPartText, Type: "text", Subtype: "plain", Size: 5, Lines: 1, Disposition: &testkit.BodyDisposition{Value: "inline"}},
-				want:       []AttachmentStructureEntry{},
 			},
 		}
 
@@ -264,7 +264,7 @@ func TestAttachmentStructureAdapter(t *testing.T) {
 			if result.UID != uid || result.Truncation.Any() || result.Attachments == nil {
 				t.Fatalf("%s result = %+v", testCase.name, result)
 			}
-			if !reflect.DeepEqual(result.Attachments, testCase.want) {
+			if !slices.Equal(result.Attachments, testCase.want) {
 				t.Fatalf("%s attachments = %+v, want %+v", testCase.name, result.Attachments, testCase.want)
 			}
 		}

@@ -2,7 +2,7 @@ package bridge
 
 import (
 	"errors"
-	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -67,7 +67,7 @@ func runProjectionCases(t *testing.T, cases []projectionCase) {
 		if err != nil {
 			t.Fatalf("%s error = %v", testCase.name, err)
 		}
-		if !reflect.DeepEqual(attachments, testCase.want) {
+		if attachments == nil || !slices.Equal(attachments, testCase.want) {
 			t.Fatalf("%s attachments = %+v, want %+v", testCase.name, attachments, testCase.want)
 		}
 		if truncation != testCase.truncation {
@@ -158,14 +158,12 @@ func TestAttachmentProjection(t *testing.T) {
 			{
 				name:      "inline_without_filename",
 				structure: projectionLeaf("text", "plain", 51, map[string]string{"charset": "utf-8"}, projectionDisposition("inline", nil)),
-				want:      []AttachmentStructureEntry{},
 			},
 			{
 				// An undecodable extended name with no plain fallback leaves no
 				// filename, so the part is not an attachment.
 				name:      "undecodable_extended_name_alone",
 				structure: projectionLeaf("application", "pdf", 52, map[string]string{"name*": "no-charset-quotes"}, nil),
-				want:      []AttachmentStructureEntry{},
 			},
 			{name: "empty_key", structure: projectionLeaf("application", "pdf", 9, map[string]string{"": "x"}, nil), malformed: true},
 			{name: "key_with_space", structure: projectionLeaf("application", "pdf", 9, map[string]string{"file name": "x.pdf"}, nil), malformed: true},
@@ -229,13 +227,11 @@ func TestAttachmentProjection(t *testing.T) {
 				// An unqualified message/global is omitted visibly, as rfc822 is.
 				name:       "unqualified_global",
 				structure:  projectionMultipart("mixed", nil, projectionText(), projectionMessage("global", 80, nil, hidden)),
-				want:       []AttachmentStructureEntry{},
 				truncation: Truncation{MIMEDepth: true},
 			},
 			{
 				name:       "unqualified_rfc822_root",
 				structure:  projectionMessage("rfc822", 80, nil, hidden),
-				want:       []AttachmentStructureEntry{},
 				truncation: Truncation{MIMEDepth: true},
 			},
 			{
@@ -302,7 +298,6 @@ func TestAttachmentProjection(t *testing.T) {
 				name:       "empty_by_part_omission",
 				structure:  projectionMultipart("mixed", nil, named("a")),
 				bounds:     Bounds{MaxMimeParts: 1},
-				want:       []AttachmentStructureEntry{},
 				truncation: Truncation{MIMEParts: true},
 			},
 			{
@@ -320,7 +315,6 @@ func TestAttachmentProjection(t *testing.T) {
 			{
 				name:       "empty_by_depth_omission",
 				structure:  nested(defaultMaxMIMEDepth+1, named("deeper")),
-				want:       []AttachmentStructureEntry{},
 				truncation: Truncation{MIMEDepth: true},
 			},
 			{
@@ -339,7 +333,6 @@ func TestAttachmentProjection(t *testing.T) {
 			{
 				name:      "complete_empty",
 				structure: projectionMultipart("alternative", nil, projectionText(), &imap.BodyStructureSinglePart{Type: "text", Subtype: "html", Size: 9}),
-				want:      []AttachmentStructureEntry{},
 			},
 			{
 				name:      "fields_exact_boundary",
@@ -402,7 +395,6 @@ func TestAttachmentProjection(t *testing.T) {
 					projectionLeaf("text", strings.Repeat("s", 400), 10, nil, nil),
 					projectionLeaf("text", "plain", 10, nil, projectionDisposition(strings.Repeat("d", 400), nil)),
 				),
-				want: []AttachmentStructureEntry{},
 			},
 			{
 				// Declared sizes come only from the disposition parameter.
