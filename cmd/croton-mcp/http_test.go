@@ -338,8 +338,7 @@ func TestHTTPTransportPairedReads(t *testing.T) {
 	}
 }
 
-// A stalled synthetic credential helper holds the real adapter gate. Its
-// marker lets the test place a second HTTP call behind a known active call.
+// The marker proves the stalled credential helper holds the gate before the second call.
 func TestHTTPTransportBridgeQueue(t *testing.T) {
 	for _, shutdown := range []bool{false, true} {
 		t.Run(fmt.Sprintf("shutdown=%t", shutdown), func(t *testing.T) {

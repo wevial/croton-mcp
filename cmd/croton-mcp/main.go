@@ -150,8 +150,7 @@ func serveHTTP(ctx context.Context, cfg bridge.Config, address, dir, cert, key s
 	if err != nil {
 		return err
 	}
-	// Adapter.Close logs out within the configured IMAP timeout. Give logout
-	// a shorter share of the CLI exit budget if the Bridge stops responding.
+	// Limit the wait for IMAP logout to leave time for CLI shutdown.
 	defer func() {
 		done := make(chan struct{})
 		go func() { _ = adapter.Close(); close(done) }()
@@ -214,8 +213,7 @@ func runHTTP(parent context.Context, listener net.Listener, handler http.Handler
 	}
 	done := make(chan struct{})
 	context.AfterFunc(ctx, func() {
-		// Close also interrupts partially read requests and idle keep-alives.
-		// Handlers observe BaseContext cancellation while unwinding SDK calls.
+		// Canceling BaseContext stops SDK calls. Close interrupts partial reads and idle connections.
 		_ = server.Close()
 		close(done)
 	})

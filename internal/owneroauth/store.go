@@ -134,8 +134,7 @@ func put(tx *bolt.Tx, bucket, token string, value any) error {
 	return tx.Bucket([]byte(bucket)).Put(digest(token), data)
 }
 
-// Remove expired entries on issuance. Only terminal-approved grants can
-// add records; rejected network requests never grow the database.
+// Only terminal-approved grants can grow the database, so prune on issuance.
 func prune(tx *bolt.Tx, now time.Time) error {
 	for _, name := range []string{"codes", "access"} {
 		b := tx.Bucket([]byte(name))
