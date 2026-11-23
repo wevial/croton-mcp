@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/base64"
 	"errors"
 	"io"
@@ -68,13 +69,11 @@ func normalizeMessage(reader io.Reader, limits NormalizeLimits) (NormalizedMessa
 	}
 
 	normalized := NormalizedMessage{TextSource: TextSourceNone}
-	headers, truncation, err := canonicalHeaders(message.Header, headerBytes, limits)
+	normalized.Headers, normalized.Truncation, err = canonicalHeaders(message.Header, headerBytes, limits)
 	if err != nil {
 		return NormalizedMessage{}, err
 	}
 
-	normalized.Headers = headers
-	normalized.Truncation = truncation
 	normalized.Truncation.HeaderCount = headerCountTruncated
 
 	collector := mimeCollector{limits: limits, result: &normalized}
@@ -82,136 +81,90 @@ func normalizeMessage(reader io.Reader, limits NormalizeLimits) (NormalizedMessa
 		return NormalizedMessage{}, err
 	}
 
-	collector.applyText()
+	if normalized.TextSource == TextSourceHTML {
+		text, truncated := htmlText(normalized.Text, limits.MaxDecodedTextBytes)
+		normalized.Text = text
+		normalized.Truncation.Text = normalized.Truncation.Text || truncated
+	}
 
 	return normalized, nil
 }
 
 func boundedHeaderBlock(raw []byte, limits NormalizeLimits) ([]byte, error) {
-	limit := limits.MaxHeaderBytes
-	if limit > len(raw) {
-		limit = len(raw)
-	}
-
-	headerEnd := bytes.Index(raw[:limit], []byte("\r\n\r\n"))
-	separatorLength := len("\r\n\r\n")
-	if headerEnd < 0 {
-		headerEnd = bytes.Index(raw[:limit], []byte("\n\n"))
-		separatorLength = len("\n\n")
-	}
-
-	if headerEnd < 0 {
-		if len(raw) > limits.MaxHeaderBytes {
-			return nil, &NormalizeError{Code: errorCodeMalformedHeader}
+	window := raw[:min(len(raw), limits.MaxHeaderBytes)]
+	for _, separator := range []string{"\r\n\r\n", "\n\n"} {
+		if end := bytes.Index(window, []byte(separator)); end >= 0 {
+			return raw[:end+len(separator)], nil
 		}
-
-		return raw, nil
 	}
 
-	headerEnd += separatorLength
-	if headerEnd > limits.MaxHeaderBytes {
+	if len(raw) > limits.MaxHeaderBytes {
 		return nil, &NormalizeError{Code: errorCodeMalformedHeader}
 	}
 
-	return raw[:headerEnd], nil
+	return raw, nil
 }
 
 func boundedHeaderCount(header []byte, limit int) ([]byte, bool) {
-	fieldCount := 0
-	for lineStart := 0; lineStart < len(header); {
-		lineLength := bytes.IndexByte(header[lineStart:], '\n')
-		lineEnd := len(header)
-		nextLineStart := len(header)
-		if lineLength >= 0 {
-			lineEnd = lineStart + lineLength
-			nextLineStart = lineEnd + 1
-		}
-
-		line := bytes.TrimSuffix(header[lineStart:lineEnd], []byte{'\r'})
+	fieldCount, offset := 0, 0
+	for rawLine := range bytes.Lines(header) {
+		line := bytes.TrimSuffix(bytes.TrimSuffix(rawLine, []byte("\n")), []byte("\r"))
 		if len(line) == 0 {
-			return header, false
+			break
 		}
 
-		if line[0] != ' ' && line[0] != '	' {
+		if line[0] != ' ' && line[0] != '\t' {
 			fieldCount++
 			if fieldCount > limit {
-				separator := []byte{'\n'}
-				if lineStart >= 2 && bytes.Equal(header[lineStart-2:lineStart], []byte("\r\n")) {
-					separator = []byte("\r\n")
+				separator := "\n"
+				if bytes.HasSuffix(header[:offset], []byte("\r\n")) {
+					separator = "\r\n"
 				}
 
-				bounded := make([]byte, 0, lineStart+len(separator))
-				bounded = append(bounded, header[:lineStart]...)
-				bounded = append(bounded, separator...)
-
-				return bounded, true
+				// The body may share the backing array with header.
+				return append(header[:offset:offset], separator...), true
 			}
 		}
-
-		lineStart = nextLineStart
+		offset += len(rawLine)
 	}
 
 	return header, false
 }
 
 func canonicalHeaders(header mail.Header, headerBytes []byte, limits NormalizeLimits) (CanonicalHeaders, Truncation, error) {
-	truncation := Truncation{}
-	if len(headerBytes) > limits.MaxHeaderBytes {
-		truncation.Headers = true
+	var headers CanonicalHeaders
+	var references string
+	truncation := Truncation{Headers: len(headerBytes) > limits.MaxHeaderBytes}
+	for _, field := range []struct {
+		name  string
+		value *string
+	}{
+		{"Date", &headers.Date},
+		{"From", &headers.From},
+		{"To", &headers.To},
+		{"Subject", &headers.Subject},
+		{"Message-ID", &headers.MessageID},
+		{"In-Reply-To", &headers.InReplyTo},
+		{"References", &references},
+	} {
+		value, truncated, err := canonicalHeaderValue(header, field.name, limits.MaxHeaderBytes)
+		if err != nil {
+			return CanonicalHeaders{}, Truncation{}, err
+		}
+
+		*field.value = value
+		truncation.Headers = truncation.Headers || truncated
 	}
 
-	date, dateTruncated, err := canonicalHeaderValue(header, "Date", limits.MaxHeaderBytes)
-	if err != nil {
-		return CanonicalHeaders{}, Truncation{}, err
-	}
-
-	from, fromTruncated, err := canonicalHeaderValue(header, "From", limits.MaxHeaderBytes)
-	if err != nil {
-		return CanonicalHeaders{}, Truncation{}, err
-	}
-
-	to, toTruncated, err := canonicalHeaderValue(header, "To", limits.MaxHeaderBytes)
-	if err != nil {
-		return CanonicalHeaders{}, Truncation{}, err
-	}
-
-	subject, subjectTruncated, err := canonicalHeaderValue(header, "Subject", limits.MaxHeaderBytes)
-	if err != nil {
-		return CanonicalHeaders{}, Truncation{}, err
-	}
-
-	messageID, messageIDTruncated, err := canonicalHeaderValue(header, "Message-ID", limits.MaxHeaderBytes)
-	if err != nil {
-		return CanonicalHeaders{}, Truncation{}, err
-	}
-
-	inReplyTo, inReplyToTruncated, err := canonicalHeaderValue(header, "In-Reply-To", limits.MaxHeaderBytes)
-	if err != nil {
-		return CanonicalHeaders{}, Truncation{}, err
-	}
-
-	referenceValues, referenceTruncated, err := canonicalHeaderValue(header, "References", limits.MaxHeaderBytes)
-	if err != nil {
-		return CanonicalHeaders{}, Truncation{}, err
-	}
-
-	references := messageIDs(referenceValues)
-	if len(references) > limits.MaxReferenceCount {
-		references = references[len(references)-limits.MaxReferenceCount:]
+	headers.MessageID = firstMessageID(headers.MessageID)
+	headers.InReplyTo = firstMessageID(headers.InReplyTo)
+	headers.References = messageIDs(references)
+	if len(headers.References) > limits.MaxReferenceCount {
+		headers.References = headers.References[len(headers.References)-limits.MaxReferenceCount:]
 		truncation.References = true
 	}
 
-	truncation.Headers = truncation.Headers || dateTruncated || fromTruncated || toTruncated || subjectTruncated || messageIDTruncated || inReplyToTruncated || referenceTruncated
-
-	return CanonicalHeaders{
-		Date:       date,
-		From:       from,
-		To:         to,
-		Subject:    subject,
-		MessageID:  firstMessageID(messageID),
-		InReplyTo:  firstMessageID(inReplyTo),
-		References: references,
-	}, truncation, nil
+	return headers, truncation, nil
 }
 
 func canonicalHeaderValue(header mail.Header, name string, limit int) (string, bool, error) {
@@ -243,21 +196,18 @@ func canonicalHeaderValue(header mail.Header, name string, limit int) (string, b
 
 func validEncodedWords(value string) bool {
 	for {
-		start := strings.Index(value, "=?")
-		if start < 0 {
+		_, rest, found := strings.Cut(value, "=?")
+		if !found {
+			return true
+		}
+		word, rest, found := strings.Cut(rest, "?=")
+		if !found {
 			return true
 		}
 
-		value = value[start+2:]
-		end := strings.Index(value, "?=")
-		if end < 0 {
-			return true
-		}
-
-		parts := strings.Split(value[:end], "?")
+		parts := strings.Split(word, "?")
+		value = rest
 		if len(parts) != 3 || parts[0] == "" || (!strings.EqualFold(parts[1], "b") && !strings.EqualFold(parts[1], "q")) {
-			value = value[end+2:]
-
 			continue
 		}
 
@@ -270,8 +220,6 @@ func validEncodedWords(value string) bool {
 				return false
 			}
 		}
-
-		value = value[end+2:]
 	}
 }
 
@@ -310,13 +258,9 @@ func messageIDs(value string) []string {
 }
 
 type mimeCollector struct {
-	limits   NormalizeLimits
-	result   *NormalizedMessage
-	parts    int
-	plain    string
-	plainSet bool
-	html     string
-	htmlSet  bool
+	limits NormalizeLimits
+	result *NormalizedMessage
+	parts  int
 }
 
 func (collector *mimeCollector) parseEntity(header textproto.MIMEHeader, body io.Reader, depth int) error {
@@ -325,42 +269,24 @@ func (collector *mimeCollector) parseEntity(header textproto.MIMEHeader, body io
 		return nil
 	}
 
-	if collector.parts >= collector.limits.MaxMIMEParts {
-		collector.result.Truncation.MIMEParts = true
-
-		return errMIMEPartsLimit
-	}
 	collector.parts++
 
-	contentType := "text/plain"
-	parameters := map[string]string{}
-	if rawContentType := header.Get("Content-Type"); rawContentType != "" {
-		var err error
-		contentType, parameters, err = mime.ParseMediaType(rawContentType)
+	contentType, parameters, err := mime.ParseMediaType(cmp.Or(header.Get("Content-Type"), "text/plain"))
+	if err != nil {
+		return &NormalizeError{Code: errorCodeMalformedMIME}
+	}
+
+	var disposition string
+	var dispositionParameters map[string]string
+	if raw := header.Get("Content-Disposition"); raw != "" {
+		disposition, dispositionParameters, err = mime.ParseMediaType(raw)
 		if err != nil {
 			return &NormalizeError{Code: errorCodeMalformedMIME}
 		}
 	}
 
-	disposition := ""
-	dispositionParameters := map[string]string{}
-	if contentDisposition := header.Get("Content-Disposition"); contentDisposition != "" {
-		parsedDisposition, parsedParameters, err := mime.ParseMediaType(contentDisposition)
-		if err != nil {
-			return &NormalizeError{Code: errorCodeMalformedMIME}
-		}
-
-		disposition = parsedDisposition
-		dispositionParameters = parsedParameters
-	}
-
-	filename := dispositionParameters["filename"]
-	if filename == "" {
-		filename = parameters["name"]
-	}
-
-	attachment := strings.EqualFold(disposition, "attachment") || filename != ""
-	if attachment {
+	filename := cmp.Or(dispositionParameters["filename"], parameters["name"])
+	if disposition == "attachment" || filename != "" {
 		if metadata, ok := boundedAttachment(len(collector.result.Attachments), collector.limits, &collector.result.Truncation, filename, contentType, disposition, dispositionParameters["size"]); ok {
 			collector.result.Attachments = append(collector.result.Attachments, metadata)
 		}
@@ -368,7 +294,7 @@ func (collector *mimeCollector) parseEntity(header textproto.MIMEHeader, body io
 		return nil
 	}
 
-	if strings.HasPrefix(strings.ToLower(contentType), "multipart/") {
+	if strings.HasPrefix(contentType, "multipart/") {
 		boundary := parameters["boundary"]
 		if boundary == "" || len(boundary) > 200 {
 			return &NormalizeError{Code: errorCodeMalformedMIME}
@@ -376,6 +302,7 @@ func (collector *mimeCollector) parseEntity(header textproto.MIMEHeader, body io
 
 		reader := multipart.NewReader(body, boundary)
 		for {
+			// NextPart parses headers, so check the budget before reading.
 			if collector.parts >= collector.limits.MaxMIMEParts {
 				collector.result.Truncation.MIMEParts = true
 
@@ -396,13 +323,13 @@ func (collector *mimeCollector) parseEntity(header textproto.MIMEHeader, body io
 		}
 	}
 
-	if strings.EqualFold(contentType, "message/rfc822") {
+	if contentType == "message/rfc822" {
 		collector.result.Truncation.MIMEDepth = true
 
 		return nil
 	}
 
-	if !strings.EqualFold(contentType, "text/plain") && !strings.EqualFold(contentType, "text/html") {
+	if contentType != "text/plain" && contentType != "text/html" {
 		return nil
 	}
 
@@ -418,14 +345,13 @@ func (collector *mimeCollector) parseEntity(header textproto.MIMEHeader, body io
 
 	collector.result.Truncation.Text = collector.result.Truncation.Text || transferTruncated || charsetTruncated
 
-	if strings.EqualFold(contentType, "text/plain") && !collector.plainSet {
-		collector.plain = text
-		collector.plainSet = true
-	}
-
-	if strings.EqualFold(contentType, "text/html") && !collector.htmlSet {
-		collector.html = text
-		collector.htmlSet = true
+	switch {
+	case contentType == "text/plain" && collector.result.TextSource != TextSourcePlain:
+		collector.result.Text = text
+		collector.result.TextSource = TextSourcePlain
+	case contentType == "text/html" && collector.result.TextSource == TextSourceNone:
+		collector.result.Text = text
+		collector.result.TextSource = TextSourceHTML
 	}
 
 	return nil
@@ -456,24 +382,6 @@ func boundedAttachment(count int, limits NormalizeLimits, truncation *Truncation
 	}
 
 	return metadata, true
-}
-
-func (collector *mimeCollector) applyText() {
-	if collector.plainSet {
-		collector.result.Text = collector.plain
-		collector.result.TextSource = TextSourcePlain
-
-		return
-	}
-
-	if !collector.htmlSet {
-		return
-	}
-
-	text, truncated := htmlText(collector.html, collector.limits.MaxDecodedTextBytes)
-	collector.result.Text = text
-	collector.result.TextSource = TextSourceHTML
-	collector.result.Truncation.Text = collector.result.Truncation.Text || truncated
 }
 
 func decodeTransfer(reader io.Reader, encoding string, limit int) ([]byte, bool, error) {
@@ -530,24 +438,24 @@ func htmlText(source string, limit int) (string, bool) {
 	}
 
 	var fragments []string
-	var collect func(*html.Node, bool)
-	collect = func(node *html.Node, blocked bool) {
+	var collect func(*html.Node)
+	collect = func(node *html.Node) {
 		if node.Type == html.ElementNode {
 			switch strings.ToLower(node.Data) {
 			case "script", "style", "head", "template", "noscript":
-				blocked = true
+				return
 			}
 		}
 
-		if node.Type == html.TextNode && !blocked {
+		if node.Type == html.TextNode {
 			fragments = append(fragments, node.Data)
 		}
 
 		for child := node.FirstChild; child != nil; child = child.NextSibling {
-			collect(child, blocked)
+			collect(child)
 		}
 	}
-	collect(document, false)
+	collect(document)
 
 	return truncateUTF8(strings.Join(strings.Fields(strings.Join(fragments, " ")), " "), limit)
 }
@@ -562,5 +470,5 @@ func truncateUTF8(value string, limit int) (string, bool) {
 		truncated = truncated[:len(truncated)-1]
 	}
 
-	return strings.ToValidUTF8(truncated, "�"), true
+	return truncated, true
 }

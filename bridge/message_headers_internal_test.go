@@ -17,49 +17,6 @@ const (
 	headerTestLimit       = 4096
 )
 
-// selectedHeaderResult mirrors the expected MessageHeaders fields using only
-// pre-existing types, so these tests compile before the operation exists.
-type selectedHeaderResult struct {
-	Metadata   MessageMetadata
-	Headers    CanonicalHeaders
-	Truncation Truncation
-}
-
-// callGetMessageHeaders invokes Adapter.GetMessageHeaders through reflection
-// and requires its result to hold exactly Metadata, Headers and Truncation.
-func callGetMessageHeaders(t *testing.T, adapter *Adapter, identifier string) (selectedHeaderResult, error) {
-	t.Helper()
-
-	method := reflect.ValueOf(adapter).MethodByName("GetMessageHeaders")
-	if !method.IsValid() {
-		t.Fatal("Adapter.GetMessageHeaders is absent")
-	}
-
-	methodType := method.Type()
-	if methodType.NumIn() != 2 || methodType.In(0) != reflect.TypeFor[context.Context]() || methodType.In(1).Kind() != reflect.String || methodType.NumOut() != 2 || methodType.Out(1) != reflect.TypeFor[error]() {
-		t.Fatalf("Adapter.GetMessageHeaders has signature %s", methodType)
-	}
-
-	resultType := methodType.Out(0)
-	if resultType.Name() != "MessageHeaders" || resultType.Kind() != reflect.Struct || resultType.NumField() != 3 {
-		t.Fatalf("GetMessageHeaders result type %s does not hold exactly three fields", resultType)
-	}
-
-	outputs := method.Call([]reflect.Value{reflect.ValueOf(context.Background()), reflect.ValueOf(identifier)})
-	result := selectedHeaderResult{}
-	target := reflect.ValueOf(&result).Elem()
-	for _, name := range []string{"Metadata", "Headers", "Truncation"} {
-		member := outputs[0].FieldByName(name)
-		if !member.IsValid() || member.Type() != target.FieldByName(name).Type() {
-			t.Fatalf("MessageHeaders.%s is missing or has the wrong type", name)
-		}
-		target.FieldByName(name).Set(member)
-	}
-
-	err, _ := outputs[1].Interface().(error)
-	return result, err
-}
-
 // headerFetchScript is the canned response to one header FETCH.
 type headerFetchScript struct {
 	uidItems string
@@ -265,13 +222,13 @@ func requireHeaderOnlyFetches(t *testing.T, session *headerTestSession) {
 	}
 }
 
-func requireHeaderRefusal(t *testing.T, name string, result selectedHeaderResult, err error, code string) {
+func requireHeaderRefusal(t *testing.T, name string, result MessageHeaders, err error, code string) {
 	t.Helper()
 
 	if CodeOf(err) != code || err.Error() != code {
 		t.Fatalf("%s: error %v, want code-only %q", name, err, code)
 	}
-	if !reflect.DeepEqual(result, selectedHeaderResult{}) {
+	if !reflect.DeepEqual(result, MessageHeaders{}) {
 		t.Fatalf("%s: refused read returned %+v", name, result)
 	}
 }
@@ -287,12 +244,17 @@ var replyHeader = metadataHeader(
 )
 
 func TestMessageHeadersAdapter(t *testing.T) {
+	var _ func(*Adapter, context.Context, string) (MessageHeaders, error) = (*Adapter).GetMessageHeaders
+	if fields := reflect.TypeFor[MessageHeaders]().NumField(); fields != 3 {
+		t.Fatalf("MessageHeaders has %d fields, want 3", fields)
+	}
+
 	t.Run("identity_and_headers", func(t *testing.T) {
 		session := startHeaderSession(t, headerScript(` FLAGS (\Seen)`, replyHeader))
 		adapter, opened := newHeaderAdapter(1, headerTestLimit, session)
 		identifier := headerTestID(t, adapter, headerTestUIDValidity, headerTestUID)
 
-		result, err := callGetMessageHeaders(t, adapter, identifier)
+		result, err := adapter.GetMessageHeaders(context.Background(), identifier)
 		if err != nil {
 			t.Fatalf("GetMessageHeaders: %v", err)
 		}
@@ -328,7 +290,7 @@ func TestMessageHeadersAdapter(t *testing.T) {
 		stale := startHeaderSession(t, headerScript(" FLAGS ()", replyHeader))
 		stale.uidValidity = headerTestUIDValidity + 1
 		adapter, _ := newHeaderAdapter(2, headerTestLimit, stale)
-		result, err := callGetMessageHeaders(t, adapter, headerTestID(t, adapter, headerTestUIDValidity, headerTestUID))
+		result, err := adapter.GetMessageHeaders(context.Background(), headerTestID(t, adapter, headerTestUIDValidity, headerTestUID))
 		requireHeaderRefusal(t, "stale UIDVALIDITY", result, err, CodeStaleMessageID)
 		if len(stale.peer.fetches()) != 0 || stale.bodies != 0 {
 			t.Fatalf("stale UIDVALIDITY reached FETCH %q bodies %d", stale.peer.fetches(), stale.bodies)
@@ -337,7 +299,7 @@ func TestMessageHeadersAdapter(t *testing.T) {
 		missing := startHeaderSession(t, headerScript(" FLAGS ()", replyHeader))
 		missing.present = false
 		adapter, _ = newHeaderAdapter(3, headerTestLimit, missing)
-		result, err = callGetMessageHeaders(t, adapter, headerTestID(t, adapter, headerTestUIDValidity, headerTestUID))
+		result, err = adapter.GetMessageHeaders(context.Background(), headerTestID(t, adapter, headerTestUIDValidity, headerTestUID))
 		requireHeaderRefusal(t, "missing UID", result, err, CodeStaleMessageID)
 		if len(missing.peer.fetches()) != 0 || missing.bodies != 0 {
 			t.Fatalf("missing UID reached FETCH %q bodies %d", missing.peer.fetches(), missing.bodies)
@@ -345,7 +307,7 @@ func TestMessageHeadersAdapter(t *testing.T) {
 
 		before, _ := newHeaderAdapter(4, headerTestLimit)
 		restarted, opened := newHeaderAdapter(5, headerTestLimit)
-		result, err = callGetMessageHeaders(t, restarted, headerTestID(t, before, headerTestUIDValidity, headerTestUID))
+		result, err = restarted.GetMessageHeaders(context.Background(), headerTestID(t, before, headerTestUIDValidity, headerTestUID))
 		requireHeaderRefusal(t, "old ID after restart", result, err, CodeStaleMessageID)
 		if *opened != 0 {
 			t.Fatalf("old ID opened %d sessions", *opened)
@@ -357,7 +319,7 @@ func TestMessageHeadersAdapter(t *testing.T) {
 		second := startHeaderSession(t, headerScript(" FLAGS ()", replyHeader))
 		adapter, opened = newHeaderAdapter(6, headerTestLimit, first, second)
 		identifier := headerTestID(t, adapter, headerTestUIDValidity, headerTestUID)
-		result, err = callGetMessageHeaders(t, adapter, identifier)
+		result, err = adapter.GetMessageHeaders(context.Background(), identifier)
 		if err != nil {
 			t.Fatalf("retried GetMessageHeaders: %v", err)
 		}
@@ -368,16 +330,15 @@ func TestMessageHeadersAdapter(t *testing.T) {
 			t.Fatalf("retry kept first-attempt data: %+v", result)
 		}
 		requireHeaderOnlyFetches(t, second)
-
 	})
 
 	t.Run("bounds_and_response", func(t *testing.T) {
-		run := func(t *testing.T, key byte, script headerFetchScript) (selectedHeaderResult, *headerTestSession, error) {
+		run := func(t *testing.T, key byte, script headerFetchScript) (MessageHeaders, *headerTestSession, error) {
 			t.Helper()
 
 			session := startHeaderSession(t, script)
 			adapter, _ := newHeaderAdapter(key, headerTestLimit, session)
-			result, err := callGetMessageHeaders(t, adapter, headerTestID(t, adapter, headerTestUIDValidity, headerTestUID))
+			result, err := adapter.GetMessageHeaders(context.Background(), headerTestID(t, adapter, headerTestUIDValidity, headerTestUID))
 			return result, session, err
 		}
 

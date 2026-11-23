@@ -12,22 +12,6 @@ import (
 	"github.com/wevial/croton-mcp/internal/testkit"
 )
 
-// attachmentStructureResult mirrors MessageAttachmentStructure so the tests
-// reach the method only through reflection and compile against a baseline
-// without it.
-type attachmentStructureResult struct {
-	ID          string
-	Mailbox     string
-	UIDValidity uint32
-	UID         uint32
-	Attachments []attachmentStructureView
-	Truncation  Truncation
-}
-
-type attachmentStructureView struct {
-	Metadata AttachmentMetadata
-}
-
 func startTLSHeaderAdapter(t *testing.T, mode testkit.TLSMode, options testkit.Options) (*testkit.Server, *Adapter) {
 	t.Helper()
 
@@ -71,69 +55,13 @@ func startTLSHeaderAdapter(t *testing.T, mode testkit.TLSMode, options testkit.O
 	return server, adapter
 }
 
-// callAttachmentStructure invokes Adapter.GetMessageAttachmentStructure
-// through reflection, requires its result to hold exactly six fields and
-// copies it into the mirror.
-func callAttachmentStructure(t *testing.T, ctx context.Context, adapter *Adapter, identifier string) (attachmentStructureResult, error) {
-	t.Helper()
-
-	method := reflect.ValueOf(adapter).MethodByName("GetMessageAttachmentStructure")
-	if !method.IsValid() {
-		t.Fatal("Adapter.GetMessageAttachmentStructure is absent")
-	}
-
-	methodType := method.Type()
-	if methodType.NumIn() != 2 || methodType.In(0) != reflect.TypeFor[context.Context]() || methodType.In(1).Kind() != reflect.String || methodType.NumOut() != 2 || methodType.Out(1) != reflect.TypeFor[error]() {
-		t.Fatalf("Adapter.GetMessageAttachmentStructure has signature %s", methodType)
-	}
-
-	resultType := methodType.Out(0)
-	if resultType.Name() != "MessageAttachmentStructure" || resultType.Kind() != reflect.Struct || resultType.NumField() != 6 {
-		t.Fatalf("GetMessageAttachmentStructure result type %s does not hold exactly six fields", resultType)
-	}
-
-	outputs := method.Call([]reflect.Value{reflect.ValueOf(ctx), reflect.ValueOf(identifier)})
-	value := outputs[0]
-	result := attachmentStructureResult{}
-	target := reflect.ValueOf(&result).Elem()
-	for _, name := range []string{"ID", "Mailbox", "UIDValidity", "UID", "Truncation"} {
-		member := value.FieldByName(name)
-		if !member.IsValid() || member.Type() != target.FieldByName(name).Type() {
-			t.Fatalf("MessageAttachmentStructure.%s is missing or has the wrong type", name)
-		}
-		target.FieldByName(name).Set(member)
-	}
-
-	attachments := value.FieldByName("Attachments")
-	if !attachments.IsValid() || attachments.Kind() != reflect.Slice {
-		t.Fatal("MessageAttachmentStructure.Attachments is missing or not a list")
-	}
-	if !attachments.IsNil() {
-		result.Attachments = []attachmentStructureView{}
-	}
-	for index := range attachments.Len() {
-		entry := attachments.Index(index)
-		view := attachmentStructureView{}
-		view.Metadata.Filename = entry.FieldByName("Filename").String()
-		view.Metadata.ContentType = entry.FieldByName("ContentType").String()
-		view.Metadata.Disposition = entry.FieldByName("Disposition").String()
-		view.Metadata.DeclaredSize = entry.FieldByName("DeclaredSize").Int()
-		view.Metadata.HasDeclaredSize = entry.FieldByName("HasDeclaredSize").Bool()
-		result.Attachments = append(result.Attachments, view)
-	}
-
-	err, _ := outputs[1].Interface().(error)
-	return result, err
-}
-
-// requireStructureRefusal requires code and no normal result.
-func requireStructureRefusal(t *testing.T, name string, result attachmentStructureResult, err error, code string) {
+func requireStructureRefusal(t *testing.T, name string, result MessageAttachmentStructure, err error, code string) {
 	t.Helper()
 
 	if CodeOf(err) != code {
 		t.Fatalf("%s error = %v, want %s", name, err, code)
 	}
-	if !reflect.DeepEqual(result, attachmentStructureResult{}) {
+	if !reflect.DeepEqual(result, MessageAttachmentStructure{}) {
 		t.Fatalf("%s returned a normal result %+v", name, result)
 	}
 }
@@ -162,6 +90,11 @@ func plainDescriptor(size uint32, params []testkit.BodyParam, disposition *testk
 }
 
 func TestAttachmentStructureAdapter(t *testing.T) {
+	var _ func(*Adapter, context.Context, string) (MessageAttachmentStructure, error) = (*Adapter).GetMessageAttachmentStructure
+	if fields := reflect.TypeFor[MessageAttachmentStructure]().NumField(); fields != 6 {
+		t.Fatalf("MessageAttachmentStructure has %d fields, want 6", fields)
+	}
+
 	root := t.TempDir()
 	for _, name := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "TMPDIR"} {
 		t.Setenv(name, root)
@@ -182,14 +115,14 @@ func TestAttachmentStructureAdapter(t *testing.T) {
 
 		// The current ID returns exactly its own tuple and the projection.
 		identifier := headerTestID(t, adapter, 9001, 102)
-		result, err := callAttachmentStructure(t, ctx, adapter, identifier)
+		result, err := adapter.GetMessageAttachmentStructure(ctx, identifier)
 		if err != nil {
 			t.Fatalf("current ID error = %v", err)
 		}
-		want := attachmentStructureResult{
+		want := MessageAttachmentStructure{
 			ID: identifier, Mailbox: "INBOX", UIDValidity: 9001, UID: 102,
-			Attachments: []attachmentStructureView{{
-				Metadata: AttachmentMetadata{Filename: "report.pdf", ContentType: "application/octet-stream", Disposition: "attachment", DeclaredSize: 3000, HasDeclaredSize: true},
+			Attachments: []AttachmentStructureEntry{{
+				AttachmentMetadata: AttachmentMetadata{Filename: "report.pdf", ContentType: "application/octet-stream", Disposition: "attachment", DeclaredSize: 3000, HasDeclaredSize: true},
 			}},
 		}
 		if !reflect.DeepEqual(result, want) {
@@ -202,7 +135,7 @@ func TestAttachmentStructureAdapter(t *testing.T) {
 		// A stale generation is refused after a fresh selection and
 		// before any FETCH; the existence SEARCH may run.
 		before := len(server.Commands())
-		result, err = callAttachmentStructure(t, ctx, adapter, headerTestID(t, adapter, 9002, 102))
+		result, err = adapter.GetMessageAttachmentStructure(ctx, headerTestID(t, adapter, 9002, 102))
 		requireStructureRefusal(t, "stale generation", result, err, CodeStaleMessageID)
 		if fetches := fetchesSince(server, before); fetches != 0 {
 			t.Fatalf("stale generation issued %d FETCH commands", fetches)
@@ -217,7 +150,7 @@ func TestAttachmentStructureAdapter(t *testing.T) {
 
 		// A missing UID in the current generation is stale before any FETCH.
 		before = len(server.Commands())
-		result, err = callAttachmentStructure(t, ctx, adapter, headerTestID(t, adapter, 9001, 150))
+		result, err = adapter.GetMessageAttachmentStructure(ctx, headerTestID(t, adapter, 9001, 150))
 		requireStructureRefusal(t, "missing UID", result, err, CodeStaleMessageID)
 		if fetches := fetchesSince(server, before); fetches != 0 {
 			t.Fatalf("missing UID issued %d FETCH commands", fetches)
@@ -227,7 +160,7 @@ func TestAttachmentStructureAdapter(t *testing.T) {
 		restarted := &Adapter{}
 		restarted.idKey[0] = 0x7e
 		before = len(server.Commands())
-		result, err = callAttachmentStructure(t, ctx, adapter, headerTestID(t, restarted, 9001, 102))
+		result, err = adapter.GetMessageAttachmentStructure(ctx, headerTestID(t, restarted, 9001, 102))
 		requireStructureRefusal(t, "restart-invalid ID", result, err, CodeStaleMessageID)
 		if got := len(server.Commands()); got != before {
 			t.Fatalf("restart-invalid ID issued %d commands", got-before)
@@ -256,59 +189,59 @@ func TestAttachmentStructureAdapter(t *testing.T) {
 		cases := []struct {
 			name       string
 			descriptor *testkit.BodyPart
-			want       []attachmentStructureView
+			want       []AttachmentStructureEntry
 		}{
 			{
 				name:       "filename_before_name_absent_size",
 				descriptor: plainDescriptor(512, []testkit.BodyParam{{Name: "name", Value: "type-name.bin"}}, &testkit.BodyDisposition{Value: "INLINE", Params: []testkit.BodyParam{filename}}),
-				want:       []attachmentStructureView{{Metadata: AttachmentMetadata{Filename: "file.bin", ContentType: "application/octet-stream", Disposition: "inline"}}},
+				want:       []AttachmentStructureEntry{attachmentEntry("file.bin", "application/octet-stream", "inline")},
 			},
 			{
 				name:       "content_type_name_without_disposition",
 				descriptor: plainDescriptor(77, []testkit.BodyParam{{Name: "name", Value: "type-name.bin"}}, nil),
-				want:       []attachmentStructureView{{Metadata: AttachmentMetadata{Filename: "type-name.bin", ContentType: "application/octet-stream"}}},
+				want:       []AttachmentStructureEntry{attachmentEntry("type-name.bin", "application/octet-stream", "")},
 			},
 			{
 				name:       "attachment_disposition_without_name_zero_size",
 				descriptor: plainDescriptor(0, nil, attachmentDisposition(testkit.BodyParam{Name: "size", Value: "0"})),
-				want:       []attachmentStructureView{{Metadata: AttachmentMetadata{ContentType: "application/octet-stream", Disposition: "attachment", HasDeclaredSize: true}}},
+				want:       []AttachmentStructureEntry{{AttachmentMetadata: AttachmentMetadata{ContentType: "application/octet-stream", Disposition: "attachment", HasDeclaredSize: true}}},
 			},
 			{
 				name:       "positive_size",
 				descriptor: plainDescriptor(4000, nil, attachmentDisposition(filename, testkit.BodyParam{Name: "size", Value: "2900"})),
-				want:       []attachmentStructureView{{Metadata: AttachmentMetadata{Filename: "file.bin", ContentType: "application/octet-stream", Disposition: "attachment", DeclaredSize: 2900, HasDeclaredSize: true}}},
+				want:       []AttachmentStructureEntry{{AttachmentMetadata: AttachmentMetadata{Filename: "file.bin", ContentType: "application/octet-stream", Disposition: "attachment", DeclaredSize: 2900, HasDeclaredSize: true}}},
 			},
 			{
 				name:       "negative_size",
 				descriptor: plainDescriptor(9, nil, attachmentDisposition(filename, testkit.BodyParam{Name: "size", Value: "-1"})),
-				want:       []attachmentStructureView{{Metadata: AttachmentMetadata{Filename: "file.bin", ContentType: "application/octet-stream", Disposition: "attachment"}}},
+				want:       []AttachmentStructureEntry{attachmentEntry("file.bin", "application/octet-stream", "attachment")},
 			},
 			{
 				name:       "invalid_size",
 				descriptor: plainDescriptor(9, nil, attachmentDisposition(filename, testkit.BodyParam{Name: "size", Value: "12kb"})),
-				want:       []attachmentStructureView{{Metadata: AttachmentMetadata{Filename: "file.bin", ContentType: "application/octet-stream", Disposition: "attachment"}}},
+				want:       []AttachmentStructureEntry{attachmentEntry("file.bin", "application/octet-stream", "attachment")},
 			},
 			{
 				// ParseInt saturates to MaxInt64 with ErrRange; the size
 				// stays unknown rather than taking the saturated value.
 				name:       "int64_overflow_size",
 				descriptor: plainDescriptor(9, nil, attachmentDisposition(filename, testkit.BodyParam{Name: "size", Value: "9223372036854775808"})),
-				want:       []attachmentStructureView{{Metadata: AttachmentMetadata{Filename: "file.bin", ContentType: "application/octet-stream", Disposition: "attachment"}}},
+				want:       []AttachmentStructureEntry{attachmentEntry("file.bin", "application/octet-stream", "attachment")},
 			},
 			{
 				name:       "int64_maximum_size",
 				descriptor: plainDescriptor(4294967295, nil, attachmentDisposition(filename, testkit.BodyParam{Name: "size", Value: "9223372036854775807"})),
-				want:       []attachmentStructureView{{Metadata: AttachmentMetadata{Filename: "file.bin", ContentType: "application/octet-stream", Disposition: "attachment", DeclaredSize: 9223372036854775807, HasDeclaredSize: true}}},
+				want:       []AttachmentStructureEntry{{AttachmentMetadata: AttachmentMetadata{Filename: "file.bin", ContentType: "application/octet-stream", Disposition: "attachment", DeclaredSize: 9223372036854775807, HasDeclaredSize: true}}},
 			},
 			{
 				name:       "text_leaf_with_name",
 				descriptor: &testkit.BodyPart{Kind: testkit.BodyPartText, Type: "TEXT", Subtype: "CSV", Params: []testkit.BodyParam{{Name: "NAME", Value: "rows.csv"}}, Size: 31, Lines: 3},
-				want:       []attachmentStructureView{{Metadata: AttachmentMetadata{Filename: "rows.csv", ContentType: "text/csv"}}},
+				want:       []AttachmentStructureEntry{attachmentEntry("rows.csv", "text/csv", "")},
 			},
 			{
 				name:       "plain_nonattachment_leaf",
 				descriptor: &testkit.BodyPart{Kind: testkit.BodyPartText, Type: "text", Subtype: "plain", Size: 5, Lines: 1, Disposition: &testkit.BodyDisposition{Value: "inline"}},
-				want:       []attachmentStructureView{},
+				want:       []AttachmentStructureEntry{},
 			},
 		}
 
@@ -324,7 +257,7 @@ func TestAttachmentStructureAdapter(t *testing.T) {
 
 		for index, testCase := range cases {
 			uid := uint32(101 + index)
-			result, err := callAttachmentStructure(t, context.Background(), adapter, headerTestID(t, adapter, 9001, uid))
+			result, err := adapter.GetMessageAttachmentStructure(context.Background(), headerTestID(t, adapter, 9001, uid))
 			if err != nil {
 				t.Fatalf("%s error = %v", testCase.name, err)
 			}
