@@ -115,7 +115,7 @@ func serverCommand(t *testing.T, configPath string, stderr *bytes.Buffer) *exec.
 	return command
 }
 
-func TestStdioServesToolsOverOfficialSDKAndAuditsSafely(t *testing.T) {
+func TestHTTPTransportDefaultStdioCatalogAndAudit(t *testing.T) {
 	server, err := testkit.Start(testkit.Options{Mode: testkit.ImplicitTLS})
 	if err != nil {
 		t.Fatalf("start fake server: %v", err)

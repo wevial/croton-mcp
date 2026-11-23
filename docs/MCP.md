@@ -1,6 +1,6 @@
 # Croton MCP tool reference
 
-`croton-mcp` is a stdio MCP server. It targets MCP `2026-07-28` and keeps the
+`croton-mcp` serves MCP over stdio by default. It targets MCP `2026-07-28` and keeps the
 legacy `2025-11-25` `initialize` flow through the official Go SDK. Install and
 registration steps are in [INSTALL.md](INSTALL.md).
 
@@ -22,6 +22,59 @@ registration steps are in [INSTALL.md](INSTALL.md).
   Oversize results shrink structurally (whole list items removed, text halved
   on rune boundaries) and set `truncated`; JSON is never byte-sliced. A result
   that cannot shrink below the cap fails with `bounds_exceeded`.
+
+## Read-only loopback HTTP
+
+Start the listener with a configuration that has mutations disabled.
+
+```sh
+croton-mcp serve --authorizer owner --config /absolute/path/to/croton.json
+```
+
+Set the client’s Streamable HTTP endpoint to `http://127.0.0.1:8787/mcp`.
+`--bind` accepts a loopback IP literal and port. To serve HTTPS, supply
+`--tls-cert` and `--tls-key` with a certificate trusted by your browser and
+client for that IP, and use `https://` in the endpoint. The Bridge connection
+uses the TLS pin or anchor in the Croton configuration.
+
+1. Run `croton-mcp pair` in a local terminal. Open the displayed link in the
+   browser your MCP client uses and select **Pair this browser**. The fragment
+   contains a single-use secret valid for two minutes.
+2. Start authorization in the MCP client. Its public client registration and
+   authorization request must arrive during the three-minute pairing window.
+   The browser displays a comparison code.
+3. Run `croton-mcp approve` in the terminal. Check the self-reported client
+   name, client ID, full redirect URI, S256 challenge, resource and browser
+   code. Enter the matching code to approve that request.
+4. Select **Continue after approval** in the same browser. The client receives
+   the code and issuer at its redirect URI. It has 60 seconds to exchange the
+   code with the original redirect, resource and PKCE verifier. The bearer
+   grants ten minutes of access to the six read tools. Pair again for a new
+   grant.
+
+Opening a pairing window replaces any pending window. Each window admits
+eight registrations and closes on its first approval. The optional `serve`
+flags `--pairing-window`, `--handoff-lifetime`, `--code-lifetime` and
+`--access-lifetime` take Go durations. `--pending-limit` sets the registration
+limit.
+
+All three commands accept `--state-dir`. Use the same absolute directory for
+each. Linux defaults to `$XDG_STATE_HOME/croton-mcp` or
+`~/.local/state/croton-mcp`. macOS uses
+`~/Library/Application Support/croton-mcp`. The owner directory is mode
+`0700` and the bbolt database is mode `0600`. Terminal commands communicate
+over a Unix socket that checks the peer UID at both ends. Pending pairings
+expire on restart. Issued codes and access tokens survive restart at the same
+resource URL and are stored by hash.
+
+A request without a valid bearer receives a `401` with the resource metadata
+URL at `/.well-known/oauth-protected-resource/mcp`. The issuer is the listener
+origin and the resource is the full `/mcp` URL. The issuer advertises dynamic
+registration and S256. Clients may register HTTPS redirects or HTTP redirects
+to loopback IP literals. A native client may select its loopback port at
+authorization. The server checks Host, any Origin header, bearer, and the
+64 KiB JSON frame before MCP dispatch. Tool calls share the configured IMAP
+command timeout across queuing and execution.
 
 ## Read tools
 
