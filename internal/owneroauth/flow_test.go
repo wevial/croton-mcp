@@ -41,6 +41,17 @@ func openTest(t *testing.T, dir string, settings Settings) *Authority {
 	return a
 }
 
+func registerClient(t *testing.T, a *Authority, c registration) string {
+	t.Helper()
+
+	id, err := a.register(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return id
+}
+
 func authorizationQuery(client, redirect string) url.Values {
 	return url.Values{"client_id": {client}, "redirect_uri": {redirect}, "response_type": {"code"}, "resource": {issuer + "/mcp"}, "code_challenge": {oauth2.S256ChallengeFromVerifier(verifier)}, "code_challenge_method": {"S256"}, "state": {"state.test"}}
 }
@@ -59,9 +70,7 @@ func TestOwnerOAuthCodeWindow(t *testing.T) {
 	}
 	link, _ := url.Parse(a.start())
 	for range 8 {
-		if _, err := a.register(c); err != nil {
-			t.Fatal(err)
-		}
+		registerClient(t, a, c)
 	}
 	if _, err := a.register(c); err == nil {
 		t.Fatal("ninth registration")
@@ -127,10 +136,7 @@ func TestOwnerOAuthCodeRedirectAndPKCE(t *testing.T) {
 		{"http://[::1]/cb", "http://[::1]:9000/cb", "native", true},
 	} {
 		a.start()
-		id, err := a.register(registration{Application: test.app, Redirects: []string{test.registered}})
-		if err != nil {
-			t.Fatal(err)
-		}
+		id := registerClient(t, a, registration{Application: test.app, Redirects: []string{test.registered}})
 		q := authorizationQuery(id, test.requested)
 		for _, bad := range []string{"plain", "", "s256"} {
 			q.Set("code_challenge_method", bad)
@@ -155,10 +161,7 @@ func approvedGrant(t *testing.T, a *Authority) (string, *authorization) {
 	if _, err := a.claim(link.Fragment); err == nil {
 		t.Fatal("replayed handoff")
 	}
-	id, err := a.register(registration{Name: "App\x1b[2J\n.test", Redirects: []string{nativeRedirect}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	id := registerClient(t, a, registration{Name: "App\x1b[2J\n.test", Redirects: []string{nativeRedirect}})
 	q := authorizationQuery(id, "http://127.0.0.1:9876/callback?source=test")
 	req, err := a.authorize(q)
 	if err != nil {
@@ -182,10 +185,7 @@ func approvedGrant(t *testing.T, a *Authority) (string, *authorization) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, err := a.register(registration{Redirects: []string{nativeRedirect}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	other := registerClient(t, a, registration{Redirects: []string{nativeRedirect}})
 	second, err := a.authorize(authorizationQuery(other, nativeRedirect))
 	if err != nil {
 		t.Fatal(err)
@@ -299,17 +299,12 @@ func TestOwnerOAuthCodeConfiguredLifetimes(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := registration{Redirects: []string{nativeRedirect}}
-	client, err := a.register(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := registerClient(t, a, c)
 	req, err := a.authorize(authorizationQuery(client, nativeRedirect))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.register(c); err != nil {
-		t.Fatal(err)
-	}
+	registerClient(t, a, c)
 	if _, err := a.register(c); err == nil {
 		t.Fatal("configured registration limit")
 	}
