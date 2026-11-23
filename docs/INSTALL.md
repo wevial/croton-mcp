@@ -10,7 +10,7 @@ Either download and verify a release asset with the GitHub CLI as in
 compare `sha256sum` (Linux) or `shasum -a 256` (macOS) of the binary with the
 `sha256` field of its `<asset>.manifest.json`. Then run
 `umask 077 && mkdir -p ~/bin && install -m 0700 "$ASSET" ~/bin/croton-mcp`.
-Or build a release tag from source with Go 1.26.10:
+Or build a release tag from source with Go 1.27.4:
 
 ```sh
 RELEASE_TAG=vX.Y.Z

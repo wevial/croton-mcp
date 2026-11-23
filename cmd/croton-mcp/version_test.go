@@ -16,6 +16,21 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+func TestReleaseCrossBuilds(t *testing.T) {
+	t.Setenv("CGO_ENABLED", "0")
+
+	for _, goos := range []string{"linux", "darwin"} {
+		for _, goarch := range []string{"amd64", "arm64"} {
+			t.Run(goos+"/"+goarch, func(t *testing.T) {
+				t.Setenv("GOOS", goos)
+				t.Setenv("GOARCH", goarch)
+
+				buildCrotonBinary(t, "-trimpath", "-ldflags", "-X github.com/wevial/croton-mcp/internal/mcpserver.version=v9.9.9-test")
+			})
+		}
+	}
+}
+
 // TestServerInfoVersionIsStamped builds the real binary so a renamed version
 // variable cannot silently fall back to "dev" in a release build.
 func TestServerInfoVersionIsStamped(t *testing.T) {
