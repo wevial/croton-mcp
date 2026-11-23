@@ -196,12 +196,9 @@ func canonicalHeaderValue(header mail.Header, name string, limit int) (string, b
 
 func validEncodedWords(value string) bool {
 	for {
-		_, rest, found := strings.Cut(value, "=?")
-		if !found {
-			return true
-		}
-		word, rest, found := strings.Cut(rest, "?=")
-		if !found {
+		_, afterMarker, started := strings.Cut(value, "=?")
+		word, rest, ended := strings.Cut(afterMarker, "?=")
+		if !started || !ended {
 			return true
 		}
 
@@ -440,18 +437,17 @@ func htmlText(source string, limit int) (string, bool) {
 	var fragments []string
 	var collect func(*html.Node)
 	collect = func(node *html.Node) {
-		if node.Type == html.ElementNode {
+		switch node.Type {
+		case html.TextNode:
+			fragments = append(fragments, node.Data)
+		case html.ElementNode:
 			switch strings.ToLower(node.Data) {
 			case "script", "style", "head", "template", "noscript":
 				return
 			}
 		}
 
-		if node.Type == html.TextNode {
-			fragments = append(fragments, node.Data)
-		}
-
-		for child := node.FirstChild; child != nil; child = child.NextSibling {
+		for child := range node.ChildNodes() {
 			collect(child)
 		}
 	}
@@ -466,7 +462,7 @@ func truncateUTF8(value string, limit int) (string, bool) {
 	}
 
 	truncated := value[:limit]
-	for len(truncated) > 0 && !utf8.ValidString(truncated) {
+	for !utf8.ValidString(truncated) {
 		truncated = truncated[:len(truncated)-1]
 	}
 
