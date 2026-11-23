@@ -4,8 +4,6 @@ package owneroauth
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"net/http/httptest"
 	"net/url"
@@ -16,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/oauth2"
 	"golang.org/x/sys/unix"
 )
 
@@ -43,8 +42,7 @@ func openTest(t *testing.T, dir string, settings Settings) *Authority {
 }
 
 func authorizationQuery(client, redirect string) url.Values {
-	sum := sha256.Sum256([]byte(verifier))
-	return url.Values{"client_id": {client}, "redirect_uri": {redirect}, "response_type": {"code"}, "resource": {issuer + "/mcp"}, "code_challenge": {base64.RawURLEncoding.EncodeToString(sum[:])}, "code_challenge_method": {"S256"}, "state": {"state.test"}}
+	return url.Values{"client_id": {client}, "redirect_uri": {redirect}, "response_type": {"code"}, "resource": {issuer + "/mcp"}, "code_challenge": {oauth2.S256ChallengeFromVerifier(verifier)}, "code_challenge_method": {"S256"}, "state": {"state.test"}}
 }
 
 func TestOwnerOAuthCodeWindow(t *testing.T) {

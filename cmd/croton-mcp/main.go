@@ -68,10 +68,7 @@ func run(ctx context.Context, arguments []string, stderr io.Writer) error {
 		flags.DurationVar(&settings.CodeLifetime, "code-lifetime", settings.CodeLifetime, "authorization code lifetime")
 		flags.DurationVar(&settings.AccessLifetime, "access-lifetime", settings.AccessLifetime, "access token lifetime")
 	}
-	if err := flags.Parse(arguments); err != nil {
-		return errors.New("invalid arguments")
-	}
-	if flags.NArg() != 0 {
+	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 {
 		return errors.New("invalid arguments")
 	}
 	if command != "" && dir == "" {
@@ -98,6 +95,11 @@ func run(ctx context.Context, arguments []string, stderr io.Writer) error {
 		return err
 	}
 
+	var auditor *mcpserver.Auditor
+	if loaded.Audit.Enabled {
+		auditor = mcpserver.NewAuditor(stderr)
+	}
+
 	if command == "serve" {
 		if authorizer != "owner" {
 			return errors.New("HTTP authorizer unavailable")
@@ -109,7 +111,7 @@ func run(ctx context.Context, arguments []string, stderr io.Writer) error {
 		if err != nil || !address.Addr().IsLoopback() || address.Addr().Zone() != "" || address.Port() == 0 {
 			return errors.New("invalid loopback bind")
 		}
-		return serveHTTP(ctx, loaded, address.String(), dir, cert, key, settings, stderr)
+		return serveHTTP(ctx, loaded, address.String(), dir, cert, key, settings, auditor)
 	}
 
 	adapter, err := bridge.NewAdapter(loaded)
@@ -117,11 +119,6 @@ func run(ctx context.Context, arguments []string, stderr io.Writer) error {
 		return err
 	}
 	defer func() { _ = adapter.Close() }()
-
-	var auditor *mcpserver.Auditor
-	if loaded.Audit.Enabled {
-		auditor = mcpserver.NewAuditor(stderr)
-	}
 
 	options := mcpserver.Options{Mail: adapter, Audit: auditor}
 	if loaded.Mutations.Enabled {
@@ -133,7 +130,7 @@ func run(ctx context.Context, arguments []string, stderr io.Writer) error {
 	return mcpserver.Serve(ctx, server, stdioframe.NewTransport(os.Stdin, os.Stdout))
 }
 
-func serveHTTP(ctx context.Context, cfg bridge.Config, address, dir, cert, key string, settings owneroauth.Settings, stderr io.Writer) error {
+func serveHTTP(ctx context.Context, cfg bridge.Config, address, dir, cert, key string, settings owneroauth.Settings, auditor *mcpserver.Auditor) error {
 	origin := "http://" + address
 	var tlsConfig *tls.Config
 	if cert != "" || key != "" {
@@ -170,10 +167,6 @@ func serveHTTP(ctx context.Context, cfg bridge.Config, address, dir, cert, key s
 	}
 	defer authority.Close()
 
-	var auditor *mcpserver.Auditor
-	if cfg.Audit.Enabled {
-		auditor = mcpserver.NewAuditor(stderr)
-	}
 	handler, err := mcpserver.NewHTTP(origin, adapter, auditor, time.Duration(validated.IMAP.CommandTimeoutMs)*time.Millisecond, authority.ValidBearer, authority)
 	if err != nil {
 		return err

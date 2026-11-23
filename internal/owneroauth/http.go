@@ -17,7 +17,11 @@ import (
 	"github.com/wevial/croton-mcp/internal/strictjson"
 )
 
-const ResourceMetadataPath = "/.well-known/oauth-protected-resource/mcp"
+const (
+	ResourceMetadataPath = "/.well-known/oauth-protected-resource/mcp"
+	ownerCookie          = "croton-owner"
+	requestCookie        = "croton-request"
+)
 
 var errInvalid = errors.New("invalid request")
 
@@ -70,6 +74,15 @@ func readBody(w http.ResponseWriter, r *http.Request, contentType string) ([]byt
 	}
 
 	return io.ReadAll(http.MaxBytesReader(w, r.Body, stdioframe.MaxFrameBytes))
+}
+
+func readForm(w http.ResponseWriter, r *http.Request) (url.Values, error) {
+	body, err := readBody(w, r, "application/x-www-form-urlencoded")
+	if err != nil {
+		return nil, err
+	}
+
+	return parseValues(string(body))
 }
 
 func (a *Authority) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -143,7 +156,7 @@ func (a *Authority) route(w http.ResponseWriter, r *http.Request) error {
 			return err
 		}
 
-		a.setCookie(w, "croton-request", req.browser)
+		a.setCookie(w, requestCookie, req.browser)
 		w.Header().Set("Location", "/owner/signin?request="+req.requestID)
 		w.WriteHeader(http.StatusSeeOther)
 	case "GET /owner/pair":
@@ -162,11 +175,7 @@ func (a *Authority) route(w http.ResponseWriter, r *http.Request) error {
 		if r.Header.Get("Origin") != a.issuer {
 			return errDenied
 		}
-		body, err := readBody(w, r, "application/x-www-form-urlencoded")
-		if err != nil {
-			return err
-		}
-		form, err := parseValues(string(body))
+		form, err := readForm(w, r)
 		if err != nil {
 			return err
 		}
@@ -176,12 +185,12 @@ func (a *Authority) route(w http.ResponseWriter, r *http.Request) error {
 				return err
 			}
 
-			a.setCookie(w, "croton-owner", owner)
+			a.setCookie(w, ownerCookie, owner)
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			fmt.Fprintln(w, "Start authorization in your MCP client using this browser.")
 			return nil
 		}
-		location, err := a.finish(cookie(r, "croton-owner"), cookie(r, "croton-request"))
+		location, err := a.finish(cookie(r, ownerCookie), cookie(r, requestCookie))
 		if err != nil {
 			return err
 		}
@@ -192,7 +201,7 @@ func (a *Authority) route(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return err
 		}
-		details, err := a.signin(cookie(r, "croton-owner"), cookie(r, "croton-request"), q.Get("request"))
+		details, err := a.signin(cookie(r, ownerCookie), cookie(r, requestCookie), q.Get("request"))
 		if err != nil {
 			return err
 		}
@@ -200,12 +209,11 @@ func (a *Authority) route(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_ = signinPage.Execute(w, details)
 	case "POST /token":
-		body, err := readBody(w, r, "application/x-www-form-urlencoded")
+		form, err := readForm(w, r)
 		if err != nil {
 			return err
 		}
-		form, err := parseValues(string(body))
-		if err != nil || form.Get("grant_type") != "authorization_code" || r.Header.Get("Authorization") != "" {
+		if form.Get("grant_type") != "authorization_code" || r.Header.Get("Authorization") != "" {
 			return errInvalid
 		}
 		token, err := a.redeem(form.Get("code"), form.Get("client_id"), form.Get("redirect_uri"), form.Get("resource"), form.Get("code_verifier"))

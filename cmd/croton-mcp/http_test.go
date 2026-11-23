@@ -9,10 +9,8 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -262,8 +260,7 @@ func (p *httpProcess) pair(t *testing.T) string {
 		t.Fatal("registration response")
 	}
 	const verifier = "verifier.test-000000000000000000000000000000000000000000"
-	sum := sha256.Sum256([]byte(verifier))
-	params := url.Values{"client_id": {dcr.ID}, "redirect_uri": {"https://client.test/callback?tag=fixture"}, "response_type": {"code"}, "code_challenge_method": {"S256"}, "code_challenge": {base64.RawURLEncoding.EncodeToString(sum[:])}, "resource": {p.origin + "/mcp"}}
+	params := url.Values{"client_id": {dcr.ID}, "redirect_uri": {"https://client.test/callback?tag=fixture"}, "response_type": {"code"}, "code_challenge_method": {"S256"}, "code_challenge": {oauth2.S256ChallengeFromVerifier(verifier)}, "resource": {p.origin + "/mcp"}}
 	h, _ = p.request(t, "GET", "/authorize?"+params.Encode(), "", "", 303)
 	_, b = p.request(t, "GET", h.Get("Location"), "", "", 200)
 	match := regexp.MustCompile(`<strong>([A-Z0-9_-]+)</strong>`).FindSubmatch(b)
