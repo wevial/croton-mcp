@@ -55,11 +55,11 @@ func startTLSHeaderAdapter(t *testing.T, mode testkit.TLSMode, options testkit.O
 	return server, adapter
 }
 
-func requireStructureRefusal(t *testing.T, name string, result MessageAttachmentStructure, err error, code string) {
+func requireStaleStructureID(t *testing.T, name string, result MessageAttachmentStructure, err error) {
 	t.Helper()
 
-	if CodeOf(err) != code {
-		t.Fatalf("%s error = %v, want %s", name, err, code)
+	if CodeOf(err) != CodeStaleMessageID {
+		t.Fatalf("%s error = %v, want %s", name, err, CodeStaleMessageID)
 	}
 	if !reflect.DeepEqual(result, MessageAttachmentStructure{}) {
 		t.Fatalf("%s returned a normal result %+v", name, result)
@@ -136,7 +136,7 @@ func TestAttachmentStructureAdapter(t *testing.T) {
 		// before any FETCH; the existence SEARCH may run.
 		before := len(server.Commands())
 		result, err = adapter.GetMessageAttachmentStructure(ctx, headerTestID(t, adapter, 9002, 102))
-		requireStructureRefusal(t, "stale generation", result, err, CodeStaleMessageID)
+		requireStaleStructureID(t, "stale generation", result, err)
 		if fetches := fetchesSince(server, before); fetches != 0 {
 			t.Fatalf("stale generation issued %d FETCH commands", fetches)
 		}
@@ -151,7 +151,7 @@ func TestAttachmentStructureAdapter(t *testing.T) {
 		// A missing UID in the current generation is stale before any FETCH.
 		before = len(server.Commands())
 		result, err = adapter.GetMessageAttachmentStructure(ctx, headerTestID(t, adapter, 9001, 150))
-		requireStructureRefusal(t, "missing UID", result, err, CodeStaleMessageID)
+		requireStaleStructureID(t, "missing UID", result, err)
 		if fetches := fetchesSince(server, before); fetches != 0 {
 			t.Fatalf("missing UID issued %d FETCH commands", fetches)
 		}
@@ -161,7 +161,7 @@ func TestAttachmentStructureAdapter(t *testing.T) {
 		restarted.idKey[0] = 0x7e
 		before = len(server.Commands())
 		result, err = adapter.GetMessageAttachmentStructure(ctx, headerTestID(t, restarted, 9001, 102))
-		requireStructureRefusal(t, "restart-invalid ID", result, err, CodeStaleMessageID)
+		requireStaleStructureID(t, "restart-invalid ID", result, err)
 		if got := len(server.Commands()); got != before {
 			t.Fatalf("restart-invalid ID issued %d commands", got-before)
 		}
