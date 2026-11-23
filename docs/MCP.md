@@ -70,9 +70,11 @@ resource URL and are stored by hash.
 A request without a valid bearer receives a `401` with the resource metadata
 URL at `/.well-known/oauth-protected-resource/mcp`. The issuer is the listener
 origin and the resource is the full `/mcp` URL. The issuer advertises dynamic
-registration and S256. Clients may register HTTPS redirects or HTTP redirects
-to loopback IP literals. A native client may select its loopback port at
-authorization. The server checks Host, any Origin header, bearer, and the
+registration and S256. `POST /register` ignores unsupported client metadata
+such as `software_version`. The 64 KiB limit and duplicate-key checks apply
+to the entire registration request. Clients may register HTTPS redirects or
+HTTP redirects to loopback IP literals. A native client may select its loopback
+port at authorization. The server checks Host, any Origin header, bearer, and the
 64 KiB JSON frame before MCP dispatch. Tool calls share the configured IMAP
 command timeout across queuing and execution.
 

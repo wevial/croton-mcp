@@ -130,10 +130,18 @@ func (a *Authority) route(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return err
 		}
-		var c registration
-		if !strictjson.DecodeObject(body, stdioframe.MaxFrameBytes, &c) {
+
+		// Validate the whole object, including metadata this server ignores.
+		var metadata json.RawMessage
+		if !strictjson.DecodeObject(body, stdioframe.MaxFrameBytes, &metadata) {
 			return errInvalid
 		}
+
+		var c registration
+		if err := json.Unmarshal(metadata, &c); err != nil {
+			return errInvalid
+		}
+
 		id, err := a.register(c)
 		if err != nil {
 			return err

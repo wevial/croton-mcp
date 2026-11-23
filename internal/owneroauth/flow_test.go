@@ -5,6 +5,7 @@ package owneroauth
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -111,6 +112,35 @@ func TestOwnerOAuthCodeWindow(t *testing.T) {
 		} else if discovery.Issuer != issuer || discovery.DCR != issuer+"/register" || len(discovery.S256) != 1 || discovery.S256[0] != "S256" || !discovery.ResponseIssuer {
 			t.Fatal("authorization metadata")
 		}
+	}
+}
+
+func TestOwnerOAuthCodeRegistrationMetadata(t *testing.T) {
+	a := openTest(t, privateDir(t), Defaults())
+	a.start()
+
+	const prefix = `{"redirect_uris":["https://client.test/callback"],`
+	for _, tc := range []struct {
+		name, metadata string
+		status         int
+	}{
+		{"optional metadata", `"client_uri":"https://client.test","software_id":"app.test","software_version":"1","extension":{"tags":["test"]}`, http.StatusCreated},
+		{"duplicate in extension", `"extension":{"tag":1,"tag":2}`, http.StatusBadRequest},
+		{"case alias", `"client_name":"one","CLIENT_NAME":"two"`, http.StatusBadRequest},
+		{"wrong known type", `"client_name":42`, http.StatusBadRequest},
+		{"oversize extension", `"extension":"` + strings.Repeat("x", 64<<10) + `"`, http.StatusRequestEntityTooLarge},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, issuer+"/register", strings.NewReader(prefix+tc.metadata+"}"))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+
+			a.ServeHTTP(w, req)
+
+			if w.Code != tc.status {
+				t.Fatalf("registration status = %d, want %d", w.Code, tc.status)
+			}
+		})
 	}
 }
 
