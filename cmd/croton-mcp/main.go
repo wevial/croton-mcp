@@ -231,7 +231,7 @@ func runHTTP(parent context.Context, listener net.Listener, handler http.Handler
 	<-done
 	connections.Wait()
 
-	if err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if !errors.Is(err, http.ErrServerClosed) {
 		return errors.New("HTTP listener unavailable")
 	}
 	return nil
