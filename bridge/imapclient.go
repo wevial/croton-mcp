@@ -52,6 +52,7 @@ type bridgeSession interface {
 	UIDFetchMetadata(context.Context, string, []uint32, int) ([]MessageMetadata, error)
 	UIDFetchHeaders(context.Context, uint32, int) (MessageHeaders, error)
 	UIDFetchBody(context.Context, uint32, []int, int) ([]byte, error)
+	fetchMIMEHeader(context.Context, uint32, []int, int) ([]byte, error)
 	fetchUIDStructure(context.Context, uint32) (bodyStructure, error)
 	StoreSeen(context.Context, uint32, bool) error
 	SupportsMove() bool
@@ -562,7 +563,9 @@ func headerDate(header mail.Header) (string, DateSource) {
 		return "", DateSourceUnknown
 	}
 
-	parsed, err := mail.ParseDate(value)
+	// net/mail expects spaces at some RFC 5322 folding whitespace positions.
+	// Normalize tabs for timestamp parsing and retain the declared header.
+	parsed, err := mail.ParseDate(strings.ReplaceAll(value, "\t", " "))
 	if err != nil || parsed.UTC().Year() < 1 || parsed.UTC().Year() > 9999 {
 		return "", DateSourceUnknown
 	}
@@ -668,10 +671,31 @@ func validateFetchedMetadataUIDs(requested []uint32, results []MessageMetadata) 
 // UIDFetchBody reads at most limit bytes of one body part section with a
 // BODY.PEEK partial fetch. A literal longer than limit is refused.
 func (session *imapSession) UIDFetchBody(ctx context.Context, uid uint32, part []int, limit int) ([]byte, error) {
-	if uid == 0 || len(part) == 0 || limit < 1 {
+	if len(part) == 0 {
 		return nil, errorCode(CodeBoundsExceeded)
 	}
+
 	section := &imap.FetchItemBodySection{Part: part, Peek: true, Partial: &imap.SectionPartial{Offset: 0, Size: int64(limit)}}
+	return session.fetchSection(ctx, uid, section, limit)
+}
+
+// The root uses HEADER. Numbered MIME sections contain only the entity header,
+// including for multipart containers. Fetch a complete, size-checked literal.
+func (session *imapSession) fetchMIMEHeader(ctx context.Context, uid uint32, part []int, limit int) ([]byte, error) {
+	specifier := imap.PartSpecifierMIME
+	if len(part) == 0 {
+		specifier = imap.PartSpecifierHeader
+	}
+
+	section := &imap.FetchItemBodySection{Part: part, Specifier: specifier, Peek: true}
+	return session.fetchSection(ctx, uid, section, limit)
+}
+
+func (session *imapSession) fetchSection(ctx context.Context, uid uint32, section *imap.FetchItemBodySection, limit int) ([]byte, error) {
+	if uid == 0 || limit < 1 {
+		return nil, errorCode(CodeBoundsExceeded)
+	}
+
 	options := &imap.FetchOptions{UID: true, BodySection: []*imap.FetchItemBodySection{section}}
 	var body []byte
 	err := session.fetch(ctx, imap.UIDSetNum(imap.UID(uid)), options, fetchInputBudget(limit, 1), func(command *imapclient.FetchCommand) error {

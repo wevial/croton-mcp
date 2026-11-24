@@ -14,8 +14,10 @@ registration steps are in [INSTALL.md](INSTALL.md).
 - No resources, prompts, Roots, Sampling or MCP Logging.
 - Each inbound frame must be one strictly decoded JSON object of at most
   64 KiB before the SDK sees it.
-- Tool arguments are capped at 24 KiB and decoded strictly: one object, no
-  unknown, null, duplicate or case-folded-alias fields, no trailing values.
+- Tool arguments are capped at 24 KiB except for `prepare_forward`, whose
+  arguments may use the space available in the 64 KiB stdio request frame.
+  Every tool requires one strictly decoded arguments object with no unknown,
+  null, duplicate or case-folded-alias fields and no trailing values.
   Schemas are closed (`additionalProperties: false`) and publish `maxLength`
   and `x-maxBytes`, but the server validates and clamps every value itself.
 - Every successful result is one JSON text item of at most 100 000 bytes.
@@ -213,6 +215,60 @@ header fields, `bounds.maxMimeParts` parts at depth 10,
 `truncation` is always present and holds only `true` keys among `headers`,
 `headerCount`, `text`, `mimeParts`, `mimeDepth`, `attachments`, `references`
 and `output`. `truncated` is true whenever any key is.
+
+### `prepare_forward` (local stdio)
+
+Pass the opaque `messageId` and one plain mailbox address in `to`. Optional
+`text` appears above the forwarded message. The tool takes the outgoing From
+address from the authenticated Bridge login. The login must be a plain mailbox
+address too. An address literal uses `[192.0.2.1]` for IPv4 or
+`[IPv6:2001:db8::1]` for IPv6. Only the caller supplies the recipient.
+
+The result contains a `handle` and a complete `preview` with `from`, `to`,
+`subject`, `body` and `omissions`. The body quotes the From, declared Date and
+first Subject from the bounded Bridge header projection, followed by the
+complete plain text. The omissions object counts
+`htmlAlternatives`, `files` and `attachedMessages` separately. HTML alternatives
+are skipped automatically. A `multipart/related` HTML alternative counts once,
+and each inline resource counts as a file or an attached message.
+Both BODYSTRUCTURE and the original MIME header must declare `type="text/html"`.
+Without a `start` parameter, the first child is the HTML root.
+Files and attached messages require explicit `text_only: true` consent.
+Their content is never fetched.
+
+The tool uses one read-only Bridge operation to check the mailbox generation,
+UID and extended BODYSTRUCTURE. Before fetching the selected plain section,
+it checks the original MIME declarations in the message header and the
+headers of inline parts. Ambiguous declarations, HTML-only, signed or flowed
+mail, primary nested messages and incomplete or undecodable text are refused.
+A declared charset or format must have a single, decodable parameter value.
+Multipart containers accept 7bit (the default), 8bit or binary transfer
+encoding. In a 7bit or 8bit text section, lines are limited to 998 octets,
+line breaks must be CRLF and NUL is forbidden. A 7bit section also requires
+ASCII octets. Base64 and quoted-printable source lines can contain up to 76
+encoded characters before CRLF. Quoted-printable escapes require uppercase
+hexadecimal digits. Source text must decode losslessly.
+Supported charsets include UTF-8, ISO-8859-1, Windows-1252 and ISO-2022-JP
+with either JIS X 0208 designation. Authored text can include a literal
+Unicode replacement character (U+FFFD).
+
+Header, section, part and depth bounds apply. The partial PEEK requests one
+octet beyond the declared section length to verify it is complete. That octet
+must fit within the configured section read budget. If the declared length
+leaves no room for it, the tool returns `bounds_exceeded` before the PEEK
+and preserves the connection and any current preview handle.
+Source MIME reads and stored UTF-8 quoted-printable MIME each have a 256 KiB
+ceiling.
+
+Each successful preview replaces the previous handle in that stdio session.
+The handle binds the envelope, preview and serialized message for two minutes
+on the same authenticated Bridge connection. Reconnecting or restarting
+invalidates it. Authored and quoted text share the same size limit. The complete
+JSON-escaped approval must fit the 64 KiB stdio frame. Sizing uses a compact
+JSON-RPC 2.0 `tools/call` with numeric ID 1, name `send_forward`, the returned
+object as `arguments`, and a final newline.
+Oversize previews fail with `bounds_exceeded`. Previewing writes no mail.
+The catalog has no send tool.
 
 ### `list_attachments`
 

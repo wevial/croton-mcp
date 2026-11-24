@@ -31,10 +31,11 @@ type Mail interface {
 type Options struct {
 	Mail Mail
 	// Triage registers the opt-in mark_read, mark_unread, move_mail,
-	// archive_mail and trash_mail tools when non-nil. Nil keeps the default
-	// catalog of six read-only tools.
+	// archive_mail and trash_mail tools when non-nil.
 	Triage Triage
-	Audit  *Auditor
+	// Forward enables inline preview only in the local stdio session.
+	Forward *ForwardPreviews
+	Audit   *Auditor
 }
 
 // Server is Croton's configured SDK server.
@@ -42,8 +43,7 @@ type Server struct {
 	sdk *mcp.Server
 }
 
-// New constructs Croton's MCP server exposing the six read-only tools, plus the
-// Seen, move, archive and trash triage tools only when Options.Triage opts in.
+// New registers the shared read tools and the optional stdio capabilities.
 func New(options Options) *Server {
 	sdkServer := mcp.NewServer(&mcp.Implementation{
 		Name:        "croton-mcp",
@@ -57,6 +57,9 @@ func New(options Options) *Server {
 	})
 
 	registerTools(sdkServer, options)
+	if options.Forward != nil {
+		registerForward(sdkServer, options)
+	}
 
 	return &Server{sdk: sdkServer}
 }

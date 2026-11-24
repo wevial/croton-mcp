@@ -172,8 +172,8 @@ func TestHTTPTransportDefaultStdioCatalogAndAudit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list tools over stdio: %v", err)
 	}
-	if len(listed.Tools) != 6 {
-		t.Fatalf("tools = %d, want 6", len(listed.Tools))
+	if len(listed.Tools) != 7 {
+		t.Fatalf("tools = %d, want 7", len(listed.Tools))
 	}
 
 	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "list_folders", Arguments: map[string]any{}})

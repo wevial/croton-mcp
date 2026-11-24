@@ -178,7 +178,7 @@ func TestIndependentStdioCatalog(t *testing.T) {
 			if err := json.Unmarshal(catalog, &listed); err != nil {
 				t.Fatal(err)
 			}
-			want := []string{"get_message", "get_thread", "list_attachments", "list_folders", "search_mail", "select_digest_candidates"}
+			want := []string{"get_message", "get_thread", "list_attachments", "list_folders", "prepare_forward", "search_mail", "select_digest_candidates"}
 			var names []string
 			for _, tool := range listed.Tools {
 				names = append(names, tool.Name)
@@ -187,7 +187,7 @@ func TestIndependentStdioCatalog(t *testing.T) {
 				}
 			}
 			slices.Sort(names)
-			if len(listed.Tools) != 6 || !slices.Equal(names, want) || listed.NextCursor != "" {
+			if !slices.Equal(names, want) || listed.NextCursor != "" {
 				t.Fatalf("catalog = %v, cursor=%q; want exactly %v", names, listed.NextCursor, want)
 			}
 

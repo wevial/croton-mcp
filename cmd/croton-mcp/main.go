@@ -141,7 +141,7 @@ func runCLI(ctx context.Context, arguments []string, stderr io.Writer, settings 
 	}
 	defer func() { _ = adapter.Close() }()
 
-	options := mcpserver.Options{Mail: adapter, Audit: auditor}
+	options := mcpserver.Options{Mail: adapter, Forward: mcpserver.NewForwardPreviews(adapter), Audit: auditor}
 	if loaded.Mutations.Enabled {
 		options.Triage = adapter
 	}
