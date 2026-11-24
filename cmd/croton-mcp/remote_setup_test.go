@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -101,7 +102,7 @@ func TestRemoteConnectorSetup(t *testing.T) {
 		Resource string
 		Issuers  []string `json:"authorization_servers"`
 	}
-	if json.Unmarshal(body, &resource) != nil || resource.Resource != p.origin+"/mcp" || len(resource.Issuers) != 1 || resource.Issuers[0] != p.origin {
+	if json.Unmarshal(body, &resource) != nil || resource.Resource != p.origin+"/mcp" || !slices.Equal(resource.Issuers, []string{p.origin}) {
 		t.Fatal("invalid protected resource metadata")
 	}
 
@@ -175,7 +176,7 @@ func TestRemoteConnectorSetup(t *testing.T) {
 	setupFolderRead(t, p, resource.Resource, client.Access, http.StatusOK)
 
 	listed := strings.Fields(terminal("clients", ""))
-	if len(listed) != 2 || listed[0] != client.ID || listed[1] != `"setup.test"` {
+	if !slices.Equal(listed, []string{client.ID, `"setup.test"`}) {
 		t.Fatal("owner terminal did not list the paired client")
 	}
 
@@ -183,7 +184,7 @@ func TestRemoteConnectorSetup(t *testing.T) {
 	if terminal("clients", "") != "" {
 		t.Fatal("client still listed after unpair")
 	}
-	if err := bridge.AssertReadOnlyCommands(); err != nil {
+	if bridge.AssertReadOnlyCommands() != nil {
 		t.Fatal("unexpected command at the synthetic Bridge")
 	}
 }
