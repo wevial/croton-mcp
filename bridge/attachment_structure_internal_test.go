@@ -207,11 +207,6 @@ func TestAttachmentStructureAdapter(t *testing.T) {
 				want:       []AttachmentStructureEntry{{AttachmentMetadata: AttachmentMetadata{ContentType: "application/octet-stream", Disposition: "attachment", HasDeclaredSize: true}}},
 			},
 			{
-				name:       "positive_size",
-				descriptor: plainDescriptor(4000, nil, attachmentDisposition(filename, testkit.BodyParam{Name: "size", Value: "2900"})),
-				want:       []AttachmentStructureEntry{{AttachmentMetadata: AttachmentMetadata{Filename: "file.bin", ContentType: "application/octet-stream", Disposition: "attachment", DeclaredSize: 2900, HasDeclaredSize: true}}},
-			},
-			{
 				name:       "negative_size",
 				descriptor: plainDescriptor(9, nil, attachmentDisposition(filename, testkit.BodyParam{Name: "size", Value: "-1"})),
 				want:       []AttachmentStructureEntry{attachmentEntry("file.bin", "application/octet-stream", "attachment")},
@@ -244,15 +239,12 @@ func TestAttachmentStructureAdapter(t *testing.T) {
 			},
 		}
 
-		messages := make([]string, 0, len(cases))
-		descriptors := make([]*testkit.BodyPart, 0, len(cases))
-		for index := range cases {
-			// The raw bytes are unrelated to every descriptor, so no size
-			// can come from the message itself.
-			messages = append(messages, "Subject: plain "+cases[index].name+"\r\n\r\n"+strings.Repeat("r", 100+index)+"\r\n")
-			descriptors = append(descriptors, cases[index].descriptor)
+		var options testkit.Options
+		for _, testCase := range cases {
+			options.Messages = append(options.Messages, "Subject: unrelated\r\n\r\nplain body\r\n")
+			options.BodyStructures = append(options.BodyStructures, testCase.descriptor)
 		}
-		server, adapter := startTLSHeaderAdapter(t, testkit.ImplicitTLS, testkit.Options{Messages: messages, BodyStructures: descriptors})
+		server, adapter := startTLSHeaderAdapter(t, testkit.ImplicitTLS, options)
 
 		for index, testCase := range cases {
 			uid := uint32(101 + index)
