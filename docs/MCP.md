@@ -219,7 +219,8 @@ and `output`. `truncated` is true whenever any key is.
 Pass the opaque `messageId` and one plain mailbox address in `to`. Optional
 `text` appears above the forwarded message. The tool takes the outgoing From
 address from the authenticated Bridge login. The login must be a plain mailbox
-address too. Only the caller supplies the recipient.
+address too. An address literal uses `[192.0.2.1]` for IPv4 or
+`[IPv6:2001:db8::1]` for IPv6. Only the caller supplies the recipient.
 
 The result contains a `handle` and a complete `preview` with `from`, `to`,
 `subject`, `body` and `omissions`. The body quotes the From, declared Date and
@@ -230,22 +231,29 @@ are skipped automatically. Files and attached messages require explicit
 `text_only: true` consent. Their content is never fetched.
 
 The tool uses one read-only Bridge operation to check the mailbox generation,
-UID, extended BODYSTRUCTURE, header and selected plain section. It refuses
-ambiguous bodies, HTML-only, signed or flowed mail, primary nested messages
-and incomplete or undecodable text. Text decoding supports US-ASCII, UTF-8
-and ISO-8859-1. A declared charset or format must have a single, decodable
-parameter value. Header, section, part and depth bounds apply. The partial
-PEEK requests one octet beyond the declared section length to verify it is
-complete. That octet must fit within the configured section read budget.
+UID and extended BODYSTRUCTURE. Before fetching the selected plain section,
+it checks the original MIME declarations in the message header and the
+headers of inline parts. Ambiguous declarations, HTML-only, signed or flowed
+mail, primary nested messages and incomplete or undecodable text are refused.
+A declared charset or format must have a single, decodable parameter value.
+US-ASCII and UTF-8 text must be valid. Other supported MIME charsets,
+including ISO-8859-1 and Windows-1252, must reproduce the original bytes
+when the decoded text is re-encoded. Quoted-printable source lines can contain
+up to 76 encoded characters before CRLF.
+
+Header, section, part and depth bounds apply. The partial PEEK requests one
+octet beyond the declared section length to verify it is complete. That octet
+must fit within the configured section read budget.
 Source MIME reads and stored UTF-8 quoted-printable MIME each have a 256 KiB
 ceiling.
 
 Each successful preview replaces the previous handle in that stdio session.
 The handle binds the envelope, preview and serialized message for two minutes
 on the same authenticated Bridge connection. Reconnecting or restarting
-invalidates it. The complete JSON-escaped approval must fit the 64 KiB stdio
-frame. Sizing uses a compact JSON-RPC 2.0 `tools/call` with numeric ID 1,
-name `send_forward`, the returned object as `arguments`, and a final newline.
+invalidates it. Authored and quoted text share the same size limit. The complete
+JSON-escaped approval must fit the 64 KiB stdio frame. Sizing uses a compact
+JSON-RPC 2.0 `tools/call` with numeric ID 1, name `send_forward`, the returned
+object as `arguments`, and a final newline.
 Oversize previews fail with `bounds_exceeded`. Previewing writes no mail.
 The catalog has no send tool.
 

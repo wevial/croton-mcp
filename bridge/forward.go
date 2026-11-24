@@ -2,13 +2,19 @@ package bridge
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"mime"
+	"net/mail"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"golang.org/x/text/encoding/ianaindex"
 )
 
 // MaxForwardMIMEBytes bounds both the source literals and the serialized message.
@@ -64,8 +70,7 @@ func (adapter *Adapter) ReadForwardSource(ctx context.Context, identifier string
 		}
 
 		probe := int(section.size) + 1
-		headerLimit := min(bounds.MaxHeaderBytes, MaxForwardMIMEBytes-probe)
-		headers, err := session.UIDFetchHeaders(ctx, id.UID, headerLimit)
+		headers, err := plan.readHeaders(ctx, session, id.UID, bounds.MaxHeaderBytes, MaxForwardMIMEBytes-probe)
 		if err != nil {
 			return err
 		}
@@ -107,7 +112,13 @@ func (adapter *Adapter) ReadForwardSource(ctx context.Context, identifier string
 	return source, err
 }
 
+type inlineEntity struct {
+	part      []int
+	mediaType string
+}
+
 type forwardSelection struct {
+	inline    []inlineEntity
 	remaining int
 	section   *textSection
 	omissions ForwardOmissions
@@ -153,6 +164,12 @@ func (plan *forwardSelection) visit(structure bodyStructure, path []int, parent 
 		return errorCode(CodeUnsupported)
 	}
 
+	// Only inline entities need original declaration checks. File and nested
+	// message contents stay opaque, even with text-only consent.
+	if entity.mediaType == mixed || entity.mediaType == alternative || strings.HasPrefix(entity.mediaType, "text/") {
+		plan.inline = append(plan.inline, inlineEntity{part: path, mediaType: entity.mediaType})
+	}
+
 	switch entity.mediaType {
 	case mixed, alternative:
 		if plan.section != nil {
@@ -168,8 +185,8 @@ func (plan *forwardSelection) visit(structure bodyStructure, path []int, parent 
 			return errorCode(CodeUnsupported)
 		}
 	case "text/plain":
-		if plan.section != nil || !forwardTextParameter(params, entity.parameters, "charset") ||
-			!forwardTextParameter(params, entity.parameters, "format") {
+		if plan.section != nil || !forwardParameter(params, entity.parameters, "charset") ||
+			!forwardParameter(params, entity.parameters, "format") {
 			return errorCode(CodeUnsupported)
 		}
 		if format := entity.parameters["format"]; format != "" && !strings.EqualFold(format, "fixed") {
@@ -196,10 +213,107 @@ func (plan *forwardSelection) visit(structure bodyStructure, path []int, parent 
 	return nil
 }
 
+// BODYSTRUCTURE can normalize conflicting parameters or omit a malformed
+// disposition. Check the original declarations before fetching any body bytes.
+func (plan *forwardSelection) readHeaders(ctx context.Context, session bridgeSession, uid uint32, headerLimit, remaining int) (MessageHeaders, error) {
+	var root MessageHeaders
+	for _, entity := range plan.inline {
+		limit := min(headerLimit, remaining)
+		raw, err := session.fetchMIMEHeader(ctx, uid, entity.part, limit)
+		if err != nil {
+			return MessageHeaders{}, err
+		}
+		remaining -= len(raw)
+
+		if headerTerminatorEnd(raw) != len(raw) {
+			return MessageHeaders{}, errorCode(CodeIMAPProtocol)
+		}
+		if _, truncated := boundedHeaderCount(raw, defaultMaxHeaderCount); truncated {
+			return MessageHeaders{}, errorCode(CodeBoundsExceeded)
+		}
+		message, err := mail.ReadMessage(bytes.NewReader(raw))
+		if err != nil || !entity.validHeader(message.Header, plan.section) {
+			return MessageHeaders{}, errorCode(CodeUnsupported)
+		}
+
+		if len(entity.part) == 0 {
+			root, err = selectedHeaderRecord(MessageMetadata{}, raw, limit)
+			if err != nil {
+				return MessageHeaders{}, err
+			}
+		}
+	}
+
+	return root, nil
+}
+
+func (entity inlineEntity) validHeader(header mail.Header, plain *textSection) bool {
+	for key, fields := range header {
+		name := strings.TrimSpace(key)
+		switch strings.ToLower(name) {
+		case "content-type", "content-disposition", "content-transfer-encoding":
+			if name != key || len(fields) != 1 || fields[0] == "" {
+				return false
+			}
+		}
+	}
+
+	if disposition := header.Get("Content-Disposition"); disposition != "" {
+		kind, _, ok := inlineMediaType(disposition, "filename")
+		if !ok || kind != "inline" {
+			return false
+		}
+	}
+
+	kind, params, ok := inlineMediaType(cmp.Or(header.Get("Content-Type"), "text/plain"), "name")
+	if !ok || kind != entity.mediaType {
+		return false
+	}
+	if kind != "text/plain" {
+		return true
+	}
+
+	return strings.EqualFold(cmp.Or(params["format"], "fixed"), "fixed") &&
+		strings.EqualFold(cmp.Or(params["charset"], "us-ascii"), cmp.Or(plain.charset, "us-ascii")) &&
+		strings.EqualFold(cmp.Or(header.Get("Content-Transfer-Encoding"), "7bit"), cmp.Or(plain.encoding, "7bit"))
+}
+
+var quotedParameterValue = regexp.MustCompile(`"(?:[^"\\]|\\.)*"`)
+
+func inlineMediaType(value, fileParam string) (string, map[string]string, bool) {
+	kind, params, err := mime.ParseMediaType(value)
+	if err != nil {
+		return "", nil, false
+	}
+
+	// Inspect the original parameter names, including RFC 2231 suffixes.
+	// Quoted values can themselves contain semicolons and equals signs.
+	_, declarations, _ := strings.Cut(quotedParameterValue.ReplaceAllString(value, `""`), ";")
+	names := make(map[string]string)
+	for declaration := range strings.SplitSeq(declarations, ";") {
+		key, _, ok := strings.Cut(declaration, "=")
+		if !ok {
+			continue
+		}
+		key = strings.ToLower(strings.TrimSpace(key))
+		if _, duplicate := names[key]; duplicate {
+			return "", nil, false
+		}
+		names[key] = ""
+	}
+
+	if strings.HasPrefix(kind, "multipart/") && (params["boundary"] == "" || !forwardParameter(names, params, "boundary")) {
+		return "", nil, false
+	}
+
+	return kind, params, !forwardFileParam(names, fileParam) &&
+		forwardParameter(names, params, "charset") && forwardParameter(names, params, "format")
+}
+
 // ParseMediaType can drop an invalid extended value, override a regular
-// value or partially recover a continuation. Only use an explicit charset
-// or format when a single parameter supplies its entire value.
-func forwardTextParameter(raw, parsed map[string]string, name string) bool {
+// value or partially recover a continuation. Require a single declaration
+// for parameters that determine the section or its interpretation.
+func forwardParameter(raw, parsed map[string]string, name string) bool {
 	declared := false
 	for key := range raw {
 		base, suffix, _ := strings.Cut(key, "*")
@@ -250,18 +364,25 @@ func decodeForwardText(raw []byte, part *textSection) (string, error) {
 			return "", errorCode(CodeUnsupported)
 		}
 	case "utf-8":
-	case "iso-8859-1":
-		var decoded bytes.Buffer
-		for _, b := range raw {
-			decoded.WriteRune(rune(b))
-		}
-		raw = decoded.Bytes()
 	default:
-		return "", errorCode(CodeUnsupported)
+		encoding, err := ianaindex.MIME.Encoding(part.charset)
+		if err != nil || encoding == nil {
+			return "", errorCode(CodeUnsupported)
+		}
+
+		decoded, err := encoding.NewDecoder().Bytes(raw)
+		if err != nil {
+			return "", errorCode(CodeUnsupported)
+		}
+		original, err := encoding.NewEncoder().Bytes(decoded)
+		if err != nil || !bytes.Equal(original, raw) {
+			return "", errorCode(CodeUnsupported)
+		}
+		raw = decoded
 	}
 
 	body := strings.ReplaceAll(string(raw), "\r\n", "\n")
-	if !utf8.ValidString(body) || strings.ContainsRune(body, utf8.RuneError) ||
+	if !utf8.ValidString(body) ||
 		strings.ContainsFunc(body, func(r rune) bool { return unicode.IsControl(r) && r != '\n' && r != '\t' }) {
 		return "", errorCode(CodeUnsupported)
 	}
@@ -275,6 +396,12 @@ func hasNonASCII(raw []byte) bool {
 // The standard reader repairs malformed escapes and strips
 // unencoded trailing whitespace, both of which would produce a lossy preview.
 func decodeForwardQP(raw []byte) ([]byte, error) {
+	for line := range bytes.SplitSeq(raw, []byte("\r\n")) {
+		if len(line) > 76 {
+			return nil, errorCode(CodeUnsupported)
+		}
+	}
+
 	out := raw[:0]
 	for i := 0; i < len(raw); i++ {
 		b := raw[i]

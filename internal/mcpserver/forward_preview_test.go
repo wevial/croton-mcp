@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +29,7 @@ import (
 )
 
 const (
+	plainMIME     = "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n"
 	forwardTool   = "prepare_forward"
 	utf8Params    = `("charset" "utf-8")`
 	forwardLogin  = "owner@bridge.test"
@@ -55,6 +57,7 @@ type forwardFixture struct {
 	conn                             net.Conn
 	generation                       int
 	header, body, section, structure string
+	mimeFields                       map[string]string
 	commands                         []string
 	credentials                      string
 	store                            *ForwardPreviews
@@ -135,7 +138,14 @@ func (f *forwardFixture) set(structure, section, body string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.structure, f.section, f.body = structure, section, body
+	f.mimeFields = map[string]string{"HEADER": plainMIME}
 	f.commands = nil
+}
+
+func (f *forwardFixture) setMIME(fields map[string]string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.mimeFields = fields
 }
 
 var forwardPeek = regexp.MustCompile(`^UID FETCH 1 \(UID BODY\.PEEK\[([.0-9]+)\]<0\.([0-9]+)>\)$`)
@@ -193,6 +203,20 @@ func (f *forwardFixture) reply(command string) string {
 		return fmt.Sprintf("* 1 FETCH (UID 1 FLAGS () RFC822.SIZE %d BODY[HEADER] {%d}\r\n%s)\r\n", len(f.header)+len(f.body), len(f.header), f.header)
 	}
 
+	if section, ok := strings.CutPrefix(command, "UID FETCH 1 (UID BODY.PEEK["); ok {
+		if section, ok = strings.CutSuffix(section, "])"); ok {
+			fields, exists := f.mimeFields[section]
+			if !exists {
+				return "BAD"
+			}
+			header := fields + "\r\n"
+			if section == "HEADER" {
+				header = fields + f.header
+			}
+			return fmt.Sprintf("* 1 FETCH (UID 1 BODY[%s] {%d}\r\n%s)\r\n", section, len(header), header)
+		}
+	}
+
 	match := forwardPeek.FindStringSubmatch(command)
 	if match == nil || match[1] != f.section {
 		return "BAD"
@@ -236,18 +260,37 @@ func TestForwardPreview(t *testing.T) {
 		f.setHeader(strings.Replace(forwardHeader, "From: ", "From: "+namePrefix, 1))
 
 		const raw = "one=0A=c3=a9\r\nlast\r\n\r\n"
+		const qpMIME = "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n"
+		const altMIME = "Content-Type: multipart/alternative; boundary=alt\r\n"
+		const htmlMIME = "Content-Type: text/html\r\n"
 		plain := textStructure("plain", "quoted-printable", utf8Params, len(raw))
 		alt := multiStructure("alternative", plain, textStructure("html", "7bit", "NIL", 91))
 		for _, tc := range []struct {
 			name, structure, section string
 			omissions                bridge.ForwardOmissions
+			fields                   map[string]string
+			sections                 []string
 		}{
-			{"plain", plain, "1", bridge.ForwardOmissions{}},
-			{"alternative", alt, "1", bridge.ForwardOmissions{HTMLAlternatives: 1}},
-			{"attached message", multiStructure("mixed", alt, file, nested), "1.1", bridge.ForwardOmissions{HTMLAlternatives: 1, Files: 1, AttachedMessages: 1}},
+			{
+				"plain", plain, "1", bridge.ForwardOmissions{},
+				map[string]string{"HEADER": qpMIME}, []string{"HEADER"},
+			},
+			{
+				"alternative", alt, "1", bridge.ForwardOmissions{HTMLAlternatives: 1},
+				map[string]string{"HEADER": altMIME, "1.MIME": qpMIME, "2.MIME": htmlMIME},
+				[]string{"HEADER", "1.MIME", "2.MIME"},
+			},
+			{
+				"attached message", multiStructure("mixed", alt, file, nested), "1.1",
+				bridge.ForwardOmissions{HTMLAlternatives: 1, Files: 1, AttachedMessages: 1},
+				map[string]string{"HEADER": "Content-Type: multipart/mixed; boundary=mixed\r\n",
+					"1.MIME": altMIME, "1.1.MIME": qpMIME, "1.2.MIME": htmlMIME},
+				[]string{"HEADER", "1.MIME", "1.1.MIME", "1.2.MIME"},
+			},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				f.set(tc.structure, tc.section, raw)
+				f.setMIME(tc.fields)
 				result := f.prepare(t, tc.omissions.Files != 0)
 				want := forwardPreview{From: forwardLogin, To: forwardTo, Subject: "Fwd: Original subject", Omissions: tc.omissions,
 					Body: "My note\r\n\r\n---------- Forwarded message ----------\r\nFrom: " + namePrefix + forwardFrom + "\r\nDate: " + declaredDate + "\r\nSubject: Original  subject\r\n\r\none\r\né\r\nlast\r\n\r\n"}
@@ -256,12 +299,32 @@ func TestForwardPreview(t *testing.T) {
 				}
 				f.mu.Lock()
 				defer f.mu.Unlock()
-				if len(f.commands) != 5 || !strings.HasPrefix(f.commands[0], "EXAMINE ") ||
-					!strings.HasPrefix(f.commands[1], "UID SEARCH ") || !strings.Contains(f.commands[2], "BODYSTRUCTURE") ||
-					!strings.Contains(f.commands[3], "BODY.PEEK[HEADER]") || !strings.Contains(f.commands[4], "BODY.PEEK["+tc.section+"]") {
+				var fetches []string
+				for _, section := range tc.sections {
+					fetches = append(fetches, "UID FETCH 1 (UID BODY.PEEK["+section+"])")
+				}
+				fetches = append(fetches, fmt.Sprintf("UID FETCH 1 (UID BODY.PEEK[%s]<0.%d>)", tc.section, len(raw)+1))
+				if len(f.commands) < 3 || !strings.HasPrefix(f.commands[0], "EXAMINE ") ||
+					!strings.HasPrefix(f.commands[1], "UID SEARCH ") || f.commands[2] != "UID FETCH 1 (UID BODYSTRUCTURE)" ||
+					!slices.Equal(f.commands[3:], fetches) {
 					t.Fatalf("unexpected transcript %q", f.commands)
 				}
 			})
+		}
+	})
+
+	t.Run("Wire/lossless text", func(t *testing.T) {
+		f := newForwardFixture(t, bridge.BoundsPatch{})
+		for _, tc := range []struct{ charset, encoding, raw, want string }{
+			{"windows-1252", "quoted-printable", "Price =8012", "Price €12"},
+			{"utf-8", "8bit", "literal U+FFFD: �", "literal U+FFFD: �"},
+			{"us-ascii", "quoted-printable", strings.Repeat("a", 75) + "=\r\nb", strings.Repeat("a", 75) + "b"},
+		} {
+			f.set(textStructure("plain", tc.encoding, fmt.Sprintf(`("charset" %q)`, tc.charset), len(tc.raw)), "1", tc.raw)
+			f.setMIME(map[string]string{"HEADER": fmt.Sprintf("Content-Type: text/plain; charset=%s\r\nContent-Transfer-Encoding: %s\r\n", tc.charset, tc.encoding)})
+			if !strings.HasSuffix(f.prepare(t, false).Preview.Body, "\r\n\r\n"+tc.want) {
+				t.Fatal("decoded text changed")
+			}
 		}
 	})
 
@@ -276,22 +339,81 @@ func TestForwardPreview(t *testing.T) {
 			{"ambiguous", multiStructure("mixed", plain, plain), "ok", true},
 			{"signed", multiStructure("signed", plain, file), "ok", true},
 			{"flowed", textStructure("plain", "7bit", `("format" "flowed")`, 2), "ok", true},
-			{"primary nested", multiStructure("mixed", nested, plain), "ok", true},
 			{"attachment", multiStructure("mixed", plain, file), "ok", false},
 			{"attached message", multiStructure("mixed", plain, nested), "ok", false},
 			{"short", plain, "o", false}, {"underdeclared", plain, "okay", false},
 			{"oversize", textStructure("plain", "8bit", utf8Params, 262145), "ok", false},
-			{"bad base64", textStructure("plain", "base64", utf8Params, 4), "x!==", false},
-			{"bad QP", textStructure("plain", "quoted-printable", utf8Params, 3), "=xz", false},
 			{"damaged name parameter", textStructure("plain", "7bit", `("name*" "unknown''file.txt")`, 2), "ok", true},
 			{"damaged charset parameter", textStructure("plain", "8bit", `("charset*" "unknown''utf-8")`, 2), "ok", false},
 			{"ambiguous format", textStructure("plain", "8bit", `("format" "flowed" "format*" "us-ascii''fixed")`, 2), "ok", false},
-			{"lossy", plainStructure("\xff"), "\xff", false},
-			{"bad charset", textStructure("plain", "8bit", `("charset" "bogus")`, 2), "ok", false},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				f.set(tc.structure, "1", tc.raw)
 				f.refuse(t, f.arguments(tc.consent))
+			})
+		}
+		t.Run("primary nested", func(t *testing.T) {
+			f.set(multiStructure("mixed", nested, plain), "2", "ok")
+			f.setMIME(map[string]string{"HEADER": "Content-Type: multipart/mixed; boundary=test\r\n", "2.MIME": plainMIME})
+			requireToolError(t, callTool(t, f.client, forwardTool, f.arguments(true)), errUnsupported)
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			for _, command := range f.commands {
+				if strings.Contains(command, "BODY.PEEK[") && !strings.Contains(command, "[HEADER]") {
+					t.Fatal("primary nested selection requested a numbered PEEK")
+				}
+			}
+		})
+
+		for _, tc := range []struct{ name, charset, encoding, raw string }{
+			{"bad base64", "utf-8", "base64", "x!=="},
+			{"bad QP", "utf-8", "quoted-printable", "=xz"},
+			{"overlong QP line", "utf-8", "quoted-printable", strings.Repeat("a", 77) + "\r\n"},
+			{"lossy UTF-8", "utf-8", "8bit", "\xff"},
+			{"lossy Windows-1252", "windows-1252", "8bit", "\x81"},
+			{"bad charset", "bogus", "8bit", "ok"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				f.set(textStructure("plain", tc.encoding, fmt.Sprintf(`("charset" %q)`, tc.charset), len(tc.raw)), "1", tc.raw)
+				f.setMIME(map[string]string{"HEADER": fmt.Sprintf("Content-Type: text/plain; charset=%s\r\nContent-Transfer-Encoding: %s\r\n", tc.charset, tc.encoding)})
+				requireToolError(t, callTool(t, f.client, forwardTool, f.arguments(false)), errUnsupported)
+			})
+		}
+
+		const hiddenDisposition = "Content-Disposition: attachment; filename=a.txt; filename=b.txt\r\n"
+		const conflictingFormat = "Content-Type: text/plain; charset=utf-8; format=flowed;\r\n format*=us-ascii''fixed\r\nContent-Transfer-Encoding: 8bit\r\n"
+		fixed := textStructure("plain", "8bit", `("charset" "utf-8" "format" "fixed")`, 2)
+		for _, tc := range []struct {
+			name, structure, section string
+			consent                  bool
+			fields                   map[string]string
+		}{
+			{"hidden root attachment", plain, "1", false, map[string]string{"HEADER": plainMIME + hiddenDisposition}},
+			{"normalized format", fixed, "1", false, map[string]string{"HEADER": conflictingFormat}},
+			{"malformed disposition field", plain, "1", false, map[string]string{"HEADER": plainMIME + "Content-Disposition : attachment\r\n"}},
+			{
+				"ambiguous multipart boundary", multiStructure("mixed", plain), "1", false,
+				map[string]string{"HEADER": "Content-Type: multipart/mixed; boundary=a; boundary*=us-ascii''b\r\n", "1.MIME": plainMIME},
+			},
+			{
+				"hidden leaf attachment", multiStructure("mixed", plain, file), "1", true,
+				map[string]string{"HEADER": "Content-Type: multipart/mixed; boundary=m\r\n", "1.MIME": plainMIME + hiddenDisposition},
+			},
+			{
+				"hidden container attachment", multiStructure("mixed", multiStructure("alternative", plain)), "1.1", true,
+				map[string]string{"HEADER": "Content-Type: multipart/mixed; boundary=m\r\n",
+					"1.MIME": "Content-Type: multipart/alternative; boundary=a\r\n" + hiddenDisposition, "1.1.MIME": plainMIME},
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				f.set(tc.structure, tc.section, "ok")
+				f.setMIME(tc.fields)
+				requireToolError(t, callTool(t, f.client, forwardTool, f.arguments(tc.consent)), errUnsupported)
+				f.mu.Lock()
+				defer f.mu.Unlock()
+				if slices.ContainsFunc(f.commands, forwardPeek.MatchString) {
+					t.Fatal("fetched body bytes before validating MIME declarations")
+				}
 			})
 		}
 		f.set(plain, "1", "ok")
@@ -305,13 +427,23 @@ func TestForwardPreview(t *testing.T) {
 			f.setHeader(strings.Replace(forwardHeader, change.old, change.replacement, 1))
 			f.refuse(t, f.arguments(false))
 		}
+		f.setHeader(forwardHeader)
+		for _, to := range []string{"reviewer@[192.0.2.1]", "reviewer@[IPv6:2001:db8::1]", "reviewer@[IPv6:::ffff:192.0.2.1]"} {
+			args := f.arguments(false)
+			args["to"] = to
+			var result forwardResult
+			callJSON(t, f.client, forwardTool, args, &result)
+			if result.Handle == "" || result.Preview.To != to {
+				t.Fatal("valid envelope literal changed")
+			}
+		}
+
 		f.mu.Lock()
-		f.header = forwardHeader
 		f.commands = nil
 		f.mu.Unlock()
 
 		for _, to := range []string{"", "A <a@b.test>", "a@b.test,c@d.test", "a@b.test\r\nBcc: trap@sender.test", "a@b.test (comment)",
-			"recipient@bad/path.test", "recipient@-bad.test", "recipient@" + strings.Repeat("x", 64) + ".test"} {
+			"reviewer@[IPv6:192.0.2.1]", "reviewer@[::ffff:192.0.2.1]", "recipient@bad/path.test", "recipient@-bad.test", "recipient@" + strings.Repeat("x", 64) + ".test"} {
 			args := f.arguments(false)
 			args["to"] = to
 			f.refuse(t, args)
@@ -373,10 +505,24 @@ func TestForwardPreview(t *testing.T) {
 				t.Fatal("overlong serialized line")
 			}
 		}
-		tampered := first
-		tampered.Preview.To = "other@recipient.test"
-		if _, ok := f.store.lookup(tampered, time.Now()); ok {
-			t.Fatal("recipient change accepted")
+		for name, change := range map[string]func(*forwardResult){
+			"handle":           func(r *forwardResult) { r.Handle += "x" },
+			"from":             func(r *forwardResult) { r.Preview.From = "other@bridge.test" },
+			"to":               func(r *forwardResult) { r.Preview.To = "other@recipient.test" },
+			"subject":          func(r *forwardResult) { r.Preview.Subject += "x" },
+			"body":             func(r *forwardResult) { r.Preview.Body += "x" },
+			"htmlAlternatives": func(r *forwardResult) { r.Preview.Omissions.HTMLAlternatives++ },
+			"files":            func(r *forwardResult) { r.Preview.Omissions.Files++ },
+			"attachedMessages": func(r *forwardResult) { r.Preview.Omissions.AttachedMessages++ },
+		} {
+			tampered := first
+			change(&tampered)
+			if _, ok := f.store.lookup(tampered, time.Now()); ok {
+				t.Fatalf("accepted change to %s", name)
+			}
+		}
+		if again, ok := f.store.lookup(first, time.Now()); !ok || again != wire {
+			t.Fatal("repeated approval lookup changed the serialized bytes")
 		}
 		second := f.prepare(t, false)
 		if _, ok := f.store.lookup(first, time.Now()); ok || first.Handle == second.Handle {
@@ -414,8 +560,8 @@ func TestForwardPreview(t *testing.T) {
 	})
 
 	t.Run("Frame", func(t *testing.T) {
-		frameSize := func(r forwardResult) int {
-			data, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "send_forward", "arguments": r}})
+		frameSize := func(name string, args any) int {
+			data, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": name, "arguments": args}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -424,21 +570,41 @@ func TestForwardPreview(t *testing.T) {
 
 		f := newForwardFixture(t, bridge.BoundsPatch{})
 		f.set(plainStructure(""), "1", "")
-		room := stdioframe.MaxFrameBytes - frameSize(f.prepare(t, false))
-		for _, unit := range []string{"p", "\"\\<&"} {
-			encoded, _ := json.Marshal(unit)
-			cost := len(encoded) - 2
-			content := strings.Repeat(unit, room/cost) + strings.Repeat("x", room%cost)
-			f.set(plainStructure(content), "1", content)
-			exact := f.prepare(t, false)
-			if frameSize(exact) != stdioframe.MaxFrameBytes || !strings.HasSuffix(exact.Preview.Body, content) {
-				t.Fatal("exact frame preview was clipped")
-			}
-			content += "x"
-			f.set(plainStructure(content), "1", content)
-			requireToolError(t, callTool(t, f.client, forwardTool, f.arguments(false)), errBoundsExceeded)
-			if _, ok := f.store.lookup(exact, time.Now()); !ok {
-				t.Fatal("failed preview displaced prior approval")
+		base := f.prepare(t, false)
+		room := stdioframe.MaxFrameBytes - frameSize("send_forward", base)
+		for _, field := range []string{"source", "authored"} {
+			for _, unit := range []string{"p", "\"\\<&"} {
+				encoded, _ := json.Marshal(unit)
+				cost := len(encoded) - 2
+				content := strings.Repeat(unit, room/cost) + strings.Repeat("x", room%cost)
+				args := f.arguments(false)
+				want := base.Preview.Body + content
+				if field == "authored" {
+					args["text"] = content + "My note"
+					want = content + base.Preview.Body
+					f.set(plainStructure(""), "1", "")
+				} else {
+					f.set(plainStructure(content), "1", content)
+				}
+
+				var exact forwardResult
+				callJSON(t, f.client, forwardTool, args, &exact)
+				if exact.Handle == "" || frameSize("send_forward", exact) != stdioframe.MaxFrameBytes || exact.Preview.Body != want {
+					t.Fatalf("incomplete exact-fit %s preview", field)
+				}
+
+				if field == "authored" {
+					args["text"] = content + "My notex"
+					if frameSize(forwardTool, args) > stdioframe.MaxFrameBytes {
+						t.Fatal("authored-text fixture exceeds the prepare request frame")
+					}
+				} else {
+					f.set(plainStructure(content+"x"), "1", content+"x")
+				}
+				requireToolError(t, callTool(t, f.client, forwardTool, args), errBoundsExceeded)
+				if _, ok := f.store.lookup(exact, time.Now()); !ok {
+					t.Fatal("failed preview displaced prior approval")
+				}
 			}
 		}
 	})

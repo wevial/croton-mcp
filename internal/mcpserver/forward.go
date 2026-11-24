@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"mime/quotedprintable"
 	"net/mail"
+	"net/netip"
 	"regexp"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/wevial/croton-mcp/bridge"
 	"github.com/wevial/croton-mcp/internal/stdioframe"
+	"github.com/wevial/croton-mcp/internal/strictjson"
 )
 
 const maxForwardAddressBytes = 254
@@ -68,7 +70,7 @@ func registerForward(server *mcp.Server, options Options) {
 		schema: objectSchema(map[string]json.RawMessage{
 			"messageId": stringSchema(maxMessageIDArgumentBytes),
 			"to":        stringSchema(maxForwardAddressBytes),
-			"text":      stringSchema(maxToolArgumentsBytes),
+			"text":      stringSchema(stdioframe.MaxFrameBytes),
 			"text_only": booleanSchema(),
 		}, []string{"messageId", "to"}),
 		run: runPrepareForward,
@@ -80,7 +82,7 @@ func registerForward(server *mcp.Server, options Options) {
 
 func runPrepareForward(ctx context.Context, options Options, args json.RawMessage) (any, string) {
 	var in forwardInput
-	if !decodeArguments(args, &in) || !validMessageIdentifier(in.MessageID) || !plainMailbox(in.To) {
+	if !strictjson.DecodeObject(args, stdioframe.MaxFrameBytes, &in) || !validMessageIdentifier(in.MessageID) || !plainMailbox(in.To) {
 		return nil, errInvalidArgument
 	}
 	authored := strings.ReplaceAll(in.Text, "\r\n", "\n")
@@ -160,10 +162,11 @@ func plainMailbox(value string) bool {
 		return false
 	}
 
-	// ParseAddress checks address literals, but accepts header dot-atoms
-	// such as "a/b.test" in the domain of an envelope mailbox.
 	if strings.HasPrefix(domain, "[") {
-		return true
+		literal := domain[1 : len(domain)-1]
+		ip, ipv6 := strings.CutPrefix(literal, "IPv6:")
+		addr, err := netip.ParseAddr(ip)
+		return err == nil && addr.Zone() == "" && addr.Is6() == ipv6
 	}
 	for label := range strings.SplitSeq(domain, ".") {
 		if !mailboxDomainLabel.MatchString(label) {
