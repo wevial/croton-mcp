@@ -13,6 +13,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -23,8 +24,6 @@ import (
 )
 
 func TestPublicServeInvalidOrigin(t *testing.T) {
-	config := writeServerConfig(t, fixtureBridge(t))
-	dir := httpStateDir(t)
 	for _, raw := range []string{
 		"", "mail.test", "http://mail.test", "https:///missing", "https://:443",
 		"https://mail.test:444", "https://mail.test:", "https://mail.test/mcp",
@@ -33,10 +32,8 @@ func TestPublicServeInvalidOrigin(t *testing.T) {
 		"https://@mail.test", "https://[mail.test]", "https://::1", "https://mail..test",
 	} {
 		t.Run(raw, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-			defer cancel()
-			args := []string{"serve", "--config", config, "--state-dir", dir, "--authorizer", "owner", "--public-url", raw}
-			if err := run(ctx, args, io.Discard, owneroauth.Defaults()); err == nil || err.Error() != "invalid arguments" {
+			args := []string{"serve", "--public-url", raw}
+			if err := run(t.Context(), args, io.Discard, owneroauth.Defaults()); err == nil || err.Error() != "invalid arguments" {
 				t.Fatal("invalid origin did not fail flag parsing")
 			}
 		})
@@ -113,18 +110,16 @@ func TestPublicServeProxy(t *testing.T) {
 
 	token := p.pair(t)
 	session := p.session(t, token, "2026-07-28")
-	calls, cancel := context.WithCancel(t.Context())
+	callCtx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	done := make(chan struct{}, 2)
-	call := func() {
-		_, _ = session.CallTool(calls, &mcp.CallToolParams{Name: "list_folders", Arguments: map[string]any{}})
-		done <- struct{}{}
-	}
 
-	go call()
-	waitForMarker(t, marker)
-	go call()
-	waitForMarker(t, marker+".queued")
+	var calls sync.WaitGroup
+	for _, path := range []string{marker, marker + ".queued"} {
+		calls.Go(func() {
+			_, _ = session.CallTool(callCtx, &mcp.CallToolParams{Name: "list_folders", Arguments: map[string]any{}})
+		})
+		waitForMarker(t, path)
+	}
 
 	r, err := http.NewRequestWithContext(t.Context(), "POST", origin+"/mcp?tag=query.test", strings.NewReader(`{"tag":"body.test"}`))
 	if err != nil {
@@ -141,9 +136,7 @@ func TestPublicServeProxy(t *testing.T) {
 	}
 
 	cancel()
-	for range 2 {
-		<-done
-	}
+	calls.Wait()
 	p.stop(t)
 	for _, sensitive := range []string{token, "query.test", "body.test"} {
 		if strings.Contains(p.stderr.String(), sensitive) {
