@@ -62,19 +62,17 @@ IP. The Bridge connection uses the TLS pin or anchor in the Croton configuration
    minutes of access to the six read tools. The exchange also returns an opaque
    refresh token unless the client registered for `authorization_code` only.
 
-After the bearer expires, the client can POST a URL-encoded form to `/token`
-while the pairing window is closed. Send `grant_type=refresh_token`, the
-original `client_id` and the latest `refresh_token`. The client may omit
-`resource` or send the exact approved `/mcp` URL. The grant retains the same
-read permissions. Send one refresh request at a time and replace both tokens
-on success. Reusing any consumed refresh token revokes the family, including
-the current bearer and refresh token. Pair again after revocation or idle
-expiry.
+After bearer expiry, the client can POST a URL-encoded form to `/token` with the
+pairing window closed. Send `grant_type=refresh_token`, the original `client_id`
+and the latest `refresh_token`. Omit `resource` or send the exact approved
+`/mcp` URL. Read permissions stay the same. Send one request at a time and
+replace both tokens on success. Reusing a consumed refresh token revokes the
+family, including its current bearer and refresh token. Pair again after
+revocation or idle expiry.
 
-Refresh tokens expire after 30 idle days by default. Set
-`CROTON_REFRESH_IDLE_TIMEOUT` to a positive Go duration when
-starting the listener to change that interval. Each rotation restarts the
-idle timer. An actively refreshed grant has no absolute lifetime.
+Each rotation restarts the 30-day idle timeout. To change it, set
+`CROTON_REFRESH_IDLE_TIMEOUT` to a positive Go duration when starting the
+listener. An actively refreshed grant has no absolute lifetime.
 
 Opening a pairing window replaces any pending window. Each window admits
 eight registrations and closes on its first approval. After approval, `pair`
@@ -93,10 +91,9 @@ expire on restart. After approval, the same browser can select **Continue**
 even if the listener restarts at the same origin. Collection succeeds once,
 within the original expiry. Codes, access tokens and refresh tokens are stored by
 hash and survive restart at the same resource URL. The database retains one
-hash per consumed refresh token for the life of its family. This history can
-grow for as long as the client keeps refreshing. Revocation removes the history
-immediately. Expired history is reclaimed on attempted refresh or the next
-approval.
+hash per consumed refresh token, so history grows with each rotation.
+Revocation clears it immediately. After idle expiry, the family's next refresh
+attempt or the next approval clears it.
 
 A request without a valid bearer receives a `401` with the resource metadata
 URL at `/.well-known/oauth-protected-resource/mcp`. The issuer is the listener

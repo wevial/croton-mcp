@@ -43,8 +43,7 @@ func approvedPair(t *testing.T, a *Authority) (string, tokenPair) {
 	return r.Client, issuedPair(t, PostToken(a, codeForm(code, r)))
 }
 
-// PairedRefreshFixture gives the transport-facing test a closed pairing window
-// and a pair obtained at the real token endpoint.
+// PairedRefreshFixture exchanges an approved code at the token endpoint with the pairing window closed.
 func PairedRefreshFixture(t *testing.T, settings Settings) (*Authority, string, tokenPair) {
 	t.Helper()
 	a := openTest(t, privateDir(t), settings)
@@ -171,8 +170,7 @@ func TestOwnerOAuthRefreshTransaction(t *testing.T) {
 	a := openTest(t, dir, Defaults())
 	client, first := approvedPair(t, a)
 
-	// Keep old pages pinned so each commit eventually needs a new page.
-	// The size limit interrupts commit after the handler staged both tokens.
+	// Pin old pages so the size limit eventually fails a commit with both tokens staged.
 	pin, err := a.db.Begin(false)
 	if err != nil {
 		t.Fatal(err)

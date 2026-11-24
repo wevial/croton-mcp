@@ -21,8 +21,8 @@ type tokenPair struct {
 	ExpiresIn int64  `json:"expires_in"`
 }
 
-// Pairing assigns a fresh client ID for each approval. Its bucket contains the
-// current pair's hashes and one hash key for each consumed refresh token.
+// Each approval gets a fresh client ID whose bucket holds the current pair's
+// hashes and a hash for each consumed refresh token.
 type refreshFamily struct {
 	Resource        string
 	Access, Refresh []byte
@@ -54,8 +54,7 @@ func pruneFamilies(tx *bolt.Tx, now time.Time) error {
 	return nil
 }
 
-// Both phases of the provider's refresh grant use this one bbolt writer.
-// No other exchange can observe rotation or revocation before it commits.
+// One write transaction makes rotation and replay revocation atomic across both grant phases.
 type refreshTx struct {
 	bucket *bolt.Bucket
 	family refreshFamily
@@ -117,8 +116,7 @@ func (a *Authority) refresh(ctx context.Context, form url.Values) (tokenPair, er
 			case errors.Is(err, oauth2.ErrServerError):
 				return errState
 			case errors.Is(err, oauth2.ErrInvalidGrant) && families.Bucket(key) == nil:
-				// Replay is an invalid grant *after* the handler revokes the family.
-				// Commit that revocation and report the denial outside Update.
+				// Commit replay revocation before reporting the denial outside Update.
 				return nil
 			case errors.Is(err, oauth2.ErrInvalidScope):
 				return oauth2.ErrInvalidScope
@@ -213,8 +211,7 @@ func (s *refreshTx) RevokeAccessToken(_ context.Context, _ string) error {
 	return b.Delete(s.family.Access)
 }
 
-// The rotating grant never updates a refresh token in place, deletes a single
-// refresh session, or looks up an access token for introspection.
+// A rotating grant uses family-wide revocation and skips access-token introspection.
 func (*refreshTx) UpdateRefreshTokenSession(context.Context, string, oauth2.Requester) error {
 	return errors.ErrUnsupported
 }
@@ -231,8 +228,7 @@ func (*refreshTx) DeleteAccessTokenSession(context.Context, string) error {
 	return errors.ErrUnsupported
 }
 
-// The provider calls the strategy with the same opaque tokens used on code
-// exchange. Only their SHA-256 hashes serve as storage signatures.
+// As on code exchange, only SHA-256 hashes of the opaque tokens reach storage.
 func (*refreshTx) GenerateAccessToken(context.Context, oauth2.Requester) (string, string, error) {
 	token := secret()
 	return token, string(digest(token)), nil
