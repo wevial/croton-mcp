@@ -27,10 +27,7 @@ import (
 )
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
-	defer stop()
-
-	if err := run(ctx, os.Args[1:], os.Stderr); err != nil {
+	if err := run(context.Background(), os.Args[1:], os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "croton-mcp: %v\n", err)
 		os.Exit(1)
 	}
@@ -89,6 +86,10 @@ func run(ctx context.Context, arguments []string, stderr io.Writer) error {
 	if configPath == "" {
 		return errors.New("usage: croton-mcp --config <absolute path>")
 	}
+
+	// Only the servers need graceful shutdown. Keep terminal prompts interruptible.
+	ctx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, os.Interrupt)
+	defer stop()
 
 	loaded, err := config.Load(configPath)
 	if err != nil {

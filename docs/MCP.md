@@ -32,10 +32,11 @@ croton-mcp serve --authorizer owner --config /absolute/path/to/croton.json
 ```
 
 Set the client’s Streamable HTTP endpoint to `http://127.0.0.1:8787/mcp`.
-`--bind` accepts a loopback IP literal and port. To serve HTTPS, supply
-`--tls-cert` and `--tls-key` with a certificate trusted by your browser and
-client for that IP, and use `https://` in the endpoint. The Bridge connection
-uses the TLS pin or anchor in the Croton configuration.
+`--bind` accepts a loopback IP literal and port. Pairing uses Secure cookies. If
+your browser rejects them over HTTP, reaching the approval page requires HTTPS.
+For HTTPS, supply both `--tls-cert` and `--tls-key` and use `https://` in the
+endpoint. Your browser and client must trust the certificate for the listener
+IP. The Bridge connection uses the TLS pin or anchor in the Croton configuration.
 
 1. Run `croton-mcp pair` in a local terminal. Open the displayed link in the
    browser your MCP client uses and select **Pair this browser**. The fragment
@@ -48,19 +49,21 @@ uses the TLS pin or anchor in the Croton configuration.
    code. Enter the matching code to approve that request.
 4. Select **Continue after approval** in the same browser. The client receives
    the code and issuer at its redirect URI. It has 60 seconds to exchange the
-   code with the original redirect, resource and PKCE verifier. The bearer
-   grants ten minutes of access to the six read tools. Pair again for a new
-   grant.
+   code with the original redirect, resource and PKCE verifier. If the exchange
+   returns `500 server_error`, the client can retry the same code before it
+   expires. The bearer grants ten minutes of access to the six read tools.
+   Pair again for a new grant.
 
 Opening a pairing window replaces any pending window. Each window admits
-eight registrations and closes on its first approval. The optional `serve`
-flags `--pairing-window`, `--handoff-lifetime`, `--code-lifetime` and
-`--access-lifetime` take Go durations. `--pending-limit` sets the registration
-limit.
+eight registrations and closes on its first approval. After approval, `pair`
+refuses a new window until the browser collects the redirect or the code expires.
+The optional `serve` flags `--pairing-window`, `--handoff-lifetime`,
+`--code-lifetime` and `--access-lifetime` take Go durations. `--pending-limit`
+sets the registration limit.
 
 All three commands accept `--state-dir`. Use the same absolute directory for
-each. Linux defaults to `$XDG_STATE_HOME/croton-mcp` or
-`~/.local/state/croton-mcp`. macOS uses
+each. Linux uses `$XDG_STATE_HOME/croton-mcp` when `XDG_STATE_HOME` is
+absolute and falls back to `~/.local/state/croton-mcp` otherwise. macOS uses
 `~/Library/Application Support/croton-mcp`. The owner directory is mode
 `0700` and the bbolt database is mode `0600`. Terminal commands communicate
 over a Unix socket that checks the peer UID at both ends. Pending pairings

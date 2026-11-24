@@ -55,10 +55,7 @@ type Authority struct {
 
 func DefaultDir() (string, error) {
 	if runtime.GOOS == "linux" {
-		if dir := os.Getenv("XDG_STATE_HOME"); dir != "" {
-			if !filepath.IsAbs(dir) {
-				return "", errState
-			}
+		if dir := os.Getenv("XDG_STATE_HOME"); filepath.IsAbs(dir) {
 			return filepath.Join(dir, "croton-mcp"), nil
 		}
 	}
@@ -127,11 +124,17 @@ type access struct {
 }
 
 func put(tx *bolt.Tx, bucket, token string, value any) error {
+	b := tx.Bucket([]byte(bucket))
+	if b == nil {
+		return errState
+	}
+
 	data, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
-	return tx.Bucket([]byte(bucket)).Put(digest(token), data)
+
+	return b.Put(digest(token), data)
 }
 
 // Only terminal-approved grants can grow the database, so prune on issuance.
@@ -165,20 +168,36 @@ func (a *Authority) redeem(code, client, redirect, resource, verifier string) (s
 	token := secret()
 	err := a.db.Update(func(tx *bolt.Tx) error {
 		codes := tx.Bucket([]byte("codes"))
+		if codes == nil {
+			return errState
+		}
+
 		key := digest(code)
 		var g grant
 		now := a.settings.Now()
-		if json.Unmarshal(codes.Get(key), &g) != nil || !now.Before(g.Expires) || g.Client != client || g.Redirect != redirect || g.Resource != resource || !oauth2.IsPKCECodeVerifierMatch("S256", g.Challenge, verifier) {
+		data := codes.Get(key)
+		if data == nil {
 			return errDenied
 		}
+		if err := json.Unmarshal(data, &g); err != nil {
+			return errState
+		}
+		if !now.Before(g.Expires) || g.Client != client || g.Redirect != redirect || g.Resource != resource || !oauth2.IsPKCECodeVerifierMatch("S256", g.Challenge, verifier) {
+			return errDenied
+		}
+
 		if err := codes.Delete(key); err != nil {
 			return err
 		}
 		return put(tx, "access", token, access{resource, now.Add(a.settings.AccessLifetime)})
 	})
-	if err != nil {
+	if errors.Is(err, errDenied) {
 		return "", errDenied
 	}
+	if err != nil {
+		return "", errState
+	}
+
 	return token, nil
 }
 

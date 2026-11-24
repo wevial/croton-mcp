@@ -96,6 +96,8 @@ func (a *Authority) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case err == nil:
 		return
+	case errors.Is(err, errState):
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 	case errors.Is(err, errDenied) && r.URL.Path == "/token":
 		writeJSON(w, 400, map[string]string{"error": "invalid_grant"})
 	case errors.Is(err, errDenied):

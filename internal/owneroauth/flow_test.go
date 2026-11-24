@@ -10,11 +10,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	bolt "go.etcd.io/bbolt"
 	"golang.org/x/oauth2"
 	"golang.org/x/sys/unix"
 )
@@ -40,6 +42,21 @@ func openTest(t *testing.T, dir string, settings Settings) *Authority {
 	}
 	t.Cleanup(func() { a.Close() })
 	return a
+}
+
+func startWindow(t *testing.T, a *Authority) *url.URL {
+	t.Helper()
+
+	handoff, err := a.start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	link, err := url.Parse(handoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return link
 }
 
 func registerClient(t *testing.T, a *Authority, c registration) string {
@@ -69,7 +86,7 @@ func TestOwnerOAuthCodeWindow(t *testing.T) {
 	if _, err := a.signin("", "", ""); err == nil {
 		t.Fatal("closed sign-in")
 	}
-	link, _ := url.Parse(a.start())
+	link := startWindow(t, a)
 	for range 8 {
 		registerClient(t, a, c)
 	}
@@ -117,7 +134,7 @@ func TestOwnerOAuthCodeWindow(t *testing.T) {
 
 func TestOwnerOAuthCodeRegistrationMetadata(t *testing.T) {
 	a := openTest(t, privateDir(t), Defaults())
-	a.start()
+	startWindow(t, a)
 
 	const prefix = `{"redirect_uris":["https://client.test/callback"],`
 	for _, tc := range []struct {
@@ -146,8 +163,8 @@ func TestOwnerOAuthCodeRegistrationMetadata(t *testing.T) {
 
 func TestOwnerOAuthCodeRedirectAndPKCE(t *testing.T) {
 	a := openTest(t, privateDir(t), Defaults())
-	for _, bad := range []string{"com.example:/cb", "http://example.test/cb", "http://localhost/cb", "https://example.test/cb#fragment", "https://user@example.test/cb", "file:///cb"} {
-		a.start()
+	for _, bad := range []string{"com.example:/cb", "http://example.test/cb", "http://localhost/cb", "https://example.test/cb#fragment", "https://user@example.test/cb", "file:///cb", "https://example.test/cb?source=%ZZ"} {
+		startWindow(t, a)
 		if _, err := a.register(registration{Redirects: []string{bad}}); err == nil {
 			t.Fatal("accepted unsafe redirect")
 		}
@@ -165,7 +182,7 @@ func TestOwnerOAuthCodeRedirectAndPKCE(t *testing.T) {
 		{nativeRedirect, "http://127.0.0.1:9090/callback?source=else", "native", false},
 		{"http://[::1]/cb", "http://[::1]:9000/cb", "native", true},
 	} {
-		a.start()
+		startWindow(t, a)
 		id := registerClient(t, a, registration{Application: test.app, Redirects: []string{test.registered}})
 		q := authorizationQuery(id, test.requested)
 		for _, bad := range []string{"plain", "", "s256"} {
@@ -181,9 +198,9 @@ func TestOwnerOAuthCodeRedirectAndPKCE(t *testing.T) {
 	}
 }
 
-func approvedGrant(t *testing.T, a *Authority) (string, *authorization) {
+func approveRequest(t *testing.T, a *Authority) (string, *authorization) {
 	t.Helper()
-	link, _ := url.Parse(a.start())
+	link := startWindow(t, a)
 	owner, err := a.claim(link.Fragment)
 	if err != nil {
 		t.Fatal(err)
@@ -237,6 +254,17 @@ func approvedGrant(t *testing.T, a *Authority) (string, *authorization) {
 	}
 	if err := a.approve(req.requestID, details.Code); err == nil {
 		t.Fatal("second approval")
+	}
+
+	return owner, req
+}
+
+func approvedGrant(t *testing.T, a *Authority) (string, *authorization) {
+	t.Helper()
+
+	owner, req := approveRequest(t, a)
+	if _, err := a.start(); err != errDenied {
+		t.Fatal("opened a window while callback awaited delivery")
 	}
 	if _, err := a.finish(owner, "other"); err == nil {
 		t.Fatal("foreign delivery")
@@ -294,12 +322,12 @@ func TestOwnerOAuthCodeRedemption(t *testing.T) {
 	token := <-results
 	a.Close()
 	a = openTest(t, dir, settings)
+	if _, err := a.redeem(code, req.Client, req.Redirect, req.Resource, verifier); err != errDenied {
+		t.Fatal("replayed after restart")
+	}
 	now = now.Add(10*time.Minute - time.Second)
 	if !a.ValidBearer(token) {
 		t.Fatal("lost grant after restart")
-	}
-	if _, err := a.redeem(code, req.Client, req.Redirect, req.Resource, verifier); err == nil {
-		t.Fatal("replayed after restart")
 	}
 	now = now.Add(time.Second)
 	if a.ValidBearer(token) {
@@ -308,6 +336,47 @@ func TestOwnerOAuthCodeRedemption(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(dir, "oauth.db"))
 	if err != nil || bytes.Contains(raw, []byte(code)) || bytes.Contains(raw, []byte(token)) {
 		t.Fatal("token storage")
+	}
+}
+
+func TestOwnerOAuthCodeTokenStorageFailure(t *testing.T) {
+	a := openTest(t, privateDir(t), Defaults())
+	code, req := approvedGrant(t, a)
+	form := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"client_id":     {req.Client},
+		"redirect_uri":  {req.Redirect},
+		"resource":      {req.Resource},
+		"code_verifier": {verifier},
+	}
+	exchange := func() *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, issuer+"/token", strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		w := httptest.NewRecorder()
+		a.ServeHTTP(w, r)
+		return w
+	}
+
+	// Make the access write fail after redeem has deleted the code in the transaction.
+	if err := a.db.Update(func(tx *bolt.Tx) error { return tx.DeleteBucket([]byte("access")) }); err != nil {
+		t.Fatal(err)
+	}
+	if w := exchange(); w.Code != http.StatusInternalServerError || strings.TrimSpace(w.Body.String()) != `{"error":"server_error"}` {
+		t.Fatal("token storage failure did not return a sanitized server error")
+	}
+
+	if err := a.db.Update(func(tx *bolt.Tx) error {
+		_, err := tx.CreateBucket([]byte("access"))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if w := exchange(); w.Code != http.StatusOK {
+		t.Fatal("could not retry rolled-back exchange")
+	}
+	if w := exchange(); w.Code != http.StatusBadRequest || strings.TrimSpace(w.Body.String()) != `{"error":"invalid_grant"}` {
+		t.Fatal("used code did not return invalid_grant")
 	}
 }
 
@@ -322,7 +391,7 @@ func TestOwnerOAuthCodeConfiguredLifetimes(t *testing.T) {
 	settings.Now = func() time.Time { return now }
 	a := openTest(t, privateDir(t), settings)
 
-	link, _ := url.Parse(a.start())
+	link := startWindow(t, a)
 	now = now.Add(4 * time.Second)
 	owner, err := a.claim(link.Fragment)
 	if err != nil {
@@ -343,7 +412,7 @@ func TestOwnerOAuthCodeConfiguredLifetimes(t *testing.T) {
 		t.Fatal("expired sign-in with both browser bindings")
 	}
 
-	link, _ = url.Parse(a.start())
+	link = startWindow(t, a)
 	now = now.Add(5 * time.Second)
 	if _, err := a.claim(link.Fragment); err == nil {
 		t.Fatal("configured handoff expiry")
@@ -365,6 +434,39 @@ func TestOwnerOAuthCodeConfiguredLifetimes(t *testing.T) {
 	now = now.Add(4 * time.Second)
 	if a.ValidBearer(token) {
 		t.Fatal("configured access expiry")
+	}
+}
+
+func TestOwnerOAuthCodeDeliveryExpiry(t *testing.T) {
+	settings := Defaults()
+	now := time.Now()
+	settings.Now = func() time.Time { return now }
+	a := openTest(t, privateDir(t), settings)
+	owner, req := approveRequest(t, a)
+
+	now = now.Add(settings.CodeLifetime)
+	startWindow(t, a)
+	if _, err := a.finish(owner, req.browser); err != errDenied {
+		t.Fatal("delivered expired callback")
+	}
+}
+
+func TestOwnerOAuthCodeLinuxDefaultDir(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux state directory convention")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, xdg := range []string{"", "state", filepath.Join(home, "absolute")} {
+		t.Setenv("XDG_STATE_HOME", xdg)
+		want := filepath.Join(home, ".local", "state", "croton-mcp")
+		if filepath.IsAbs(xdg) {
+			want = filepath.Join(xdg, "croton-mcp")
+		}
+
+		if got, err := DefaultDir(); err != nil || got != want {
+			t.Fatalf("XDG_STATE_HOME=%q: got %q, %v; want %q", xdg, got, err, want)
+		}
 	}
 }
 
@@ -391,6 +493,10 @@ func TestOwnerOAuthCodeStateAndPeer(t *testing.T) {
 	}
 	if _, err := Open(dir, issuer, Defaults()); err == nil {
 		t.Fatal("opened exposed db")
+	}
+
+	if err := os.Chmod(db, 0600); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.Rename(db, db+".test"); err != nil {
 		t.Fatal(err)

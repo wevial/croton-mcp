@@ -82,7 +82,8 @@ func (a *Authority) handleOwner(conn *net.UnixConn) {
 	var out reply
 	switch {
 	case command == "pair" && arg == "":
-		out = reply{OK: true, Handoff: a.start()}
+		handoff, err := a.start()
+		out = reply{OK: err == nil, Handoff: handoff}
 	case command == "inspect" && arg == "":
 		if details, err := a.inspect(); err == nil {
 			out = reply{OK: true, Review: &details}

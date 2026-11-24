@@ -47,11 +47,16 @@ func matches(a, b string) bool {
 }
 
 // The IPC server is the sole caller of the window-opening and approval operations.
-func (a *Authority) start() string {
+func (a *Authority) start() (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	now := a.settings.Now()
+	if now.Before(a.delivery.expires) {
+		return "", errDenied
+	}
+
+	a.delivery = delivery{}
 	a.window = window{
 		expires:        now.Add(a.settings.PairingWindow),
 		handoffExpires: now.Add(a.settings.HandoffLifetime),
@@ -59,8 +64,8 @@ func (a *Authority) start() string {
 		clients:        make(map[string]registration),
 		requests:       make(map[string]*authorization),
 	}
-	a.delivery = delivery{}
-	return a.issuer + "/owner/pair#" + a.window.handoff
+
+	return a.issuer + "/owner/pair#" + a.window.handoff, nil
 }
 
 // Caller holds mu for the entire transition, including any grant transaction.
@@ -96,8 +101,8 @@ func validRedirect(raw string) bool {
 		}
 	}
 	// These names belong to the authorization response.
-	query := u.Query()
-	if query.Has("code") || query.Has("iss") || query.Has("state") {
+	query, err := url.ParseQuery(u.RawQuery)
+	if err != nil || query.Has("code") || query.Has("iss") || query.Has("state") {
 		return false
 	}
 	return u.Scheme == "https" || (u.Scheme == "http" && net.ParseIP(u.Hostname()).IsLoopback())
