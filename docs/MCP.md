@@ -364,3 +364,17 @@ waiting for Bridge. Excess requests receive HTTP 429.
 
 Croton writes no HTTP access log. Configure proxy logging to exclude
 credentials, cookies, query strings and request and response bodies.
+
+### Tailscale Funnel
+
+Run `croton-mcp serve --public=tailscale --authorizer owner --config /absolute/path/to/croton.json`
+with Tailscale CLI 1.104.5 or later. The node needs HTTPS and Funnel eligibility
+for port 443. Keep exclusive control of that port for the entire run. Checking
+the configuration and changing it are separate Tailscale CLI calls.
+
+Croton shows the node's HTTPS origin, loopback target and routes on the owner
+terminal. Typing `yes` approves public access to **all paths on port 443**.
+Croton checks the configuration again, starts the protected backend, and verifies
+the background route. On a handled exit it removes the matching route and
+verifies removal. If ownership is uncertain, Croton warns and leaves the
+configuration alone. After a crash, inspect `tailscale funnel status` manually.
