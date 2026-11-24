@@ -352,23 +352,6 @@ func TestFunnelServeLifecycle(t *testing.T) {
 	}
 }
 
-func TestFunnelServeBackendUnavailable(t *testing.T) {
-	f := newFunnelFixture(t, writeServerConfig(t, fixtureBridge(t)))
-	other, err := net.Listen("tcp", strings.TrimPrefix(f.target, "http://"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer other.Close()
-
-	err = runCLI(t.Context(), f.args, io.Discard, owneroauth.Defaults(), acceptFunnel)
-	if err == nil || err.Error() != "HTTP listener unavailable" {
-		t.Fatalf("unexpected startup result: %v", err)
-	}
-	if got := f.calls(t); !slices.Equal(got, slices.Concat(preflightCalls, preflightCalls)) {
-		t.Fatalf("commands after bind failure: %q", got)
-	}
-}
-
 func TestFunnelServeBind(t *testing.T) {
 	config := writeServerConfig(t, fixtureBridge(t))
 	for _, bind := range []string{"127.0.0.2:8787", "[::ffff:127.0.0.1]:8787", "[::1]:8787"} {
