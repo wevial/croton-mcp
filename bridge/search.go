@@ -116,6 +116,13 @@ type MessageMetadata struct {
 	uid uint32
 }
 
+func (metadata *MessageMetadata) setIdentity(identifier string, payload messageIDPayload) {
+	metadata.ID = identifier
+	metadata.Mailbox = payload.Mailbox
+	metadata.UIDValidity = payload.UIDValidity
+	metadata.UID = payload.UID
+}
+
 // SearchPage returns bounded message metadata in descending UID order and
 // reports whether matches were omitted or a UID range was left unexamined.
 // NextCursor is set exactly when Truncated is and resumes below the omitted
@@ -161,8 +168,7 @@ func (adapter *Adapter) SearchMailPage(ctx context.Context, query SearchQuery) (
 	err = adapter.execute(ctx, func(operationContext context.Context, session bridgeSession) error {
 		attemptResults := make([]MessageMetadata, 0)
 		resume := make([]string, 0)
-		attemptOutputBytes := 2 // JSON array brackets.
-		omitted := false
+		bytesLeft := adapter.config.Bounds.MaxOutputBytes - 2 // JSON array brackets.
 
 		snapshot, err := session.Examine(operationContext, query.Mailbox)
 		if err != nil {
@@ -192,7 +198,7 @@ func (adapter *Adapter) SearchMailPage(ctx context.Context, query SearchQuery) (
 				return err
 			}
 			if len(selected) < len(uids) {
-				omitted = true
+				// Resume below the last kept UID so omitted matches remain eligible.
 				start = selected[len(selected)-1]
 			}
 
@@ -207,25 +213,23 @@ func (adapter *Adapter) SearchMailPage(ctx context.Context, query SearchQuery) (
 
 			for _, item := range metadata {
 				payload := messageIDPayload{Mailbox: query.Mailbox, UIDValidity: snapshot.UIDValidity, UID: item.uid}
-				item.ID, err = adapter.encodeMessageID(payload)
+				identifier, err := adapter.encodeMessageID(payload)
 				if err != nil {
 					return err
 				}
-				item.Mailbox = payload.Mailbox
-				item.UIDValidity = payload.UIDValidity
-				item.UID = payload.UID
+				item.setIdentity(identifier, payload)
+
 				encodedItem, err := json.Marshal(item)
 				if err != nil {
 					return errorCode(CodeIMAPProtocol)
 				}
-				separatorBytes := 0
 				if len(attemptResults) > 0 {
-					separatorBytes = 1
+					bytesLeft-- // Comma between items.
 				}
-				if attemptOutputBytes > adapter.config.Bounds.MaxOutputBytes || len(encodedItem)+separatorBytes > adapter.config.Bounds.MaxOutputBytes-attemptOutputBytes {
+				if len(encodedItem) > bytesLeft {
 					return errorCode(CodeBoundsExceeded)
 				}
-				attemptOutputBytes += len(encodedItem) + separatorBytes
+				bytesLeft -= len(encodedItem)
 				attemptResults = append(attemptResults, item)
 
 				next, err := adapter.sealPayload(filters, payload)
@@ -237,7 +241,7 @@ func (adapter *Adapter) SearchMailPage(ctx context.Context, query SearchQuery) (
 			remaining = start
 		}
 
-		page = SearchPage{Messages: attemptResults, Truncated: omitted || remaining > 1, Resume: resume}
+		page = SearchPage{Messages: attemptResults, Truncated: remaining > 1, Resume: resume}
 		if page.Truncated {
 			next := messageIDPayload{Mailbox: query.Mailbox, UIDValidity: snapshot.UIDValidity, UID: remaining}
 			page.NextCursor, err = adapter.sealPayload(filters, next)
@@ -273,10 +277,7 @@ func selectHighestUIDs(uids []uint32, window uidWindow, budget int) ([]uint32, e
 		}
 	}
 
-	if len(sorted) > budget {
-		sorted = sorted[:budget]
-	}
-	return sorted, nil
+	return sorted[:min(len(sorted), budget)], nil
 }
 
 // searchFilterHash binds a cursor to every filter except Mailbox, which the

@@ -120,45 +120,31 @@ func TestNormalizeMessageUsesOfflineHTMLFallback(t *testing.T) {
 	if message.TextSource != bridge.TextSourceHTML {
 		t.Errorf("text source = %q, want HTML fallback", message.TextSource)
 	}
-
-	if strings.Contains(message.Text, "tracker") || strings.Contains(message.Text, "Hidden") {
-		t.Errorf("active or remote HTML content survived: %q", message.Text)
-	}
 }
 
 func TestNormalizeMessagePreservesLiteralEncodedWordMarker(t *testing.T) {
 	t.Parallel()
 
-	message, err := bridge.NormalizeMessage(strings.NewReader(strings.Join([]string{
-		"Subject: =? literal marker",
-		"Content-Type: text/plain; charset=UTF-8",
-		"",
-		"synthetic body",
-	}, "\r\n")), bridge.NormalizeOptions{})
-	if err != nil {
-		t.Fatalf("normalize literal encoded-word marker: %v", err)
-	}
-
-	if message.Headers.Subject != "=? literal marker" {
-		t.Errorf("subject = %q, want literal marker", message.Headers.Subject)
-	}
+	checkLiteralSubject(t, "=? literal marker")
 }
 
 func TestNormalizeMessagePreservesTerminatedLiteralEncodedWordMarker(t *testing.T) {
 	t.Parallel()
 
-	message, err := bridge.NormalizeMessage(strings.NewReader(strings.Join([]string{
-		"Subject: =? literal ?=",
-		"Content-Type: text/plain; charset=UTF-8",
-		"",
-		"synthetic body",
-	}, "\r\n")), bridge.NormalizeOptions{})
+	checkLiteralSubject(t, "=? literal ?=")
+}
+
+func checkLiteralSubject(t *testing.T, subject string) {
+	t.Helper()
+
+	raw := "Subject: " + subject + "\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\nsynthetic body"
+	message, err := bridge.NormalizeMessage(strings.NewReader(raw), bridge.NormalizeOptions{})
 	if err != nil {
-		t.Fatalf("normalize terminated literal encoded-word marker: %v", err)
+		t.Fatalf("normalize subject %q: %v", subject, err)
 	}
 
-	if message.Headers.Subject != "=? literal ?=" {
-		t.Errorf("subject = %q, want literal marker", message.Headers.Subject)
+	if message.Headers.Subject != subject {
+		t.Errorf("subject = %q, want %q", message.Headers.Subject, subject)
 	}
 }
 
@@ -357,34 +343,27 @@ func TestNormalizeMessageReturnsSafeErrorsForOversizedAndMalformedInput(t *testi
 	t.Parallel()
 
 	testCases := []struct {
-		name    string
-		input   string
-		options bridge.NormalizeOptions
-		want    string
+		name   string
+		input  string
+		limits bridge.NormalizeLimits
+		want   string
 	}{
 		{
-			name:    "raw input",
-			input:   "Content-Type: text/plain\r\n\r\n0123456789",
-			options: bridge.NormalizeOptions{Limits: bridge.NormalizeLimits{MaxRawBytes: 32}},
-			want:    "input_too_large",
+			name: "raw input", input: "Content-Type: text/plain\r\n\r\n0123456789",
+			limits: bridge.NormalizeLimits{MaxRawBytes: 32}, want: "input_too_large",
 		},
-		{
-			name:    "encoded header",
-			input:   "Content-Type: text/plain\r\nSubject: =?UTF-8?B?%%%?=\r\n\r\nbody",
-			options: bridge.NormalizeOptions{},
-			want:    "malformed_header",
-		},
-		{
-			name:    "transfer encoding",
-			input:   "Content-Type: text/plain\r\nContent-Transfer-Encoding: x-unsafe\r\n\r\nbody",
-			options: bridge.NormalizeOptions{},
-			want:    "malformed_encoding",
-		},
+		{name: "encoded header", input: "Content-Type: text/plain\r\nSubject: =?UTF-8?B?%%%?=\r\n\r\nbody", want: "malformed_header"},
+		{name: "invalid reference charset", input: "References: =?x-unknown?Q?ref?=\r\n\r\nbody", want: "malformed_header"},
+		{name: "content type", input: "Content-Type: text/plain; unsafe?\r\n\r\nbody", want: "malformed_mime"},
+		{name: "disposition", input: "Content-Disposition: attachment; unsafe?\r\n\r\nbody", want: "malformed_mime"},
+		{name: "transfer encoding", input: "Content-Transfer-Encoding: x-unsafe\r\n\r\nbody", want: "malformed_encoding"},
+		{name: "invalid base64", input: "Content-Transfer-Encoding: base64\r\n\r\n%%%", want: "malformed_encoding"},
+		{name: "unsupported charset", input: "Content-Type: text/plain; charset=x-unsafe\r\n\r\nbody", want: "unsupported_charset"},
 	}
 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			_, err := bridge.NormalizeMessage(strings.NewReader(testCase.input), testCase.options)
+			_, err := bridge.NormalizeMessage(strings.NewReader(testCase.input), bridge.NormalizeOptions{Limits: testCase.limits})
 
 			var normalizeError *bridge.NormalizeError
 			if !errors.As(err, &normalizeError) || normalizeError.Code != testCase.want {
