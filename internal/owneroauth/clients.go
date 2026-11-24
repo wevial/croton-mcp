@@ -2,6 +2,7 @@ package owneroauth
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -28,19 +29,44 @@ func validClientID(id string) bool {
 }
 
 func listClients(db *bolt.DB, visit func(pairedClient) error) error {
-	return db.View(func(tx *bolt.Tx) error {
-		clients := tx.Bucket([]byte("clients"))
-		if clients == nil {
+	const pageSize = 64
+	var start []byte
+	page := make([]pairedClient, 0, pageSize)
+	for {
+		page = page[:0]
+		var next []byte
+		err := db.View(func(tx *bolt.Tx) error {
+			clients := tx.Bucket([]byte("clients"))
+			if clients == nil {
+				return nil
+			}
+
+			cursor := clients.Cursor()
+			id, name := cursor.Seek(start)
+			for id != nil && len(page) < pageSize {
+				if !validClientID(string(id)) || name == nil || len(name) > maxClientNameBytes {
+					return errState
+				}
+				page = append(page, pairedClient{ID: string(id), Name: string(name)})
+				id, name = cursor.Next()
+			}
+			next = bytes.Clone(id)
 			return nil
+		})
+		if err != nil {
+			return err
 		}
 
-		return clients.ForEach(func(id, name []byte) error {
-			if !validClientID(string(id)) || name == nil || len(name) > maxClientNameBytes {
-				return errState
+		for _, client := range page {
+			if err := visit(client); err != nil {
+				return err
 			}
-			return visit(pairedClient{ID: string(id), Name: string(name)})
-		})
-	})
+		}
+		if next == nil {
+			return nil
+		}
+		start = next
+	}
 }
 
 func unpair(db *bolt.DB, id string) error {

@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -179,10 +180,18 @@ func restartClientsServer(t *testing.T, p *httpProcess) {
 		}
 	})
 
-	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
-		if resp, err := p.client.Get(p.origin + "/.well-known/oauth-authorization-server"); err == nil {
+	deadline := time.Now().Add(5 * time.Second)
+	probeCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+
+	for probeCtx.Err() == nil {
+		req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, p.origin+"/.well-known/oauth-authorization-server", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp, err := p.client.Do(req); err == nil {
 			resp.Body.Close()
-			if resp.StatusCode == 200 {
+			if resp.StatusCode == http.StatusOK && time.Now().Before(deadline) {
 				return
 			}
 		}
@@ -366,7 +375,14 @@ func TestOwnerOAuthClientsWrongUID(t *testing.T) {
 	ready, err := cmd.StdoutPipe()
 	requireOK(err)
 	requireOK(cmd.Start())
-	defer cmd.Process.Kill()
+	waited := false
+	defer func() {
+		if !waited {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	}()
+
 	var b [1]byte
 	if _, err := io.ReadFull(ready, b[:]); err != nil || b[0] != 1 {
 		t.Fatal("foreign listener unavailable")
@@ -379,7 +395,9 @@ func TestOwnerOAuthClientsWrongUID(t *testing.T) {
 	if got, err := adminCommand(t, dir, "clients"); err == nil || err.Error() != "pairing request denied" || got != "" {
 		t.Fatal("clients did not return a redacted denial for the wrong-UID peer")
 	}
-	if err := cmd.Wait(); err != nil {
+	err = cmd.Wait()
+	waited = true
+	if err != nil {
 		t.Fatal("foreign listener received command data")
 	}
 }
