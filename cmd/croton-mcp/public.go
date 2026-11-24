@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/netip"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"golang.org/x/net/idna"
@@ -19,6 +21,48 @@ func httpHostname(ip netip.Addr) string {
 	}
 
 	return ip.String()
+}
+
+// After IDNA mapping, a numeric final label selects the URL Standard's IPv4 parser.
+var ipv4Suffix = regexp.MustCompile(`(^|\.)([0-9]+|0x[0-9a-f]*)$`)
+
+func parseIPv4Host(host string) (netip.Addr, bool) {
+	parts := strings.Split(host, ".")
+	if len(parts) > 4 {
+		return netip.Addr{}, false
+	}
+
+	var addr uint32
+	for i, part := range parts {
+		base := 10
+		switch {
+		case strings.HasPrefix(part, "0x"):
+			base, part = 16, part[2:]
+			if part == "" {
+				part = "0"
+			}
+		case strings.HasPrefix(part, "0"):
+			base = 8
+		}
+
+		// The final field fills the remaining octets of a shortened address.
+		bits := 8
+		shift := 24 - 8*i
+		if i == len(parts)-1 {
+			bits = 32 - 8*i
+			shift = 0
+		}
+		n, err := strconv.ParseUint(part, base, bits)
+		if err != nil {
+			return netip.Addr{}, false
+		}
+		addr |= uint32(n) << shift
+	}
+
+	var octets [4]byte
+	binary.BigEndian.PutUint32(octets[:], addr)
+
+	return netip.AddrFrom4(octets), true
 }
 
 func parsePublicOrigin(raw string) (string, error) {
@@ -55,8 +99,14 @@ func parsePublicOrigin(raw string) (string, error) {
 		return "", invalid
 	}
 
-	ip, _ := netip.ParseAddr(ascii)
-	if rooted && !ip.Is4() {
+	if ipv4Suffix.MatchString(ascii) {
+		ip, ok := parseIPv4Host(ascii)
+		if !ok {
+			return "", invalid
+		}
+		return "https://" + ip.String(), nil
+	}
+	if rooted {
 		ascii += "."
 	}
 

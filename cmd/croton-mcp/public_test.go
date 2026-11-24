@@ -21,6 +21,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/wevial/croton-mcp/internal/mcpserver"
 	"github.com/wevial/croton-mcp/internal/owneroauth"
+	"golang.org/x/oauth2"
 )
 
 func TestPublicServeInvalidOrigin(t *testing.T) {
@@ -30,6 +31,7 @@ func TestPublicServeInvalidOrigin(t *testing.T) {
 		"https://mail.test/%2F", "https://mail.test?peer=test", "https://mail.test?",
 		"https://mail.test/#fragment", "https://mail.test#", "https://owner@mail.test",
 		"https://@mail.test", "https://[mail.test]", "https://::1", "https://mail..test",
+		"https://192.0.2.009", "https://192.0.2.0400",
 	} {
 		t.Run(raw, func(t *testing.T) {
 			args := []string{"serve", "--public-url", raw}
@@ -46,6 +48,8 @@ func TestPublicServeOrigin(t *testing.T) {
 		"https://MAIL.test.:443":          "https://mail.test.",
 		"https://mail.test。:443":          "https://mail.test.",
 		"https://192.0.2.1.:443":          "https://192.0.2.1",
+		"https://192.0.2.010.:443":        "https://192.0.2.8",
+		"https://0xc0.0x201":              "https://192.0.2.1",
 		"https://[2001:0DB8:0:0::1]:443/": "https://[2001:db8::1]",
 		"https://[::ffff:192.0.2.1]/":     "https://[::ffff:c000:201]",
 		"https://münchen.test:0443":       "https://xn--mnchen-3ya.test",
@@ -57,7 +61,7 @@ func TestPublicServeOrigin(t *testing.T) {
 }
 
 func TestPublicServeProxy(t *testing.T) {
-	const origin = "https://mail.test"
+	const origin = "https://192.0.2.1"
 	config, marker := stalledBridgeConfig(t, 30*time.Second)
 	dir := httpStateDir(t)
 	probe, err := net.Listen("tcp", "127.0.0.1:0")
@@ -75,7 +79,7 @@ func TestPublicServeProxy(t *testing.T) {
 		return (&net.Dialer{}).DialContext(ctx, network, proxy.Listener.Addr().String())
 	}
 
-	args := []string{"serve", "--config", config, "--bind", address, "--state-dir", dir, "--public-url", "https://Mail.Test:443/"}
+	args := []string{"serve", "--config", config, "--bind", address, "--state-dir", dir, "--public-url", "https://192.0.2.001:443"}
 	ctx, cancelStartup := context.WithTimeout(t.Context(), time.Second)
 	defer cancelStartup()
 	if err := run(ctx, args, io.Discard, owneroauth.Defaults()); err == nil || err.Error() != "HTTP authorizer unavailable" {
@@ -91,7 +95,7 @@ func TestPublicServeProxy(t *testing.T) {
 	}
 
 	for _, tc := range []struct{ host, origin string }{
-		{address, origin}, {"mail.test", "https://foreign.test"},
+		{address, origin}, {"192.0.2.1", "https://foreign.test"},
 	} {
 		r, err := http.NewRequestWithContext(t.Context(), "GET", origin+owneroauth.ResourceMetadataPath, nil)
 		if err != nil {
@@ -99,7 +103,7 @@ func TestPublicServeProxy(t *testing.T) {
 		}
 		r.Host = tc.host
 		r.Header.Set("Origin", tc.origin)
-		r.Header.Set("X-Forwarded-Host", "mail.test")
+		r.Header.Set("X-Forwarded-Host", "192.0.2.1")
 		resp, err := p.client.Do(r)
 		if err != nil {
 			t.Fatal(err)
@@ -163,11 +167,23 @@ func TestPublicServeProxy(t *testing.T) {
 func TestPublicServeRateLimits(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const origin = "https://proxy.test"
-		oauth, err := owneroauth.Open(httpStateDir(t), origin, owneroauth.Defaults())
+		dir := httpStateDir(t)
+		oauth, err := owneroauth.Open(dir, origin, owneroauth.Defaults())
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer oauth.Close()
+
+		stop, err := oauth.ListenOwner(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_, err = adminCommand(t, dir, "pair")
+		stop()
+		if err != nil {
+			t.Fatal(err)
+		}
 
 		clients := map[string]string{"bearer-one": "one", "rotated-one": "one", "bearer-two": "two"}
 		handler, err := mcpserver.NewHTTP(origin, true, nil, nil, time.Second, func(token string) (string, bool) {
@@ -200,15 +216,33 @@ func TestPublicServeRateLimits(t *testing.T) {
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, r)
 			if w.Code != want {
-				t.Fatalf("request %d (%s %s) returned %d, want %d", sequence, method, path, w.Code, want)
+				t.Fatalf("request %d (%s %s) returned %d, want %d", sequence, method, r.URL.Path, w.Code, want)
 			}
 		}
 
-		for n := range 15 {
+		reg := httptest.NewRequest("POST", origin+"/register", strings.NewReader(`{"redirect_uris":["https://client.test/callback"]}`))
+		reg.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, reg)
+
+		var client approvedClient
+		if w.Code != http.StatusCreated || json.Unmarshal(w.Body.Bytes(), &client) != nil || client.ID == "" {
+			t.Fatal("expected a registered client ID")
+		}
+
+		query := url.Values{
+			"client_id": {client.ID}, "redirect_uri": {clientRedirect}, "response_type": {"code"},
+			"code_challenge_method": {"S256"}, "code_challenge": {oauth2.S256ChallengeFromVerifier(clientVerifier)},
+			"resource": {origin + "/mcp"},
+		}
+		authorize := "/authorize?" + query.Encode()
+
+		for n := range 14 {
 			request("GET", fmt.Sprintf("/authorize?client_id=client%d.test", n), "", "", 403)
 			request("POST", "/mcp", fmt.Sprintf("invalid%d.test", n), "", 401)
 		}
-		request("GET", "/authorize?client_id=one", "", "one", 429)
+		request("POST", "/mcp", "", "", 401)
+		request("GET", authorize, "", "one", 429)
 		request("POST", "/register", "", "", 429)
 		request("POST", "/mcp", "", "one", 429)
 
@@ -224,6 +258,7 @@ func TestPublicServeRateLimits(t *testing.T) {
 		request("POST", "/mcp", "bearer-two", "one", 400)
 
 		time.Sleep(30 * time.Second)
+		request("GET", authorize, "", "one", 200)
 		request("POST", "/mcp", "", "two", 401)
 		for range 60 {
 			request("POST", "/mcp", "rotated-one", "", 400)

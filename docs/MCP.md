@@ -349,7 +349,9 @@ the loopback listener with `Host: mail.example.test`. Preserve the browser's
 Origin header. The issuer and pairing links use the external origin, and the
 client endpoint is `https://mail.example.test/mcp`. Croton omits an explicit
 port 443 from these URLs and the expected Host. A DNS root dot is preserved
-as an ASCII period. A dotted-decimal IPv4 address loses its trailing dot.
+as an ASCII period. IPv4 addresses use dotted decimal with no padding or
+trailing dot. For example, `https://192.0.2.001:443` sets the issuer to
+`https://192.0.2.1` and the expected Host to `192.0.2.1`.
 
 Across public OAuth and MCP routes, requests without a verified client share
 30 requests per rolling minute. Each client identified by a valid bearer gets
