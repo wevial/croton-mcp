@@ -348,7 +348,8 @@ Configure the proxy to terminate HTTPS on port 443 and forward all paths to
 the loopback listener with `Host: mail.example.test`. Preserve the browser's
 Origin header. The issuer and pairing links use the external origin, and the
 client endpoint is `https://mail.example.test/mcp`. Croton omits an explicit
-port 443 from these URLs and the expected Host.
+port 443 from these URLs and the expected Host. A DNS root dot is preserved
+as an ASCII period. A dotted-decimal IPv4 address loses its trailing dot.
 
 Across public OAuth and MCP routes, requests without a verified client share
 30 requests per rolling minute. Each client identified by a valid bearer gets

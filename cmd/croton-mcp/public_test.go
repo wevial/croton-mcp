@@ -44,6 +44,8 @@ func TestPublicServeOrigin(t *testing.T) {
 	for raw, want := range map[string]string{
 		"https://mail.test":               "https://mail.test",
 		"https://MAIL.test.:443":          "https://mail.test.",
+		"https://mail.test。:443":          "https://mail.test.",
+		"https://192.0.2.1.:443":          "https://192.0.2.1",
 		"https://[2001:0DB8:0:0::1]:443/": "https://[2001:db8::1]",
 		"https://[::ffff:192.0.2.1]/":     "https://[::ffff:c000:201]",
 		"https://münchen.test:0443":       "https://xn--mnchen-3ya.test",
@@ -161,27 +163,36 @@ func TestPublicServeProxy(t *testing.T) {
 func TestPublicServeRateLimits(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const origin = "https://proxy.test"
+		oauth, err := owneroauth.Open(httpStateDir(t), origin, owneroauth.Defaults())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer oauth.Close()
+
 		clients := map[string]string{"bearer-one": "one", "rotated-one": "one", "bearer-two": "two"}
 		handler, err := mcpserver.NewHTTP(origin, true, nil, nil, time.Second, func(token string) (string, bool) {
 			if id, ok := clients[token]; ok {
 				return id, true
 			}
 			return token, false
-		}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }))
+		}, oauth)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		sequence := 0
-		request := func(path, token string, want int) {
+		request := func(method, path, token, forwardedUser string, want int) {
 			t.Helper()
 			sequence++
 			peer := fmt.Sprintf("192.0.2.%d", sequence)
-			r := httptest.NewRequest("POST", origin+path, nil)
+			r := httptest.NewRequest(method, origin+path, nil)
 			r.RemoteAddr = fmt.Sprintf("127.0.0.%d:%d", sequence, 10000+sequence)
 			r.Header.Set("Forwarded", "for="+peer+";proto=https")
 			r.Header.Set("X-Forwarded-For", peer)
-			r.Header.Set("X-Forwarded-User", peer)
+			if forwardedUser == "" {
+				forwardedUser = peer
+			}
+			r.Header.Set("X-Forwarded-User", forwardedUser)
 			if token != "" {
 				r.Header.Set("Authorization", "Bearer "+token)
 			}
@@ -189,33 +200,34 @@ func TestPublicServeRateLimits(t *testing.T) {
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, r)
 			if w.Code != want {
-				t.Fatalf("request %d returned %d, want %d", sequence, w.Code, want)
+				t.Fatalf("request %d (%s %s) returned %d, want %d", sequence, method, path, w.Code, want)
 			}
 		}
 
 		for n := range 15 {
-			request(fmt.Sprintf("/authorize?client_id=client%d.test", n), "", 204)
-			request("/mcp", fmt.Sprintf("invalid%d.test", n), 401)
+			request("GET", fmt.Sprintf("/authorize?client_id=client%d.test", n), "", "", 403)
+			request("POST", "/mcp", fmt.Sprintf("invalid%d.test", n), "", 401)
 		}
-		request("/register", "", 429)
-		request("/mcp", "", 429)
+		request("GET", "/authorize?client_id=one", "", "one", 429)
+		request("POST", "/register", "", "", 429)
+		request("POST", "/mcp", "", "one", 429)
 
 		// HTTP 400 for the empty MCP frame means the limiter admitted the request.
 		for range 60 {
-			request("/mcp", "bearer-one", 400)
+			request("POST", "/mcp", "bearer-one", "", 400)
 		}
 		time.Sleep(30 * time.Second)
 		for range 60 {
-			request("/authorize", "rotated-one", 204)
+			request("GET", "/authorize", "rotated-one", "", 403)
 		}
-		request("/mcp", "rotated-one", 429)
-		request("/mcp", "bearer-two", 400)
+		request("POST", "/mcp", "rotated-one", "two", 429)
+		request("POST", "/mcp", "bearer-two", "one", 400)
 
 		time.Sleep(30 * time.Second)
-		request("/mcp", "", 401)
+		request("POST", "/mcp", "", "two", 401)
 		for range 60 {
-			request("/mcp", "rotated-one", 400)
+			request("POST", "/mcp", "rotated-one", "", 400)
 		}
-		request("/mcp", "rotated-one", 429)
+		request("POST", "/mcp", "rotated-one", "", 429)
 	})
 }

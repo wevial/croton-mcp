@@ -47,14 +47,16 @@ func parsePublicOrigin(raw string) (string, error) {
 	}
 
 	dns := idna.New(idna.MapForLookup(), idna.BidiRule(), idna.VerifyDNSLength(true))
-	// Preserve the root dot in a fully qualified DNS name and its HTTP Host.
+	// IDNA length validation expects the name without its root label.
+	host = strings.NewReplacer("\u3002", ".", "\uff0e", ".", "\uff61", ".").Replace(host)
 	name, rooted := strings.CutSuffix(host, ".")
 	ascii, err := dns.ToASCII(name)
 	if err != nil || ascii == "" || strings.HasSuffix(ascii, ".") {
 		return "", invalid
 	}
 
-	if rooted {
+	ip, _ := netip.ParseAddr(ascii)
+	if rooted && !ip.Is4() {
 		ascii += "."
 	}
 
