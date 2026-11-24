@@ -85,11 +85,8 @@ func Open(dir, issuer string, settings Settings) (*Authority, error) {
 	if settings.Now == nil || settings.PendingLimit < 1 || settings.PairingWindow <= 0 || settings.HandoffLifetime <= 0 || settings.CodeLifetime <= 0 || settings.AccessLifetime < time.Second || settings.RefreshIdleTimeout <= 0 {
 		return nil, errState
 	}
-	if err := secureDir(dir, true); err != nil {
-		return nil, err
-	}
 
-	db, err := bolt.Open(filepath.Join(dir, "oauth.db"), 0600, &bolt.Options{Timeout: 100 * time.Millisecond, OpenFile: openDatabase})
+	db, err := openStore(dir, true)
 	if err != nil {
 		return nil, errState
 	}
@@ -107,6 +104,22 @@ func Open(dir, issuer string, settings Settings) (*Authority, error) {
 		return nil, errState
 	}
 	return &Authority{issuer: issuer, settings: settings, db: db}, nil
+}
+
+func openStore(dir string, create bool) (*bolt.DB, error) {
+	if err := secureDir(dir, create); err != nil {
+		return nil, err
+	}
+
+	return bolt.Open(filepath.Join(dir, "oauth.db"), 0600, &bolt.Options{
+		Timeout: 100 * time.Millisecond,
+		OpenFile: func(path string, flags int, mode os.FileMode) (*os.File, error) {
+			if !create {
+				flags &^= os.O_CREATE
+			}
+			return openDatabase(path, flags, mode)
+		},
+	})
 }
 
 func (a *Authority) Close() error { return a.db.Close() }
@@ -129,8 +142,8 @@ type grant struct {
 }
 
 type access struct {
-	Resource string
-	Expires  time.Time
+	Client, Resource string
+	Expires          time.Time
 }
 
 func put(tx *bolt.Tx, bucket, token string, value any) error {
@@ -221,7 +234,7 @@ func (a *Authority) redeem(code, client, redirect, resource, verifier string) (t
 			}
 		}
 
-		return put(tx, "access", pair.Access, access{resource, now.Add(a.settings.AccessLifetime)})
+		return put(tx, "access", pair.Access, access{Client: client, Resource: resource, Expires: now.Add(a.settings.AccessLifetime)})
 	})
 	if errors.Is(err, errDenied) {
 		return tokenPair{}, errDenied

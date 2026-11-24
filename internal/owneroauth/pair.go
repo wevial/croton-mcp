@@ -288,6 +288,15 @@ func (a *Authority) approve(id, comparison string) error {
 		if err := prune(tx, now); err != nil {
 			return err
 		}
+
+		clients, err := tx.CreateBucketIfNotExists([]byte("clients"))
+		if err != nil {
+			return err
+		}
+		if err := clients.Put([]byte(r.Client), []byte(a.window.clients[r.Client].Name)); err != nil {
+			return err
+		}
+
 		return put(tx, "deliveries", a.issuer, d)
 	})
 	if err != nil {

@@ -84,13 +84,25 @@ The optional `serve` flags `--pairing-window`, `--handoff-lifetime`,
 `--code-lifetime` and `--access-lifetime` take Go durations. `--pending-limit`
 sets the registration limit.
 
-All three commands accept `--state-dir`. Use the same absolute directory for
+Run `croton-mcp clients` in the owner terminal to see each approved client’s
+stable registration ID and quoted, self-reported name. Run
+`croton-mcp unpair CLIENT_ID` to revoke that client’s pending authorizations,
+bearer and refresh tokens. If the server is stopped, both commands take the
+exclusive database lock. If the lock is held and the owner socket is
+unavailable, the command fails.
+
+The listing covers approvals recorded since client listing was introduced.
+Earlier approvals discarded the name. An older refresh-token family can still
+be revoked with its original registration ID. Older access-only tokens have
+no stored client ID and expire at their original deadline.
+
+All five commands accept `--state-dir`. Use the same absolute directory for
 each. Linux uses `$XDG_STATE_HOME/croton-mcp` when `XDG_STATE_HOME` is
 absolute and falls back to `~/.local/state/croton-mcp` otherwise. macOS uses
 `~/Library/Application Support/croton-mcp`. The owner directory is mode
-`0700` and the bbolt database is mode `0600`. Terminal commands communicate
-over a Unix socket that checks the peer UID at both ends. Unapproved requests
-expire on restart. After approval, the same browser can select **Continue**
+`0700` and the bbolt database is mode `0600`. With the server running, terminal
+commands communicate over a Unix socket that checks the peer UID at both ends.
+Unapproved requests expire on restart. After approval, the same browser can select **Continue**
 even if the listener restarts at the same origin. Collection succeeds once,
 within the original expiry. Codes, access tokens and refresh tokens are stored by
 hash and survive restart at the same resource URL. The database retains one
