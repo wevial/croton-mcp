@@ -218,11 +218,17 @@ func TestOwnerOAuthClients(t *testing.T) {
 			}
 			checkClients(t, p.dir, first, second)
 
-			if mode == "online" {
-				first.tokens(t, p, first.refreshForm())
-				first.read(t, p)
-				second.read(t, p)
-			}
+			t.Run("unknown ID preserves both grants", func(t *testing.T) {
+				if mode == "offline" {
+					restartClientsServer(t, p, config)
+				}
+
+				for _, client := range []*approvedClient{&first, &second} {
+					client.read(t, p)
+					client.tokens(t, p, client.refreshForm())
+				}
+			})
+
 			if _, err := adminCommand(t, p.dir, "unpair", first.ID); err != nil {
 				t.Fatal(err)
 			}
