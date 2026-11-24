@@ -60,7 +60,6 @@ func pruneFamilies(tx *bolt.Tx, now time.Time) error {
 // Both phases of the provider's refresh grant use this one bbolt writer.
 // No other exchange can observe rotation or revocation before it commits.
 type refreshTx struct {
-	tx     *bolt.Tx
 	bucket *bolt.Bucket
 	family refreshFamily
 	client *oauth2.DefaultClient
@@ -86,7 +85,7 @@ func (a *Authority) refresh(ctx context.Context, form url.Values) (tokenPair, er
 		}
 
 		s := refreshTx{
-			tx: tx, bucket: bucket, now: a.settings.Now(),
+			bucket: bucket, now: a.settings.Now(),
 			client: &oauth2.DefaultClient{
 				ID: client, Public: true, GrantTypes: []string{"refresh_token"}, Resource: []string{resource},
 			},
@@ -193,7 +192,7 @@ func (s *refreshTx) RotateRefreshToken(ctx context.Context, id, signature string
 }
 
 func (s *refreshTx) CreateAccessTokenSession(_ context.Context, signature string, req oauth2.Requester) error {
-	return putRecord(s.tx.Bucket([]byte("access")), []byte(signature), access{s.family.Resource, req.GetSession().GetExpiresAt(oauth2.AccessToken)})
+	return putRecord(s.bucket.Tx().Bucket([]byte("access")), []byte(signature), access{s.family.Resource, req.GetSession().GetExpiresAt(oauth2.AccessToken)})
 }
 
 func (s *refreshTx) CreateRefreshTokenSession(_ context.Context, signature, accessSignature string, req oauth2.Requester) error {
@@ -205,11 +204,11 @@ func (s *refreshTx) CreateRefreshTokenSession(_ context.Context, signature, acce
 }
 
 func (s *refreshTx) RevokeRefreshToken(_ context.Context, id string) error {
-	return s.tx.Bucket([]byte("families")).DeleteBucket(digest(id))
+	return s.bucket.Tx().Bucket([]byte("families")).DeleteBucket(digest(id))
 }
 
 func (s *refreshTx) RevokeAccessToken(_ context.Context, _ string) error {
-	b := s.tx.Bucket([]byte("access"))
+	b := s.bucket.Tx().Bucket([]byte("access"))
 	if b == nil {
 		return errState
 	}

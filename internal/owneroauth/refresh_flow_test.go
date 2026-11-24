@@ -37,7 +37,7 @@ func TestOwnerOAuthRefreshFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	read := func(access, path string, status int) {
+	read := func(path string, status int) {
 		t.Helper()
 		const call = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
             "name":"list_folders","arguments":{},"_meta":{
@@ -46,7 +46,7 @@ func TestOwnerOAuthRefreshFlow(t *testing.T) {
                 "io.modelcontextprotocol/clientCapabilities":{}
             }}}`
 		req := httptest.NewRequest(http.MethodPost, origin+path, strings.NewReader(call))
-		req.Header.Set("Authorization", "Bearer "+access)
+		req.Header.Set("Authorization", "Bearer "+pair.Access)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
 		req.Header.Set("MCP-Protocol-Version", "2026-07-28")
@@ -86,13 +86,13 @@ func TestOwnerOAuthRefreshFlow(t *testing.T) {
 	}
 
 	now = now.Add(10 * time.Minute)
-	read(pair.Access, "/mcp", http.StatusUnauthorized)
+	read("/mcp", http.StatusUnauthorized)
 	refresh("other.test", origin+"/mcp", "", http.StatusBadRequest)
 	refresh(client, origin+"/mcp/", "", http.StatusBadRequest)
 	refresh(client, origin+"/mcp", "write", http.StatusBadRequest)
 	refresh(client, origin+"/mcp", "", http.StatusOK)
-	read(pair.Access, "/mcp", http.StatusOK)
-	read(pair.Access, "/mcp/", http.StatusNotFound)
+	read("/mcp", http.StatusOK)
+	read("/mcp/", http.StatusNotFound)
 
 	// Cross the default thirty-day lifetime while staying inside each
 	// configured idle window. An omitted resource inherits the approved URL.
@@ -100,7 +100,7 @@ func TestOwnerOAuthRefreshFlow(t *testing.T) {
 		now = now.Add(23*time.Hour + 59*time.Minute)
 		refresh(client, "", "", http.StatusOK)
 	}
-	read(pair.Access, "/mcp", http.StatusOK)
+	read("/mcp", http.StatusOK)
 	now = now.Add(24 * time.Hour)
 	refresh(client, origin+"/mcp", "", http.StatusBadRequest)
 }
