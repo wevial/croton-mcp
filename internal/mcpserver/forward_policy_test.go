@@ -1,10 +1,16 @@
 package mcpserver
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/json"
+	"flag"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -37,6 +43,22 @@ func seedPreviousReservation(t *testing.T, dir string) {
 }
 
 func TestForwardRememberedPolicy(t *testing.T) {
+	if flag.Arg(0) == "--check-learned-recipient" {
+		learned, err := strconv.ParseBool(flag.Arg(1))
+		requireForwardSetup(t, err)
+		var cfg bridge.ForwardConfig
+		requireForwardSetup(t, json.NewDecoder(os.Stdin).Decode(&cfg))
+
+		f := plainForwardFixture(t)
+		next := f.prepare(t, false)
+		if learned {
+			requireSendOutcome(t, f.store.send(t.Context(), cfg, forwardRequest(t, f, next), nil), "accepted")
+		} else {
+			confirmation(t, f, cfg, next)
+		}
+		return
+	}
+
 	t.Run("Gate", func(t *testing.T) {
 		f := plainForwardFixture(t)
 		p := newSMTPPeer(t, "", "")
@@ -145,14 +167,17 @@ func TestForwardRememberedPolicy(t *testing.T) {
 					requireSendOutcome(t, f.store.send(t.Context(), p.config, req, nil), tc.want)
 				}
 
-				// A fresh stdio session and adapter share only the private database.
-				restarted := plainForwardFixture(t)
-				next := restarted.prepare(t, false)
-				if tc.learn {
-					requireSendOutcome(t, restarted.store.send(t.Context(), p.config, forwardRequest(t, restarted, next), nil), "accepted")
-				} else {
-					confirmation(t, restarted, p.config, next)
+				exe, err := os.Executable()
+				requireForwardSetup(t, err)
+				cfg, err := json.Marshal(p.config)
+				requireForwardSetup(t, err)
+
+				cmd := exec.CommandContext(t.Context(), exe, "-test.run=^TestForwardRememberedPolicy$", "--", "--check-learned-recipient", strconv.FormatBool(tc.learn))
+				cmd.Stdin = bytes.NewReader(cfg)
+				if output, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("recipient check after restart: %v\n%s", err, output)
 				}
+
 				policy, err := forwardpolicy.Inspect(p.config, forwardLogin)
 				requireForwardSetup(t, err)
 				if policy.Remembers("trap@sender.test") || policy.Remembers("source@sender.test") {

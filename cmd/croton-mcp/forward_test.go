@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/wevial/croton-mcp/internal/owneroauth"
 )
 
 func TestForwardOwnerCommands(t *testing.T) {
@@ -63,7 +61,10 @@ func TestForwardOwnerCommands(t *testing.T) {
 	invoke := func(wantSuccess bool, args ...string) string {
 		t.Helper()
 		var out bytes.Buffer
-		err := run(t.Context(), append(args, "--config", path), &out, owneroauth.Defaults())
+		cmd := serverCommand(t, path, &out)
+		cmd.Args = append([]string{cmd.Path}, args...)
+		cmd.Args = append(cmd.Args, "--config", path)
+		err := cmd.Run()
 		if (err == nil) != wantSuccess {
 			t.Fatalf("%s returned %v", args[0], err)
 		}
@@ -81,6 +82,10 @@ func TestForwardOwnerCommands(t *testing.T) {
 	writeConfig()
 	invoke(true, "init-forward-state")
 	limits(3, 1)
+	login("second@bridge.test")
+	limits(3, 1)
+
+	login("owner@bridge.test")
 	invoke(true, "forget", "seed@RECIPIENT.test")
 	limits(3, 0)
 	invoke(true, "allow", "new@recipient.test")
@@ -98,19 +103,17 @@ func TestForwardOwnerCommands(t *testing.T) {
 	forward["dailyLimit"] = 9
 	forward["rememberedRecipients"] = []string{"seed@recipient.test", "another@recipient.test"}
 	writeConfig()
-	var out bytes.Buffer
-	cmd := serverCommand(t, path, &out)
-	cmd.Args = []string{cmd.Path, "limits", "--config", path}
-	if err := cmd.Run(); err != nil || out.String() != "dailyLimit=1 autoRemember=true rememberedRecipients=1/100\n" {
-		t.Fatalf("restart limits = %q, %v", out.String(), err)
-	}
-	invoke(true, "forget", "new@recipient.test")
-	limits(1, 0)
-
+	// Both accounts have one recipient. Only the second still has the seed.
 	login("second@bridge.test")
-	limits(9, 2)
+	limits(3, 1)
+	invoke(true, "allow", "seed@recipient.test")
+	limits(3, 1)
 	invoke(true, "limits", "100")
+	limits(100, 1)
+
 	login("owner@bridge.test")
+	limits(1, 1)
+	invoke(true, "forget", "new@recipient.test")
 	limits(1, 0)
 
 	login("third@bridge.test")

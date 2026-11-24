@@ -381,9 +381,23 @@ session to return to preview-only forwarding.
 
 ## Updating and rolling back
 
-Close the client's Croton session, back up the binary and configuration, then
-`install -m 0700` the new binary over `~/bin/croton-mcp`; restore the
-backups to roll back. If Bridge's certificate changes, pin it again.
+Before upgrading, close all Croton sessions and owner commands. Back up the
+binary and configuration. If forwarding is configured, also back up the
+entire `forward.stateDir`, preserving its ownership and private permissions.
+Install the new binary over `~/bin/croton-mcp` with `install -m 0700`.
+If Bridge's certificate changes, pin it again.
+
+The first forward policy lookup, even `limits` on a database with no
+reservations, writes a checksum that the previous quota-only release rejects
+before SMTP. To roll back to that release, stop all Croton sessions and owner
+commands, set the upgraded state aside, and restore the pre-upgrade binary,
+configuration and matching state directory.
+
+The backup includes reservations made before the upgrade. If any account
+could have reserved a send since the backup, keep forwarding disabled for
+all accounts sharing that directory until 24 hours after the last possible
+reservation. If the time is uncertain, count from when you stopped all
+sessions. Then resume forwarding with the restored state.
 
 ## Troubleshooting
 
