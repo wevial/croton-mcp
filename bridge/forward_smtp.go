@@ -89,9 +89,9 @@ func (adapter *Adapter) SubmitForward(ctx context.Context, cfg ForwardConfig, lo
 	if !smtp.authenticate(ctx, policy, cfg.SMTPTLSMode, creds) {
 		return forwardNotSubmitted, nil
 	}
-	if !smtp.command("MAIL FROM:<"+login+">", 250) ||
-		!smtp.command("RCPT TO:<"+to+">", 250, 251, 252) ||
-		!smtp.command("DATA", 354) {
+	if smtp.command("MAIL FROM:<"+login+">", 250) == nil ||
+		smtp.command("RCPT TO:<"+to+">", 250, 251, 252) == nil ||
+		smtp.command("DATA", 354) == nil {
 		return forwardNotSubmitted, nil
 	}
 
@@ -140,23 +140,17 @@ func (smtp *smtpSession) reply(allowed ...int) []string {
 	}
 }
 
-func (smtp *smtpSession) command(line string, codes ...int) bool {
+func (smtp *smtpSession) command(line string, codes ...int) []string {
 	if _, err := io.WriteString(smtp.conn, line+"\r\n"); err != nil {
-		return false
+		return nil
 	}
-	return smtp.reply(codes...) != nil
+	return smtp.reply(codes...)
 }
 
-func (smtp *smtpSession) ehlo() []string {
-	if _, err := io.WriteString(smtp.conn, "EHLO localhost\r\n"); err != nil {
-		return nil
-	}
-	lines := smtp.reply(250)
-	if lines == nil {
-		return nil
-	}
-
-	return lines[1:] // First line identifies the server.
+func (smtp *smtpSession) hasExtension(match func(string) bool) bool {
+	lines := smtp.command("EHLO localhost", 250)
+	// The first EHLO line identifies the server.
+	return len(lines) > 1 && slices.ContainsFunc(lines[1:], match)
 }
 
 func (smtp *smtpSession) authenticate(ctx context.Context, policy *tls.Config, mode string, creds Credentials) bool {
@@ -164,10 +158,10 @@ func (smtp *smtpSession) authenticate(ctx context.Context, policy *tls.Config, m
 		if smtp.reply(220) == nil {
 			return false
 		}
-		if !slices.ContainsFunc(smtp.ehlo(), func(ext string) bool { return strings.EqualFold(ext, "STARTTLS") }) {
+		if !smtp.hasExtension(func(ext string) bool { return strings.EqualFold(ext, "STARTTLS") }) {
 			return false
 		}
-		if !smtp.command("STARTTLS", 220) || smtp.reader.Buffered() != 0 {
+		if smtp.command("STARTTLS", 220) == nil || smtp.reader.Buffered() != 0 {
 			return false
 		}
 	}
@@ -184,7 +178,7 @@ func (smtp *smtpSession) authenticate(ctx context.Context, policy *tls.Config, m
 		}
 	}
 
-	plain := slices.ContainsFunc(smtp.ehlo(), func(ext string) bool {
+	plain := smtp.hasExtension(func(ext string) bool {
 		fields := strings.Fields(strings.ToUpper(ext))
 		return len(fields) > 1 && fields[0] == "AUTH" && slices.Contains(fields[1:], "PLAIN")
 	})
