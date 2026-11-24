@@ -58,11 +58,7 @@ func BuildThread(messages []ThreadMessage, options ThreadOptions) Thread {
 		}
 	}
 
-	parents := make([]int, len(ordered))
-	for index := range parents {
-		parents[index] = -1
-	}
-
+	parents := slices.Repeat([]int{-1}, len(ordered))
 	thread.Nodes = make([]ThreadNode, len(ordered))
 	for index, message := range ordered {
 		parent, missing, truncated := parentFor(message.Headers, identifiers, limits.MaxReferenceCount)

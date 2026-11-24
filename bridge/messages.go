@@ -249,19 +249,14 @@ func (adapter *Adapter) GetMessageHeaders(ctx context.Context, identifier string
 			return err
 		}
 
-		record, err := session.UIDFetchHeaders(operationContext, payload.UID, adapter.config.Bounds.MaxHeaderBytes)
-		if err != nil {
-			return err
-		}
-
-		result = record
-		result.Metadata.setIdentity(identifier, payload)
-		return nil
+		result, err = session.UIDFetchHeaders(operationContext, payload.UID, adapter.config.Bounds.MaxHeaderBytes)
+		return err
 	})
 	if err != nil {
 		return MessageHeaders{}, err
 	}
 
+	result.Metadata.setIdentity(identifier, payload)
 	return result, nil
 }
 
