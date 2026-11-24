@@ -4,7 +4,6 @@ package owneroauth_test
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -68,17 +67,14 @@ func TestOwnerOAuthRefreshFlow(t *testing.T) {
 			f.Set("scope", scope)
 		}
 		w := owneroauth.PostToken(handler, f)
-		if w.Code != status {
+		if status == http.StatusOK {
+			old := pair
+			pair = owneroauth.IssuedPair(t, w)
+			if pair.Access == old.Access || pair.Refresh == old.Refresh {
+				t.Fatal("incomplete rotation")
+			}
+		} else if w.Code != status {
 			t.Fatalf("refresh returned HTTP %d, want %d", w.Code, status)
-		}
-		if status != http.StatusOK {
-			return
-		}
-
-		old := pair
-		pair.Access, pair.Refresh, pair.ExpiresIn = "", "", 0
-		if json.Unmarshal(w.Body.Bytes(), &pair) != nil || pair.Access == "" || pair.Refresh == "" || pair.Access == old.Access || pair.Refresh == old.Refresh || pair.ExpiresIn != 600 {
-			t.Fatal("incomplete rotation")
 		}
 	}
 

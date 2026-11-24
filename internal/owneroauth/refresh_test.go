@@ -27,7 +27,8 @@ func PostToken(handler http.Handler, form url.Values) *httptest.ResponseRecorder
 	return w
 }
 
-func issuedPair(t *testing.T, w *httptest.ResponseRecorder) tokenPair {
+// IssuedPair checks the token response and returns the decoded pair.
+func IssuedPair(t *testing.T, w *httptest.ResponseRecorder) tokenPair {
 	t.Helper()
 
 	var p tokenPair
@@ -40,7 +41,7 @@ func issuedPair(t *testing.T, w *httptest.ResponseRecorder) tokenPair {
 func approvedPair(t *testing.T, a *Authority) (string, tokenPair) {
 	t.Helper()
 	code, r := approvedGrant(t, a)
-	return r.Client, issuedPair(t, PostToken(a, codeForm(code, r)))
+	return r.Client, IssuedPair(t, PostToken(a, codeForm(code, r)))
 }
 
 // PairedRefreshFixture exchanges an approved code at the token endpoint with the pairing window closed.
@@ -112,9 +113,9 @@ func TestOwnerOAuthRefreshReuse(t *testing.T) {
 			var current tokenPair
 			if scenario == "after restart" {
 				now = now.Add(29 * 24 * time.Hour)
-				second := issuedPair(t, PostToken(a, form))
+				second := IssuedPair(t, PostToken(a, form))
 				now = now.Add(2 * 24 * time.Hour)
-				current = issuedPair(t, PostToken(a, refreshForm(client, second.Refresh)))
+				current = IssuedPair(t, PostToken(a, refreshForm(client, second.Refresh)))
 				a = reopenTest(t, a, dir, settings)
 				if !a.ValidBearer(current.Access) {
 					t.Fatal("lost current access before replay")
@@ -137,7 +138,7 @@ func TestOwnerOAuthRefreshReuse(t *testing.T) {
 				if winner.Code != http.StatusOK {
 					winner, loser = loser, winner
 				}
-				current = issuedPair(t, winner)
+				current = IssuedPair(t, winner)
 				requireGrantDenial(t, loser)
 			} else {
 				requireGrantDenial(t, PostToken(a, form))
@@ -151,7 +152,7 @@ func TestOwnerOAuthRefreshReuse(t *testing.T) {
 			if !a.ValidBearer(other.Access) {
 				t.Fatal("replay revoked a different grant")
 			}
-			issuedPair(t, PostToken(a, refreshForm(otherClient, other.Refresh)))
+			IssuedPair(t, PostToken(a, refreshForm(otherClient, other.Refresh)))
 
 			if err := a.db.View(func(tx *bolt.Tx) error {
 				if tx.Bucket([]byte("families")).Bucket(digest(client)) != nil {
@@ -183,7 +184,7 @@ func TestOwnerOAuthRefreshTransaction(t *testing.T) {
 		if w.Code != http.StatusOK {
 			break
 		}
-		current = issuedPair(t, w)
+		current = IssuedPair(t, w)
 	}
 	if err := pin.Rollback(); err != nil {
 		t.Fatal(err)
@@ -204,7 +205,7 @@ func TestOwnerOAuthRefreshTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	replacement := issuedPair(t, PostToken(a, refreshForm(client, current.Refresh)))
+	replacement := IssuedPair(t, PostToken(a, refreshForm(client, current.Refresh)))
 	raw, err := os.ReadFile(filepath.Join(dir, "oauth.db"))
 	if err != nil {
 		t.Fatal(err)
