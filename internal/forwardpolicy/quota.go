@@ -23,8 +23,7 @@ var (
 	ErrLimit       = errors.New("forward quota reached")
 )
 
-// Initialize provisions a new owner-private state directory. An existing
-// directory is never repaired or reused by initialization.
+// Initialize creates owner-private quota state and refuses to reuse an existing directory.
 func Initialize(dir string) error {
 	if !filepath.IsAbs(dir) || filepath.Clean(dir) != dir || dir == "/" {
 		return ErrUnavailable

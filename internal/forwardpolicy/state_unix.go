@@ -10,8 +10,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Validate from the root down. A trusted parent prevents replacement by a
-// different UID, including in a sticky temporary directory.
+// Check parents first so another UID cannot replace a component, even in a sticky directory.
 func checkDirectory(path string, private bool) error {
 	if path != "/" {
 		if err := checkDirectory(filepath.Dir(path), false); err != nil {

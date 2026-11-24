@@ -252,9 +252,7 @@ func (store *ForwardPreviews) send(ctx context.Context, cfg bridge.ForwardConfig
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}}}
 }
 
-// approval handles both rounds of a form elicitation. The SDK carries the
-// input request for current clients and handles the round trip for legacy ones.
-// The challenge belongs to just this preview, session and form.
+// The SDK handles legacy form round trips. Each challenge belongs to one preview, session and form.
 func (store *ForwardPreviews) approval(cfg bridge.ForwardConfig, request *mcp.CallToolRequest) (*preparedForward, *mcp.CallToolResult) {
 	if !cfg.Enabled || request == nil || request.Session == nil || request.Params == nil {
 		return nil, errorResult(errUnavailable)
@@ -279,9 +277,7 @@ func (store *ForwardPreviews) approval(cfg bridge.ForwardConfig, request *mcp.Ca
 	if !pending.valid(time.Now()) || pending.session != request.Session {
 		return nil, errorResult(errUnavailable)
 	}
-	// Compare the whole JSON tree including required zero-valued fields.
-	// Formatting preserves string values and number syntax and removes only
-	// insignificant object order, whitespace and escape differences.
+	// Ignore object order, whitespace and equivalent escapes. Require all fields and exact number syntax.
 	stored, err := json.Marshal(pending.forwardResult)
 	want := jsontext.Value(stored)
 	if err != nil || want.Format(jsontext.ReorderRawObjects(true)) != nil || !bytes.Equal(want, args) {

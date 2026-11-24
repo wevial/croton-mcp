@@ -41,8 +41,7 @@ type smtpDelivery struct {
 	from, to, message string
 }
 
-// macOS can put temporary directories under the /var symlink. Give quota
-// setup the physical path, as an operator must.
+// Resolve the /var symlink that macOS may use for temporary directories.
 func newQuotaTestDir(t *testing.T) string {
 	t.Helper()
 	parent, err := filepath.EvalSymlinks(t.TempDir())
