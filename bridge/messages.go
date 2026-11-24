@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"slices"
@@ -19,16 +20,10 @@ func (adapter *Adapter) GetMessageMetadata(ctx context.Context, identifier strin
 
 	var result MessageMetadata
 	err = adapter.execute(ctx, func(operationContext context.Context, session bridgeSession) error {
-		snapshot, err := session.Examine(operationContext, payload.Mailbox)
-		if err != nil {
+		if err := payload.checkUID(operationContext, session); err != nil {
 			return err
 		}
-		if snapshot.UIDValidity != payload.UIDValidity {
-			return errorCode(CodeStaleMessageID)
-		}
-		if err := requireMessageUID(operationContext, session, payload.UID); err != nil {
-			return err
-		}
+
 		metadata, err := session.UIDFetchMetadata(operationContext, payload.Mailbox, []uint32{payload.UID}, adapter.config.Bounds.MaxHeaderBytes)
 		if err != nil {
 			return err
@@ -36,11 +31,9 @@ func (adapter *Adapter) GetMessageMetadata(ctx context.Context, identifier strin
 		if len(metadata) != 1 || metadata[0].uid != payload.UID {
 			return errorCode(CodeStaleMessageID)
 		}
+
 		result = metadata[0]
-		result.ID = identifier
-		result.Mailbox = payload.Mailbox
-		result.UIDValidity = payload.UIDValidity
-		result.UID = payload.UID
+		result.setIdentity(identifier, payload)
 		return nil
 	})
 	if err != nil {
@@ -67,14 +60,7 @@ func (adapter *Adapter) GetMessage(ctx context.Context, identifier string) (Norm
 	var section *textSection
 	var raw []byte
 	err = adapter.execute(ctx, func(operationContext context.Context, session bridgeSession) error {
-		snapshot, err := session.Examine(operationContext, payload.Mailbox)
-		if err != nil {
-			return err
-		}
-		if snapshot.UIDValidity != payload.UIDValidity {
-			return errorCode(CodeStaleMessageID)
-		}
-		if err := requireMessageUID(operationContext, session, payload.UID); err != nil {
+		if err := payload.checkUID(operationContext, session); err != nil {
 			return err
 		}
 
@@ -88,13 +74,10 @@ func (adapter *Adapter) GetMessage(ctx context.Context, identifier string) (Norm
 		}
 
 		selector := textSelector{limits: limits, parts: 1}
-		if err := selector.visit(structure, nil, 0); err != nil && !errors.Is(err, errMIMEPartsLimit) {
+		if err := selector.visit(structure, nil); err != nil && !errors.Is(err, errMIMEPartsLimit) {
 			return err
 		}
-		section = selector.plain
-		if section == nil {
-			section = selector.html
-		}
+		section = cmp.Or(selector.plain, selector.html)
 		if section == nil {
 			return nil
 		}
@@ -146,8 +129,8 @@ type textSection struct {
 	size     uint32
 }
 
-func (selector *textSelector) visit(structure bodyStructure, part []int, depth int) error {
-	if depth > selector.limits.MaxMIMEDepth || selector.plain != nil {
+func (selector *textSelector) visit(structure bodyStructure, part []int) error {
+	if len(part) > selector.limits.MaxMIMEDepth || selector.plain != nil {
 		return nil
 	}
 
@@ -166,7 +149,7 @@ func (selector *textSelector) visit(structure bodyStructure, part []int, depth i
 		}
 		selector.parts++
 
-		if err := selector.visit(child, append(slices.Clone(part), index+1), depth+1); err != nil {
+		if err := selector.visit(child, append(slices.Clone(part), index+1)); err != nil {
 			return err
 		}
 	}
@@ -262,14 +245,7 @@ func (adapter *Adapter) GetMessageHeaders(ctx context.Context, identifier string
 
 	var result MessageHeaders
 	err = adapter.execute(ctx, func(operationContext context.Context, session bridgeSession) error {
-		snapshot, err := session.Examine(operationContext, payload.Mailbox)
-		if err != nil {
-			return err
-		}
-		if snapshot.UIDValidity != payload.UIDValidity {
-			return errorCode(CodeStaleMessageID)
-		}
-		if err := requireMessageUID(operationContext, session, payload.UID); err != nil {
+		if err := payload.checkUID(operationContext, session); err != nil {
 			return err
 		}
 
@@ -279,10 +255,7 @@ func (adapter *Adapter) GetMessageHeaders(ctx context.Context, identifier string
 		}
 
 		result = record
-		result.Metadata.ID = identifier
-		result.Metadata.Mailbox = payload.Mailbox
-		result.Metadata.UIDValidity = payload.UIDValidity
-		result.Metadata.UID = payload.UID
+		result.Metadata.setIdentity(identifier, payload)
 		return nil
 	})
 	if err != nil {
@@ -290,6 +263,18 @@ func (adapter *Adapter) GetMessageHeaders(ctx context.Context, identifier string
 	}
 
 	return result, nil
+}
+
+func (payload messageIDPayload) checkUID(ctx context.Context, session bridgeSession) error {
+	snapshot, err := session.Examine(ctx, payload.Mailbox)
+	if err != nil {
+		return err
+	}
+	if snapshot.UIDValidity != payload.UIDValidity {
+		return errorCode(CodeStaleMessageID)
+	}
+
+	return requireMessageUID(ctx, session, payload.UID)
 }
 
 func requireMessageUID(ctx context.Context, session bridgeSession, uid uint32) error {

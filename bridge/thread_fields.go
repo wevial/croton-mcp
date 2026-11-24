@@ -1,8 +1,6 @@
 package bridge
 
-import (
-	"bytes"
-)
+import "bytes"
 
 // threadFieldNames are the only fields retained independently of the generic
 // header count bound, in their fixed slot order.
@@ -23,14 +21,7 @@ func threadFieldBlock(header []byte) []byte {
 	var slots [len(threadFieldNames)][]byte
 	terminator := []byte("\r\n")
 	current := -1
-	for lineStart := 0; lineStart < len(header); {
-		lineLength := bytes.IndexByte(header[lineStart:], '\n')
-		nextLineStart := len(header)
-		if lineLength >= 0 {
-			nextLineStart = lineStart + lineLength + 1
-		}
-
-		raw := header[lineStart:nextLineStart]
+	for raw := range bytes.Lines(header) {
 		line := bytes.TrimSuffix(bytes.TrimSuffix(raw, []byte{'\n'}), []byte{'\r'})
 		if len(line) == 0 {
 			terminator = raw
@@ -46,8 +37,6 @@ func threadFieldBlock(header []byte) []byte {
 		if current >= 0 {
 			slots[current] = append(slots[current], raw...)
 		}
-
-		lineStart = nextLineStart
 	}
 
 	return append(bytes.Join(slots[:], nil), terminator...)
@@ -64,32 +53,11 @@ func threadFieldSlot(line []byte) int {
 	}
 
 	for slot, candidate := range threadFieldNames {
-		if asciiEqualFold(name, candidate) {
+		// Equal byte lengths rule out multibyte folds onto an ASCII name.
+		if len(name) == len(candidate) && bytes.EqualFold(name, candidate) {
 			return slot
 		}
 	}
 
 	return -1
-}
-
-func asciiEqualFold(left, right []byte) bool {
-	if len(left) != len(right) {
-		return false
-	}
-
-	for index := range left {
-		if asciiLower(left[index]) != asciiLower(right[index]) {
-			return false
-		}
-	}
-
-	return true
-}
-
-func asciiLower(value byte) byte {
-	if 'A' <= value && value <= 'Z' {
-		return value + 'a' - 'A'
-	}
-
-	return value
 }

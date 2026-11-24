@@ -12,29 +12,23 @@ import (
 type boundedSearchSession struct {
 	bridgeSession
 	examineCalls int
+	snapshot     mailboxSnapshot
+	uids         []uint32
 	metadata     []MessageMetadata
 }
 
 func (session *boundedSearchSession) Examine(context.Context, string) (mailboxSnapshot, error) {
 	session.examineCalls++
-	return mailboxSnapshot{UIDNext: 2, UIDValidity: 9001}, nil
+	return session.snapshot, nil
 }
 func (session *boundedSearchSession) UIDSearchWindow(context.Context, SearchQuery, uidWindow, int) ([]uint32, error) {
-	return []uint32{1}, nil
+	return session.uids, nil
 }
 func (session *boundedSearchSession) UIDFetchMetadata(context.Context, string, []uint32, int) ([]MessageMetadata, error) {
 	return session.metadata, nil
 }
 func (session *boundedSearchSession) Logout(context.Context) error { return nil }
 func (session *boundedSearchSession) Abort() error                 { return nil }
-
-type emptySearchSession struct {
-	boundedSearchSession
-}
-
-func (*emptySearchSession) UIDSearchWindow(context.Context, SearchQuery, uidWindow, int) ([]uint32, error) {
-	return []uint32{}, nil
-}
 
 func newBoundedSearchAdapter(session bridgeSession, maxOutputBytes int) *Adapter {
 	adapter := &Adapter{
@@ -110,7 +104,7 @@ func TestEncodeMessageIDRejectsSemanticallyInvalidPayload(t *testing.T) {
 func TestSearchMailEmptyResultsRespectExactOutputBudget(t *testing.T) {
 	for _, maxOutputBytes := range []int{2, 3} {
 		t.Run(string(rune('0'+maxOutputBytes)), func(t *testing.T) {
-			adapter := newBoundedSearchAdapter(&emptySearchSession{}, maxOutputBytes)
+			adapter := newBoundedSearchAdapter(&boundedSearchSession{snapshot: mailboxSnapshot{UIDNext: 2, UIDValidity: 9001}}, maxOutputBytes)
 			page, err := adapter.SearchMailPage(context.Background(), SearchQuery{Mailbox: "INBOX"})
 			results := page.Messages
 			if err != nil {
@@ -131,7 +125,11 @@ func TestSearchMailEmptyResultsRespectExactOutputBudget(t *testing.T) {
 }
 
 func TestSearchMailRejectsAggregateOutputBeyondConfiguredBudget(t *testing.T) {
-	session := &boundedSearchSession{metadata: []MessageMetadata{{Subject: strings.Repeat("s", 64), uid: 1}}}
+	session := &boundedSearchSession{
+		snapshot: mailboxSnapshot{UIDNext: 2, UIDValidity: 9001},
+		uids:     []uint32{1},
+		metadata: []MessageMetadata{{Subject: strings.Repeat("s", 64), uid: 1}},
+	}
 	adapter := newBoundedSearchAdapter(session, 32)
 	page, err := adapter.SearchMailPage(context.Background(), SearchQuery{Mailbox: "INBOX"})
 	results := page.Messages

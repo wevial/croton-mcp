@@ -73,21 +73,9 @@ func requireDescendingUIDs(t *testing.T, adapter *Adapter, page SearchPage, uidV
 		t.Fatalf("page has %d messages, want %d", len(page.Messages), len(want))
 	}
 	for index, message := range page.Messages {
-		if message.UID != want[index] {
-			t.Fatalf("message %d UID = %d, want %d", index, message.UID, want[index])
-		}
-		if index > 0 && message.UID >= page.Messages[index-1].UID {
-			t.Fatalf("message %d UID %d does not descend from %d", index, message.UID, page.Messages[index-1].UID)
-		}
-		payload, err := adapter.decodeMessageID(message.ID)
-		if err != nil {
-			t.Fatalf("decode message %d ID: %v", index, err)
-		}
-		if payload != (messageIDPayload{Mailbox: "INBOX", UIDValidity: uidValidity, UID: message.UID}) {
-			t.Fatalf("message %d ID binds %#v, want UID %d", index, payload, message.UID)
-		}
-		if message.uid != message.UID || message.Mailbox != "INBOX" || message.UIDValidity != uidValidity {
-			t.Fatalf("message %d tuple = (%q, %d, %d/%d)", index, message.Mailbox, message.UIDValidity, message.UID, message.uid)
+		requireBoundIdentity(t, adapter, message, messageIDPayload{Mailbox: "INBOX", UIDValidity: uidValidity, UID: want[index]})
+		if message.uid != message.UID {
+			t.Fatalf("message %d fetched UID = %d, want %d", index, message.uid, message.UID)
 		}
 		if message.Subject != syntheticOrderSubject(message.UID) || message.Size != int64(message.UID) {
 			t.Fatalf("message %d fields %q/%d belong to another UID than %d", index, message.Subject, message.Size, message.UID)
@@ -172,6 +160,7 @@ func TestSearchOrderAdapter(t *testing.T) {
 			{name: "empty_membership", uidNext: 101, budget: 50, wantCount: 0, wantTruncated: false, wantSearches: 1},
 			{name: "exactly_complete_bottom_window", uidNext: 101, members: uidRange(51, 100), budget: 50, wantCount: 50, wantTruncated: false, wantSearches: 1},
 			{name: "omitted_within_bottom_window", uidNext: 101, members: uidRange(50, 100), budget: 50, wantCount: 50, wantTruncated: true, wantSearches: 1},
+			{name: "budget_met_with_one_unsearched_uid", uidNext: searchWindowWidth + 2, members: []uint32{2}, budget: 1, wantCount: 1, wantTruncated: true, wantSearches: 1},
 			{name: "unsearched_older_range", uidNext: 1001, members: sparse, budget: 250, wantCount: 8, wantTruncated: true, wantSearches: maxSearchWindows},
 			{name: "dense_hard_budget", uidNext: 1001, members: uidRange(1, 1000), budget: hardMaxSearchResults, wantCount: hardMaxSearchResults, wantTruncated: true, wantSearches: 3},
 		} {
@@ -216,7 +205,7 @@ func TestSearchOrderAdapter(t *testing.T) {
 			{name: "zero_uid", members: []uint32{0, 100}, want: CodeIMAPProtocol},
 		} {
 			t.Run(test.name, func(t *testing.T) {
-				session := &searchPageSession{snapshot: mailboxSnapshot{UIDNext: 101, UIDValidity: 9001}, uids: test.members}
+				session := &boundedSearchSession{snapshot: mailboxSnapshot{UIDNext: 101, UIDValidity: 9001}, uids: test.members}
 				adapter := newBoundedSearchAdapter(session, defaultMaxOutputBytes)
 
 				page, err := adapter.SearchMailPage(context.Background(), SearchQuery{Mailbox: "INBOX"})

@@ -42,10 +42,7 @@ func (adapter *Adapter) SetSeen(ctx context.Context, mailbox string, uidValidity
 		return nil, err
 	}
 
-	results := make([]TriageResult, len(uids))
-	for index, uid := range uids {
-		results[index] = TriageResult{UID: uid, Outcome: OutcomeNotAttempted}
-	}
+	results := pendingResults(uids)
 
 	for index, uid := range uids {
 		result, stop := adapter.storeSeen(ctx, session, uid, seen)
@@ -66,15 +63,12 @@ func validateTriageRequest(mailbox string, uidValidity uint32, uids []uint32) er
 		return errorCode(CodeBoundsExceeded)
 	}
 
-	seen := make(map[uint32]struct{}, len(uids))
+	seen := make(map[uint32]bool, len(uids))
 	for _, uid := range uids {
-		if uid == 0 {
+		if uid == 0 || seen[uid] {
 			return errorCode(CodeInvalidRequest)
 		}
-		if _, duplicate := seen[uid]; duplicate {
-			return errorCode(CodeInvalidRequest)
-		}
-		seen[uid] = struct{}{}
+		seen[uid] = true
 	}
 
 	return nil
@@ -135,10 +129,7 @@ func (adapter *Adapter) storeSeen(ctx context.Context, session bridgeSession, ui
 			return TriageResult{UID: uid, Outcome: OutcomeRefused, Code: CodeMessageNotFound}, false
 		}
 
-		// Nothing was dispatched for this UID, but the session is no longer
-		// trustworthy, so no later UID is attempted either.
-		adapter.invalidate(session)
-		return TriageResult{UID: uid, Outcome: OutcomeNotAttempted, Code: CodeOf(mapIMAPError(operationContext, err))}, true
+		return adapter.abandonUID(operationContext, session, uid, err), true
 	}
 
 	err := session.StoreSeen(operationContext, uid, seen)
