@@ -24,8 +24,6 @@ import (
 	"golang.org/x/oauth2"
 )
 
-const setupOrigin = "https://croton.tail.test"
-
 // Croton prompts on /dev/tty. Give each invocation its own controlling
 // terminal on both supported platforms. Keep its output in the test process.
 func setupTerminal(ctx context.Context, binary, input string, args ...string) *exec.Cmd {
@@ -82,10 +80,10 @@ func TestRemoteConnectorSetup(t *testing.T) {
 	}
 	path := func(endpoint string) string {
 		t.Helper()
-		if !strings.HasPrefix(endpoint, setupOrigin+"/") {
+		if !strings.HasPrefix(endpoint, p.origin+"/") {
 			t.Fatal("discovered endpoint outside the approved HTTPS origin")
 		}
-		return strings.TrimPrefix(endpoint, setupOrigin)
+		return strings.TrimPrefix(endpoint, p.origin)
 	}
 	field := func(body []byte, pattern string) string {
 		t.Helper()
@@ -103,7 +101,7 @@ func TestRemoteConnectorSetup(t *testing.T) {
 		Resource string
 		Issuers  []string `json:"authorization_servers"`
 	}
-	if json.Unmarshal(body, &resource) != nil || resource.Resource != setupOrigin+"/mcp" || len(resource.Issuers) != 1 || resource.Issuers[0] != setupOrigin {
+	if json.Unmarshal(body, &resource) != nil || resource.Resource != p.origin+"/mcp" || len(resource.Issuers) != 1 || resource.Issuers[0] != p.origin {
 		t.Fatal("invalid protected resource metadata")
 	}
 
@@ -119,7 +117,7 @@ func TestRemoteConnectorSetup(t *testing.T) {
 	}
 
 	link, err := url.Parse(terminal("pair", ""))
-	if err != nil || link.Scheme+"://"+link.Host != setupOrigin || link.Fragment == "" {
+	if err != nil || link.Scheme+"://"+link.Host != p.origin || link.Fragment == "" {
 		t.Fatal("invalid terminal handoff")
 	}
 	p.request(t, "GET", link.Path, "", "", http.StatusOK)
@@ -127,7 +125,7 @@ func TestRemoteConnectorSetup(t *testing.T) {
 	owner := field(body, `data-owner="([^"]+)"`)
 
 	_, body = p.request(t, "POST", path(metadata.Register), "application/json",
-		`{"client_name":"setup.test","redirect_uris":["https://client.test/callback"],"grant_types":["authorization_code","refresh_token"]}`, http.StatusCreated)
+		`{"client_name":"setup.test","redirect_uris":["`+clientRedirect+`"],"grant_types":["authorization_code","refresh_token"]}`, http.StatusCreated)
 	var client approvedClient
 	if json.Unmarshal(body, &client) != nil || client.ID == "" {
 		t.Fatal("client registration failed")
@@ -139,11 +137,11 @@ func TestRemoteConnectorSetup(t *testing.T) {
 		"resource": {resource.Resource}, "state": {"setup.test"},
 	}
 	_, body = p.request(t, "GET", path(metadata.Authorize)+"?"+authorize.Encode(), "", "", http.StatusOK)
-	signin := url.Values{"owner": {owner}, "request": {field(body, `name="request" value="([^"]+)"`)}}
-	_, body = p.request(t, "POST", "/owner/signin", clientForm, signin.Encode(), http.StatusOK)
+	signin := url.Values{"owner": {owner}, "request": {field(body, `name="request" value="([^"]+)"`)}}.Encode()
+	_, body = p.request(t, "POST", "/owner/signin", clientForm, signin, http.StatusOK)
 	terminal("approve", field(body, `<strong>([^<]+)</strong>`)+"\n")
 
-	headers, _ = p.request(t, "POST", "/owner/finish", clientForm, signin.Encode(), http.StatusSeeOther)
+	headers, _ = p.request(t, "POST", "/owner/finish", clientForm, signin, http.StatusSeeOther)
 	callback, err := url.Parse(headers.Get("Location"))
 	if err != nil || callback.Scheme+"://"+callback.Host+callback.Path != clientRedirect ||
 		callback.Query().Get("state") != authorize.Get("state") || callback.Query().Get("iss") != metadata.Issuer {
@@ -192,6 +190,7 @@ func TestRemoteConnectorSetup(t *testing.T) {
 
 func setupProxyClient(t *testing.T, targetURL string) *httpProcess {
 	t.Helper()
+	const host = "croton.tail.test"
 
 	// Model the approved host's TLS termination entirely on loopback. Preserve
 	// the external Host and Origin, including for the browser's secure cookie.
@@ -205,7 +204,7 @@ func setupProxyClient(t *testing.T, targetURL string) *httpProcess {
 	transport := proxy.Client().Transport.(*http.Transport).Clone()
 	transport.TLSClientConfig.ServerName = "127.0.0.1"
 	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-		if address != "croton.tail.test:443" {
+		if address != host+":443" {
 			return nil, errors.New("unexpected connector destination")
 		}
 		return (&net.Dialer{}).DialContext(ctx, network, proxy.Listener.Addr().String())
@@ -213,7 +212,7 @@ func setupProxyClient(t *testing.T, targetURL string) *httpProcess {
 	t.Cleanup(transport.CloseIdleConnections)
 
 	jar, _ := cookiejar.New(nil)
-	return &httpProcess{origin: setupOrigin, client: &http.Client{
+	return &httpProcess{origin: "https://" + host, client: &http.Client{
 		Transport: transport, Jar: jar, Timeout: 5 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}
