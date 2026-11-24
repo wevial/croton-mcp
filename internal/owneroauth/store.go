@@ -202,7 +202,7 @@ func (a *Authority) redeem(code, client, redirect, resource, verifier string) (t
 		if err := codes.Delete(key); err != nil {
 			return err
 		}
-		if g.Refresh {
+		if g.Refresh && a.supportedGrantTypes().Has("refresh_token") {
 			families := tx.Bucket([]byte("families"))
 			if families == nil {
 				return errState

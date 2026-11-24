@@ -174,7 +174,7 @@ func (a *Authority) route(w http.ResponseWriter, r *http.Request) error {
 			RegistrationEndpoint:              a.issuer + "/register",
 			TokenEndpoint:                     a.issuer + "/token",
 			ResponseTypesSupported:            []string{"code"},
-			GrantTypesSupported:               supportedGrantTypes,
+			GrantTypesSupported:               a.supportedGrantTypes(),
 			TokenEndpointAuthMethodsSupported: []string{"none"},
 			CodeChallengeMethodsSupported:     []string{"S256"},
 			RFC9207AuthorizationServerIssuerIdentificationMetadata: &oauth2.RFC9207AuthorizationServerIssuerIdentificationMetadata{
@@ -264,6 +264,10 @@ func (a *Authority) route(w http.ResponseWriter, r *http.Request) error {
 			w.WriteHeader(http.StatusSeeOther)
 		}
 	case "POST /token":
+		if r.TLS == nil && strings.HasPrefix(a.issuer, "https://") {
+			return errDenied
+		}
+
 		form, err := readForm(w, r)
 		if err != nil {
 			return err

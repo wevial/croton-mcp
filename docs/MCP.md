@@ -59,16 +59,19 @@ IP. The Bridge connection uses the TLS pin or anchor in the Croton configuration
    from terminal approval to collect and exchange the code with the original redirect,
    resource and PKCE verifier. If the exchange returns `500 server_error`, the
    client can retry the same code before it expires. The bearer grants ten
-   minutes of access to the six read tools. The exchange also returns an opaque
-   refresh token unless the client registered for `authorization_code` only.
+   minutes of access to the six read tools. Omitting `grant_types` registers
+   the client for `authorization_code` only. To receive an opaque refresh
+   token, use the HTTPS listener and explicitly register for both
+   `authorization_code` and `refresh_token`.
 
-After bearer expiry, the client can POST a URL-encoded form to `/token` with the
-pairing window closed. Send `grant_type=refresh_token`, the original `client_id`
-and the latest `refresh_token`. Omit `resource` or send the exact approved
-`/mcp` URL. Read permissions stay the same. Send one request at a time and
-replace both tokens on success. Reusing a consumed refresh token revokes the
-family, including its current bearer and refresh token. Pair again after
-revocation or idle expiry.
+After bearer expiry, the client can POST a URL-encoded form to the same HTTPS
+`/token` endpoint with the pairing window closed. Send `grant_type=refresh_token`,
+the original `client_id` and the latest `refresh_token`. Omit `resource` or send
+the exact approved `/mcp` URL. Read permissions stay the same. Send one request
+at a time and replace both tokens on success. Reusing a consumed refresh token
+revokes the family, including its current bearer and refresh token. Pair again
+after revocation or idle expiry. Clients previously issued a refresh token over
+HTTP must pair again over HTTPS to renew access.
 
 Each rotation restarts the 30-day idle timeout. To change it, set
 `CROTON_REFRESH_IDLE_TIMEOUT` to a positive Go duration when starting the

@@ -63,6 +63,10 @@ type refreshTx struct {
 }
 
 func (a *Authority) refresh(ctx context.Context, form url.Values) (tokenPair, error) {
+	if !a.supportedGrantTypes().Has("refresh_token") {
+		return tokenPair{}, errDenied
+	}
+
 	client, resource := form.Get("client_id"), a.issuer+"/mcp"
 	if client == "" || form.Get("refresh_token") == "" || (form.Has("resource") && form.Get("resource") != resource) {
 		return tokenPair{}, errDenied

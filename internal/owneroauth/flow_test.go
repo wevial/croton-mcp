@@ -238,7 +238,7 @@ func TestOwnerOAuthCodeRedirectAndPKCE(t *testing.T) {
 	}
 }
 
-func approveRequest(t *testing.T, a *Authority) (string, *authorization) {
+func approveRequest(t *testing.T, a *Authority, grants ...string) (string, *authorization) {
 	t.Helper()
 	link := startWindow(t, a)
 	owner, err := a.claim(link.Fragment)
@@ -248,7 +248,7 @@ func approveRequest(t *testing.T, a *Authority) (string, *authorization) {
 	if _, err := a.claim(link.Fragment); err == nil {
 		t.Fatal("replayed handoff")
 	}
-	id := registerClient(t, a, registration{Name: "App\x1b[2J\n.test", Redirects: []string{nativeRedirect}})
+	id := registerClient(t, a, registration{Name: "App\x1b[2J\n.test", Redirects: []string{nativeRedirect}, Grants: grants})
 	q := authorizationQuery(id, "http://127.0.0.1:9876/callback?source=test")
 	req, err := a.authorize(q)
 	if err != nil {
@@ -299,10 +299,10 @@ func approveRequest(t *testing.T, a *Authority) (string, *authorization) {
 	return owner, req
 }
 
-func approvedGrant(t *testing.T, a *Authority) (string, *authorization) {
+func approvedGrant(t *testing.T, a *Authority, grants ...string) (string, *authorization) {
 	t.Helper()
 
-	owner, req := approveRequest(t, a)
+	owner, req := approveRequest(t, a, grants...)
 	return collectGrant(t, a, owner, req), req
 }
 
