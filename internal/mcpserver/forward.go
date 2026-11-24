@@ -295,7 +295,8 @@ func (store *ForwardPreviews) approval(cfg bridge.ForwardConfig, request *mcp.Ca
 	if caps == nil || caps.Elicitation == nil {
 		return nil, errorResult(errUnsupported)
 	}
-	legacyForm := request.ProtocolVersion() == "2025-06-18" && caps.Elicitation.URL == nil
+	version := request.ProtocolVersion()
+	legacyForm := (version == "2025-06-18" || version == "2025-11-25") && caps.Elicitation.URL == nil
 	if caps.Elicitation.Form == nil && !legacyForm {
 		return nil, errorResult(errUnsupported)
 	}

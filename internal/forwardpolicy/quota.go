@@ -145,25 +145,71 @@ func update(dir string, create bool, write func(*bolt.Tx) error) error {
 		return err
 	}
 
+	// Keep other reservers out between closing the checked snapshot and
+	// acquiring bbolt's writable lock, including across processes.
+	lock, err := lockDirectory(dir)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+
+	path := filepath.Join(dir, "quota.db")
+	flags := os.O_RDWR
+	if create {
+		flags |= os.O_CREATE | os.O_EXCL
+	} else if err := quotaTransaction(path, os.O_RDONLY, checkStructure); err != nil {
+		return err
+	}
+
+	return quotaTransaction(path, flags, write)
+}
+
+func checkStructure(tx *bolt.Tx) error {
+	var err error
+	// Check reports inconsistencies and recovered checker panics on its
+	// channel. Drain it before the transaction releases the mapping.
+	for range tx.Check() {
+		err = ErrUnavailable
+	}
+	return err
+}
+
+func quotaTransaction(path string, flags int, run func(*bolt.Tx) error) (err error) {
 	var file *os.File
-	db, err := bolt.Open(filepath.Join(dir, "quota.db"), 0600, &bolt.Options{
-		Timeout: 5 * time.Second,
+	var db *bolt.DB
+	defer func() {
+		if recover() != nil {
+			err = ErrUnavailable
+		}
+		if db != nil {
+			if db.Close() != nil {
+				err = ErrUnavailable
+			}
+		} else if file != nil {
+			// Open can panic after it acquires the file lock.
+			_ = file.Close()
+		}
+	}()
+
+	readOnly := flags == os.O_RDONLY
+	db, err = bolt.Open(path, 0600, &bolt.Options{
+		Timeout:  5 * time.Second,
+		ReadOnly: readOnly,
 		OpenFile: func(path string, _ int, _ os.FileMode) (*os.File, error) {
-			var err error
-			file, err = openFile(path, create)
+			file, err = openFile(path, flags)
 			return file, err
 		},
 	})
-	if err != nil {
+	if err != nil || !validMetaPages(file, db.Info().PageSize) {
 		return ErrUnavailable
 	}
 
-	// Check both snapshots under the exclusive lock before an update can hide a fallback.
-	err = ErrUnavailable
-	if validMetaPages(file, db.Info().PageSize) {
-		err = db.Update(write)
+	if readOnly {
+		err = db.View(run)
+	} else {
+		err = db.Update(run)
 	}
-	if closeErr := db.Close(); closeErr != nil || (err != nil && err != ErrLimit) {
+	if err != nil && err != ErrLimit {
 		return ErrUnavailable
 	}
 	return err
@@ -173,6 +219,11 @@ func update(dir string, create bool, write func(*bolt.Tx) error) error {
 // of metadata and their FNV-1a checksum. Ordinary Open only needs one
 // valid snapshot. Quota accounting needs both consecutive commits intact.
 func validMetaPages(file *os.File, pageSize int) bool {
+	info, err := file.Stat()
+	if err != nil || pageSize <= 0 {
+		return false
+	}
+	pages := uint64(info.Size() / int64(pageSize))
 	var ids [2]uint64
 	for i := range ids {
 		var page [80]byte
@@ -186,7 +237,7 @@ func validMetaPages(file *os.File, pageSize int) bool {
 		_, _ = checksum.Write(page[16:72])
 		if order.Uint64(page[:8]) != uint64(i) || order.Uint16(page[8:10]) != 4 ||
 			order.Uint32(page[16:20]) != 0xed0cdaed || order.Uint32(page[20:24]) != 2 ||
-			order.Uint32(page[24:28]) != uint32(pageSize) || ids[i]%2 != uint64(i) ||
+			order.Uint32(page[24:28]) != uint32(pageSize) || order.Uint64(page[56:64]) > pages || ids[i]%2 != uint64(i) ||
 			order.Uint64(page[72:]) != checksum.Sum64() {
 			return false
 		}

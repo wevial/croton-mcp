@@ -14,11 +14,59 @@
 package stdioframe
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+func TestOrdinaryToolInvalidParamsKeepsSessionOpen(t *testing.T) {
+	local, remote := net.Pipe()
+	server := mcp.NewServer(&mcp.Implementation{Name: "fixture", Version: "1"}, nil)
+	session, err := server.Connect(t.Context(), NewTransport(local, local), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	defer remote.Close()
+	if err := remote.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	const meta = `"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}`
+	decoder := json.NewDecoder(remote)
+	type response struct {
+		ID     int
+		Error  *jsonrpc.Error
+		Result json.RawMessage
+	}
+	call := func(frame string) response {
+		t.Helper()
+		if _, err := io.WriteString(remote, frame+"\n"); err != nil {
+			t.Fatal(err)
+		}
+		var reply response
+		if err := decoder.Decode(&reply); err != nil {
+			t.Fatal(err)
+		}
+		return reply
+	}
+
+	bad := call(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_folders","inputResponses":false,` + meta + `}}`)
+	if bad.ID != 1 || bad.Error == nil || bad.Error.Code != jsonrpc.CodeInvalidParams {
+		t.Fatalf("expected invalid-params response, got %+v", bad)
+	}
+	list := call(`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{` + meta + `}}`)
+	if list.ID != 2 || list.Error != nil || len(list.Result) == 0 {
+		t.Fatalf("expected tool list on same session, got %+v", list)
+	}
+}
 
 func TestBoundedFrameReaderPassesBoundedNDJSON(t *testing.T) {
 	t.Parallel()

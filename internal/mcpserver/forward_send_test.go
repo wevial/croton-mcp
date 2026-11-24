@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -451,7 +452,7 @@ func TestForwardSend(t *testing.T) {
 				}
 			})
 		})
-		for _, damage := range []string{"latest metadata", "login key", "timestamp"} {
+		for _, damage := range []string{"latest metadata", "login key", "timestamp", "freelist type", "short freelist"} {
 			t.Run(damage+" damaged", func(t *testing.T) {
 				p := newSMTPPeer(t, "", "")
 				for range 10 {
@@ -464,10 +465,25 @@ func TestForwardSend(t *testing.T) {
 				db, err := bolt.Open(path, 0600, &bolt.Options{ReadOnly: true})
 				requireForwardSetup(t, err)
 				pageSize := db.Info().PageSize
-				var offset int
 				err = db.View(func(tx *bolt.Tx) error {
-					if damage == "latest metadata" {
-						offset = (tx.ID()%2)*pageSize + 72 // v2 metadata checksum
+					meta := (tx.ID() % 2) * pageSize
+					switch damage {
+					case "latest metadata":
+						data[meta+72] ^= 1 // v2 metadata checksum
+						return nil
+					case "freelist type", "short freelist":
+						page := int(binary.NativeEndian.Uint64(data[meta+48:])) * pageSize
+						flags := data[page+8 : page+10]
+						count := data[page+10 : page+12]
+						n := binary.NativeEndian.Uint16(count)
+						if binary.NativeEndian.Uint16(flags) != 0x10 || n == 0 || n == 0xffff {
+							return fmt.Errorf("expected a nonempty short-format freelist")
+						}
+						if damage == "freelist type" {
+							binary.NativeEndian.PutUint16(flags, 0)
+						} else {
+							binary.NativeEndian.PutUint16(count, n-1)
+						}
 						return nil
 					}
 
@@ -481,25 +497,27 @@ func TestForwardSend(t *testing.T) {
 					if len(stamps) != 10*8 || bytes.Count(pages, entry) != 1 {
 						return fmt.Errorf("could not identify the full reservation record")
 					}
-					offset = 2*pageSize + bytes.Index(pages, entry)
+					offset := 2*pageSize + bytes.Index(pages, entry)
 					if damage == "timestamp" {
 						offset += len(key)
 					}
+					data[offset] ^= 1
 					return nil
 				})
 				requireForwardSetup(t, db.Close())
 				requireForwardSetup(t, err)
 
-				file, err := os.OpenFile(path, os.O_WRONLY, 0)
-				requireForwardSetup(t, err)
-				_, err = file.WriteAt([]byte{data[offset] ^ 1}, int64(offset))
-				requireForwardSetup(t, file.Close())
-				requireForwardSetup(t, err)
+				requireForwardSetup(t, os.WriteFile(path, data, 0600))
 
 				req := confirmation(t, f, p.config, f.prepare(t, false))
 				requireToolError(t, f.store.send(t.Context(), p.config, req, nil), errUnavailable)
 				if p.connections.Load() != 0 {
 					t.Fatal("damaged quota state opened SMTP")
+				}
+				after, err := os.ReadFile(path)
+				requireForwardSetup(t, err)
+				if !bytes.Equal(after, data) {
+					t.Fatal("refusal modified the damaged quota database")
 				}
 			})
 		}
@@ -686,12 +704,17 @@ func TestForwardSend(t *testing.T) {
 				t.Cleanup(func() { ss.Close() })
 
 				var forms atomic.Int32
-				client := mcp.NewClient(&mcp.Implementation{Name: "synthetic", Version: "1"}, &mcp.ClientOptions{
+				opts := &mcp.ClientOptions{
 					ElicitationHandler: func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
 						forms.Add(1)
 						return &mcp.ElicitResult{Action: "accept", Content: map[string]any{"confirm": true}}, nil
 					},
-				})
+				}
+				if tc.version == "2025-11-25" || tc.version == "2025-06-18" {
+					// Advertise elicitation: {} on the wire for both legacy protocols.
+					opts.Capabilities = &mcp.ClientCapabilities{Elicitation: &mcp.ElicitationCapabilities{}}
+				}
+				client := mcp.NewClient(&mcp.Implementation{Name: "synthetic", Version: "1"}, opts)
 				cs, err := client.Connect(t.Context(), &mcp.IOTransport{Reader: remote, Writer: remote}, &mcp.ClientSessionOptions{ProtocolVersion: tc.version})
 				requireForwardSetup(t, err)
 				t.Cleanup(func() { cs.Close() })

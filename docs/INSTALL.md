@@ -318,9 +318,10 @@ Every reservation counts toward the limit of ten in a rolling 24 hours, even
 if SMTP fails or the outcome is uncertain. A full quota returns `quota_reached`
 before connecting to SMTP. Declining the form uses no slot.
 If existing state is missing or damaged, sending stops. Restore the current
-state before resuming. Croton checks both bbolt metadata pages and verifies
-a checksum covering every stored account key and its reservation timestamps
-before reserving another slot. Quota files from pre-release builds that lack
+state before resuming. Before each reservation, Croton checks both bbolt
+metadata pages and runs a full read-only consistency check, including the
+freelist. It also verifies the checksum covering every stored account key
+and its reservation timestamps. Quota files from pre-release builds that lack
 this checksum also block sending.
 
 Use compact JSON for each `send_forward` request. Each JSON-RPC `id` may use
@@ -341,6 +342,8 @@ recipient, subject, body and omissions, and obtain explicit approval for
 this call in the same turn. Leave auto-approval off. The server checks
 preview equality and requires a form response of `accept` with
 `{"confirm": true}`. Only the trusted client can establish human consent.
+Clients using MCP `2025-06-18` or `2025-11-25` can advertise form support
+with an empty `elicitation` capability.
 
 The result's `outcome` is `accepted` when Bridge acknowledges the message,
 `not_submitted` when submission stops before the message body, or `unknown`

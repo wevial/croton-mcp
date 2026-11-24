@@ -93,20 +93,24 @@ func (c stdioConnection) Read(ctx context.Context) (jsonrpc.Message, error) {
 		return msg, nil
 	}
 
+	var tool struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(req.Params, &tool, jsontext.AllowInvalidUTF8(true)); err != nil ||
+		(tool.Name != "send_forward" && tool.Name != "prepare_forward") {
+		return msg, nil
+	}
+
 	// Params still contains the original JSON here. Tool handlers receive
 	// _meta as a map, which loses number spellings, whitespace and escapes.
 	var params struct {
-		Name           string                    `json:"name"`
 		Meta           jsontext.Value            `json:"_meta"`
 		InputResponses map[string]jsontext.Value `json:"inputResponses"`
 	}
 	if err := json.Unmarshal(req.Params, &params, jsontext.AllowInvalidUTF8(true)); err != nil {
 		return nil, errStdioFrameInvalid
 	}
-	if params.Name != "send_forward" && params.Name != "prepare_forward" {
-		return msg, nil
-	}
-	if params.Name == "send_forward" {
+	if tool.Name == "send_forward" {
 		for _, form := range params.InputResponses {
 			if !canonicalFormFields(form) {
 				return nil, errStdioFrameInvalid

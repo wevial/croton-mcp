@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -33,19 +34,34 @@ func checkDirectory(path string, private bool) error {
 	return checkACL(path, info)
 }
 
-func openFile(path string, create bool) (*os.File, error) {
-	flags := os.O_RDWR | unix.O_NOFOLLOW | unix.O_NONBLOCK
-	if create {
-		flags |= os.O_CREATE | os.O_EXCL
+func lockDirectory(dir string) (*os.File, error) {
+	f, err := os.OpenFile(dir, os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, ErrUnavailable
 	}
 
-	f, err := os.OpenFile(path, flags, 0600)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			return f, nil
+		}
+		if err != unix.EWOULDBLOCK || !time.Now().Before(deadline) {
+			_ = f.Close()
+			return nil, ErrUnavailable
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func openFile(path string, flags int) (*os.File, error) {
+	f, err := os.OpenFile(path, flags|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0600)
 	if err != nil {
 		return nil, ErrUnavailable
 	}
 
 	info, err := f.Stat()
-	if err == nil && info.Mode().IsRegular() && info.Mode().Perm() == 0600 && (create || info.Size() > 0) {
+	if err == nil && info.Mode().IsRegular() && info.Mode().Perm() == 0600 && (flags&os.O_EXCL != 0 || info.Size() > 0) {
 		stat := info.Sys().(*syscall.Stat_t)
 		if int(stat.Uid) == os.Geteuid() && stat.Nlink == 1 && checkACL(path, info) == nil {
 			return f, nil
