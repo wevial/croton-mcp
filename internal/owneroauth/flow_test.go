@@ -346,7 +346,7 @@ func TestOwnerOAuthCodeRedemption(t *testing.T) {
 	for range cap(results) {
 		wg.Go(func() {
 			if token, err := a.redeem(code, req.Client, req.Redirect, req.Resource, verifier); err == nil {
-				results <- token
+				results <- token.Access
 			}
 		})
 	}
@@ -612,7 +612,7 @@ func TestOwnerOAuthCodeConfiguredLifetimes(t *testing.T) {
 		t.Fatal(err)
 	}
 	now = now.Add(4 * time.Second)
-	if a.ValidBearer(token) {
+	if a.ValidBearer(token.Access) {
 		t.Fatal("configured access expiry")
 	}
 }

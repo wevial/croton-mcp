@@ -25,22 +25,24 @@ var (
 )
 
 type Settings struct {
-	PairingWindow   time.Duration
-	HandoffLifetime time.Duration
-	CodeLifetime    time.Duration
-	AccessLifetime  time.Duration
-	PendingLimit    int
-	Now             func() time.Time
+	PairingWindow      time.Duration
+	HandoffLifetime    time.Duration
+	CodeLifetime       time.Duration
+	AccessLifetime     time.Duration
+	RefreshIdleTimeout time.Duration
+	PendingLimit       int
+	Now                func() time.Time
 }
 
 func Defaults() Settings {
 	return Settings{
-		PairingWindow:   3 * time.Minute,
-		HandoffLifetime: 2 * time.Minute,
-		CodeLifetime:    time.Minute,
-		AccessLifetime:  10 * time.Minute,
-		PendingLimit:    8,
-		Now:             time.Now,
+		PairingWindow:      3 * time.Minute,
+		HandoffLifetime:    2 * time.Minute,
+		CodeLifetime:       time.Minute,
+		AccessLifetime:     10 * time.Minute,
+		RefreshIdleTimeout: 30 * 24 * time.Hour,
+		PendingLimit:       8,
+		Now:                time.Now,
 	}
 }
 
@@ -72,7 +74,15 @@ func DefaultDir() (string, error) {
 }
 
 func Open(dir, issuer string, settings Settings) (*Authority, error) {
-	if settings.Now == nil || settings.PendingLimit < 1 || settings.PairingWindow <= 0 || settings.HandoffLifetime <= 0 || settings.CodeLifetime <= 0 || settings.AccessLifetime < time.Second {
+	if value, ok := os.LookupEnv("CROTON_REFRESH_IDLE_TIMEOUT"); ok {
+		idle, err := time.ParseDuration(value)
+		if err != nil {
+			return nil, errState
+		}
+		settings.RefreshIdleTimeout = idle
+	}
+
+	if settings.Now == nil || settings.PendingLimit < 1 || settings.PairingWindow <= 0 || settings.HandoffLifetime <= 0 || settings.CodeLifetime <= 0 || settings.AccessLifetime < time.Second || settings.RefreshIdleTimeout <= 0 {
 		return nil, errState
 	}
 	if err := secureDir(dir, true); err != nil {
@@ -85,7 +95,7 @@ func Open(dir, issuer string, settings Settings) (*Authority, error) {
 	}
 
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, name := range []string{"codes", "access", "deliveries"} {
+		for _, name := range []string{"codes", "access", "deliveries", "families"} {
 			if _, err := tx.CreateBucketIfNotExists([]byte(name)); err != nil {
 				return err
 			}
@@ -115,6 +125,7 @@ func digest(s string) []byte {
 type grant struct {
 	Client, Redirect, Challenge, Resource string
 	Expires                               time.Time
+	Refresh                               bool
 }
 
 type access struct {
@@ -123,7 +134,10 @@ type access struct {
 }
 
 func put(tx *bolt.Tx, bucket, token string, value any) error {
-	b := tx.Bucket([]byte(bucket))
+	return putRecord(tx.Bucket([]byte(bucket)), digest(token), value)
+}
+
+func putRecord(b *bolt.Bucket, key []byte, value any) error {
 	if b == nil {
 		return errState
 	}
@@ -133,10 +147,10 @@ func put(tx *bolt.Tx, bucket, token string, value any) error {
 		return err
 	}
 
-	return b.Put(digest(token), data)
+	return b.Put(key, data)
 }
 
-// Only terminal-approved grants can grow the database, so prune on issuance.
+// Reclaim expired grants when the owner approves a new one.
 func prune(tx *bolt.Tx, now time.Time) error {
 	for _, name := range []string{"codes", "access", "deliveries"} {
 		b := tx.Bucket([]byte(name))
@@ -156,15 +170,15 @@ func prune(tx *bolt.Tx, now time.Time) error {
 			}
 		}
 	}
-	return nil
+	return pruneFamilies(tx, now)
 }
 
-func (a *Authority) redeem(code, client, redirect, resource, verifier string) (string, error) {
+func (a *Authority) redeem(code, client, redirect, resource, verifier string) (tokenPair, error) {
 	if !validVerifier.MatchString(verifier) || resource != a.issuer+"/mcp" {
-		return "", errDenied
+		return tokenPair{}, errDenied
 	}
 
-	token := secret()
+	pair := tokenPair{Access: secret()}
 	err := a.db.Update(func(tx *bolt.Tx) error {
 		codes := tx.Bucket([]byte("codes"))
 		if codes == nil {
@@ -188,16 +202,35 @@ func (a *Authority) redeem(code, client, redirect, resource, verifier string) (s
 		if err := codes.Delete(key); err != nil {
 			return err
 		}
-		return put(tx, "access", token, access{resource, now.Add(a.settings.AccessLifetime)})
+		if g.Refresh {
+			families := tx.Bucket([]byte("families"))
+			if families == nil {
+				return errState
+			}
+			family, err := families.CreateBucket(digest(client))
+			if err != nil {
+				return err
+			}
+			pair.Refresh = secret()
+			state := refreshFamily{
+				Resource: resource, Access: digest(pair.Access), Refresh: digest(pair.Refresh),
+				Expires: now.Add(a.settings.RefreshIdleTimeout),
+			}
+			if err := putRecord(family, []byte("current"), state); err != nil {
+				return err
+			}
+		}
+
+		return put(tx, "access", pair.Access, access{resource, now.Add(a.settings.AccessLifetime)})
 	})
 	if errors.Is(err, errDenied) {
-		return "", errDenied
+		return tokenPair{}, errDenied
 	}
 	if err != nil {
-		return "", errState
+		return tokenPair{}, errState
 	}
 
-	return token, nil
+	return pair, nil
 }
 
 func (a *Authority) ValidBearer(token string) bool {

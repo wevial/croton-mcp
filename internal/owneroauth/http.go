@@ -150,6 +150,8 @@ func (a *Authority) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, errState):
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+	case errors.Is(err, oauth2.ErrInvalidScope):
+		writeJSON(w, 400, map[string]string{"error": "invalid_scope"})
 	case errors.Is(err, errDenied) && r.URL.Path == "/token":
 		writeJSON(w, 400, map[string]string{"error": "invalid_grant"})
 	case errors.Is(err, errDenied):
@@ -172,7 +174,7 @@ func (a *Authority) route(w http.ResponseWriter, r *http.Request) error {
 			RegistrationEndpoint:              a.issuer + "/register",
 			TokenEndpoint:                     a.issuer + "/token",
 			ResponseTypesSupported:            []string{"code"},
-			GrantTypesSupported:               []string{"authorization_code"},
+			GrantTypesSupported:               []string{"authorization_code", "refresh_token"},
 			TokenEndpointAuthMethodsSupported: []string{"none"},
 			CodeChallengeMethodsSupported:     []string{"S256"},
 			RFC9207AuthorizationServerIssuerIdentificationMetadata: &oauth2.RFC9207AuthorizationServerIssuerIdentificationMetadata{
@@ -193,7 +195,7 @@ func (a *Authority) route(w http.ResponseWriter, r *http.Request) error {
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"client_id": id, "client_name": c.Name, "redirect_uris": c.Redirects,
 			"token_endpoint_auth_method": "none",
-			"grant_types":                []string{"authorization_code"}, "response_types": []string{"code"},
+			"grant_types":                c.grantTypes(), "response_types": []string{"code"},
 		})
 	case "GET /authorize":
 		q, err := parseValues(r.URL.RawQuery)
@@ -266,14 +268,25 @@ func (a *Authority) route(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return err
 		}
-		if form.Get("grant_type") != "authorization_code" || r.Header.Get("Authorization") != "" {
+		if r.Header.Get("Authorization") != "" {
 			return errInvalid
 		}
-		token, err := a.redeem(form.Get("code"), form.Get("client_id"), form.Get("redirect_uri"), form.Get("resource"), form.Get("code_verifier"))
+
+		var pair tokenPair
+		switch form.Get("grant_type") {
+		case "authorization_code":
+			pair, err = a.redeem(form.Get("code"), form.Get("client_id"), form.Get("redirect_uri"), form.Get("resource"), form.Get("code_verifier"))
+		case "refresh_token":
+			pair, err = a.refresh(r.Context(), form)
+		default:
+			return errInvalid
+		}
 		if err != nil {
 			return err
 		}
-		writeJSON(w, 200, map[string]any{"access_token": token, "token_type": "Bearer", "expires_in": int64(a.settings.AccessLifetime / time.Second)})
+		pair.Type = "Bearer"
+		pair.ExpiresIn = int64(a.settings.AccessLifetime / time.Second)
+		writeJSON(w, 200, pair)
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
