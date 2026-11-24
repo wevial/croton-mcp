@@ -46,6 +46,8 @@ type smtpDelivery struct {
 	from, to, message string
 }
 
+const holdFinalReply = "hold final reply"
+
 func requireForwardSetup(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
@@ -84,7 +86,7 @@ func newSMTPPeer(t *testing.T, mode, fault string) *smtpPeer {
 		Enabled: true, SMTPPort: listener.Addr().(*net.TCPAddr).Port, SMTPTLSMode: mode,
 		SMTPSPKISHA256: pin, StateDir: newQuotaTestDir(t),
 	}}
-	if fault == "hold final reply" {
+	if fault == holdFinalReply {
 		peer.finalReply = make(chan struct{})
 	}
 	if fault == "pin" {
@@ -262,6 +264,13 @@ func reserveConfirmed(dir, login string) error {
 	return forwardpolicy.Reserve(bridge.ForwardConfig{StateDir: dir}, login, forwardTo, true)
 }
 
+func plainForwardFixture(t *testing.T) *forwardFixture {
+	t.Helper()
+	f := newForwardFixture(t, bridge.BoundsPatch{})
+	f.set(plainStructure("Hello"), "1", "Hello")
+	return f
+}
+
 func TestForwardSend(t *testing.T) {
 	if len(os.Args) > 2 && os.Args[len(os.Args)-2] == "--check-forward-quota" {
 		if err := reserveConfirmed(os.Args[len(os.Args)-1], forwardLogin); err != forwardpolicy.ErrLimit {
@@ -269,15 +278,9 @@ func TestForwardSend(t *testing.T) {
 		}
 		return
 	}
-	plainFixture := func(t *testing.T) *forwardFixture {
-		t.Helper()
-		f := newForwardFixture(t, bridge.BoundsPatch{})
-		f.set(plainStructure("Hello"), "1", "Hello")
-		return f
-	}
 
 	t.Run("Binding", func(t *testing.T) {
-		f := plainFixture(t)
+		f := plainForwardFixture(t)
 		r := f.prepare(t, false)
 		p := newSMTPPeer(t, "", "")
 		off := p.config
@@ -379,7 +382,7 @@ func TestForwardSend(t *testing.T) {
 			}
 		})
 
-		f := plainFixture(t)
+		f := plainForwardFixture(t)
 		r := f.prepare(t, false)
 		p := newSMTPPeer(t, "", "")
 		req := forwardRequest(t, f, r)
@@ -414,7 +417,7 @@ func TestForwardSend(t *testing.T) {
 	})
 
 	t.Run("Policy", func(t *testing.T) {
-		f := plainFixture(t)
+		f := plainForwardFixture(t)
 		p := newSMTPPeer(t, "", "lost final reply")
 		// Even an uncertain post-DATA result consumes one durable slot.
 		r := f.prepare(t, false)
@@ -590,7 +593,7 @@ func TestForwardSend(t *testing.T) {
 	})
 
 	t.Run("TLS", func(t *testing.T) {
-		f := plainFixture(t)
+		f := plainForwardFixture(t)
 		for _, tc := range []struct{ mode, fault string }{
 			{"", ""}, {"implicit", ""}, {"", "no upgrade"}, {"", "upgrade refused"}, {"", "handshake"}, {"", "pin"}, {"implicit", "pin"},
 		} {
@@ -617,7 +620,7 @@ func TestForwardSend(t *testing.T) {
 	})
 
 	t.Run("Frame", func(t *testing.T) {
-		f := plainFixture(t)
+		f := plainForwardFixture(t)
 		p := newSMTPPeer(t, "", "")
 		store := NewForwardPreviews(f.store.adapter)
 		store.Submission = p.config

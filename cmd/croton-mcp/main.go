@@ -41,6 +41,7 @@ func run(ctx context.Context, arguments []string, stderr io.Writer, settings own
 
 func runCLI(ctx context.Context, arguments []string, stderr io.Writer, settings owneroauth.Settings, confirm func(context.Context, string, string) error) error {
 	command := ""
+	forwardOwner := false
 	if len(arguments) > 0 && !strings.HasPrefix(arguments[0], "-") {
 		command, arguments = arguments[0], arguments[1:]
 		switch command {
@@ -52,7 +53,9 @@ func runCLI(ctx context.Context, arguments []string, stderr io.Writer, settings 
 			defer tty.Close()
 
 			return runOwnerCommand(ctx, command, arguments, tty)
-		case "serve", "init-forward-state", "limits", "allow", "forget":
+		case "limits", "allow", "forget":
+			forwardOwner = true
+		case "serve", "init-forward-state":
 		default:
 			return errors.New("invalid command")
 		}
@@ -80,7 +83,6 @@ func runCLI(ctx context.Context, arguments []string, stderr io.Writer, settings 
 		flags.DurationVar(&settings.CodeLifetime, "code-lifetime", settings.CodeLifetime, "authorization code lifetime")
 		flags.DurationVar(&settings.AccessLifetime, "access-lifetime", settings.AccessLifetime, "access token lifetime")
 	}
-	forwardOwner := command == "limits" || command == "allow" || command == "forget"
 	// Accept the owner operand on either side of --config.
 	if forwardOwner && len(arguments) > 1 {
 		name, _, _ := strings.Cut(arguments[0], "=")

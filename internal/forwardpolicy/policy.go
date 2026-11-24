@@ -150,7 +150,7 @@ func Forget(cfg bridge.ForwardConfig, login, recipient string) error {
 		}
 
 		key := forgetKey(login, address)
-		return policies.Put(key[:], binary.BigEndian.AppendUint64(nil, uint64(policies.Tx().ID())))
+		return policies.Put(key[:], binary.BigEndian.AppendUint64(nil, p.Version))
 	})
 }
 

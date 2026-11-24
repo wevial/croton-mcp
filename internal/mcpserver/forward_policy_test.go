@@ -37,15 +37,8 @@ func seedPreviousReservation(t *testing.T, dir string) {
 }
 
 func TestForwardRememberedPolicy(t *testing.T) {
-	fixture := func(t *testing.T) *forwardFixture {
-		t.Helper()
-		f := newForwardFixture(t, bridge.BoundsPatch{})
-		f.set(plainStructure("Hello"), "1", "Hello")
-		return f
-	}
-
 	t.Run("Gate", func(t *testing.T) {
-		f := fixture(t)
+		f := plainForwardFixture(t)
 		p := newSMTPPeer(t, "", "")
 		p.config.RememberedRecipients = []string{"reviewer@RECIPIENT.test"}
 		seedPreviousReservation(t, p.config.StateDir)
@@ -109,11 +102,11 @@ func TestForwardRememberedPolicy(t *testing.T) {
 			{"disabled", "", "accepted", false},
 			{"full", "", "accepted", false},
 			{"forget before confirmation", "", "accepted", false},
-			{"forget during SMTP", "hold final reply", "accepted", false},
-			{"unrelated forget", "hold final reply", "accepted", true},
+			{"forget during SMTP", holdFinalReply, "accepted", false},
+			{"unrelated forget", holdFinalReply, "accepted", true},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				f := fixture(t)
+				f := plainForwardFixture(t)
 				p := newSMTPPeer(t, "", tc.fault)
 				if tc.name == "disabled" {
 					p.config.AutoRemember = new(false)
@@ -154,7 +147,7 @@ func TestForwardRememberedPolicy(t *testing.T) {
 				}
 
 				// A fresh stdio session and adapter share only the private database.
-				restarted := fixture(t)
+				restarted := plainForwardFixture(t)
 				next := restarted.prepare(t, false)
 				if tc.learn {
 					requireSendOutcome(t, restarted.store.send(t.Context(), p.config, forwardRequest(t, restarted, next), nil), "accepted")
