@@ -19,11 +19,16 @@ import (
 type httpContextKey struct{}
 
 // NewHTTP mounts a read-only SDK server and the owner's OAuth endpoints on
-// the exact listener origin. All security checks precede SDK dispatch.
-func NewHTTP(origin string, mail Mail, audit *Auditor, timeout time.Duration, authorize func(string) bool, oauth http.Handler) (http.Handler, error) {
+// the exact configured origin. All security checks precede SDK dispatch.
+func NewHTTP(origin string, public bool, mail Mail, audit *Auditor, timeout time.Duration, authorize func(string) (string, bool), oauth http.Handler) (http.Handler, error) {
 	u, err := url.Parse(origin)
 	if err != nil || u.Host == "" || authorize == nil || oauth == nil || timeout <= 0 {
 		return nil, errors.New("HTTP authorizer unavailable")
+	}
+
+	var limits *publicAdmission
+	if public {
+		limits = &publicAdmission{recent: make(map[string][]time.Time), inFlight: make(chan struct{}, 2)}
 	}
 
 	server := New(Options{Mail: mail, Audit: audit})
@@ -47,6 +52,8 @@ func NewHTTP(origin string, mail Mail, audit *Auditor, timeout time.Duration, au
 		}
 	})
 	sdk := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server.sdk }, &mcp.StreamableHTTPOptions{
+		// Public Host and Origin are pinned before SDK dispatch.
+		DisableLocalhostProtection:   public,
 		Stateless:                    true,
 		JSONResponse:                 true,
 		MaxRequestBodyBytes:          stdioframe.MaxFrameBytes,
@@ -59,17 +66,44 @@ func NewHTTP(origin string, mail Mail, audit *Auditor, timeout time.Duration, au
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
-		if r.URL.EscapedPath() != "/mcp" {
-			oauth.ServeHTTP(w, r)
-			return
+
+		mcpRequest := r.URL.EscapedPath() == "/mcp"
+		var client string
+		var valid bool
+		if mcpRequest || public {
+			scheme, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
+			if len(r.Header.Values("Authorization")) == 1 && strings.EqualFold(scheme, "Bearer") && token != "" {
+				client, valid = authorize(token)
+			}
+		}
+
+		if !valid {
+			client = ""
 		}
 
 		w.Header().Set("Cache-Control", "no-store")
-		scheme, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
-		if len(r.Header.Values("Authorization")) != 1 || !strings.EqualFold(scheme, "Bearer") || token == "" || !authorize(token) {
+		if public && !limits.allow(client) {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		if !mcpRequest {
+			oauth.ServeHTTP(w, r)
+			return
+		}
+		if !valid || (public && client == "") {
 			w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="`+origin+owneroauth.ResourceMetadataPath+`"`)
 			w.WriteHeader(http.StatusUnauthorized)
 			return
+		}
+
+		if public {
+			select {
+			case limits.inFlight <- struct{}{}:
+				defer func() { <-limits.inFlight }()
+			default:
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
 		}
 
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)

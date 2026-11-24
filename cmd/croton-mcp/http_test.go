@@ -184,6 +184,11 @@ func startHTTPAt(t *testing.T, config, address, origin string, stderr *os.File, 
 		transport.TLSClientConfig = testTLS(t, dir)
 		args = append(args, "--tls-cert", filepath.Join(dir, "cert.pem"), "--tls-key", filepath.Join(dir, "key.pem"))
 	}
+	return launchHTTP(t, dir, origin, args, transport, stderr, env...)
+}
+
+func launchHTTP(t *testing.T, dir, origin string, args []string, transport *http.Transport, stderr *os.File, env ...string) *httpProcess {
+	t.Helper()
 	t.Cleanup(transport.CloseIdleConnections)
 	jar, _ := cookiejar.New(nil)
 	p := &httpProcess{dir: dir, origin: origin, done: make(chan struct{}), client: &http.Client{Transport: transport, Jar: jar, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}

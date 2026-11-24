@@ -25,6 +25,7 @@ var (
 )
 
 type Settings struct {
+	BehindHTTPSProxy   bool // owner configured an HTTPS origin for the loopback listener
 	PairingWindow      time.Duration
 	HandoffLifetime    time.Duration
 	CodeLifetime       time.Duration
@@ -246,12 +247,18 @@ func (a *Authority) redeem(code, client, redirect, resource, verifier string) (t
 	return pair, nil
 }
 
-func (a *Authority) ValidBearer(token string) bool {
-	return a.db.View(func(tx *bolt.Tx) error {
+// BearerClient returns an empty client for valid access records predating client tracking.
+func (a *Authority) BearerClient(token string) (string, bool) {
+	var client string
+	err := a.db.View(func(tx *bolt.Tx) error {
 		var record access
 		if json.Unmarshal(tx.Bucket([]byte("access")).Get(digest(token)), &record) != nil || record.Resource != a.issuer+"/mcp" || !a.settings.Now().Before(record.Expires) {
 			return errDenied
 		}
+
+		client = record.Client
 		return nil
-	}) == nil
+	})
+
+	return client, err == nil
 }
