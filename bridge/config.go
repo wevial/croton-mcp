@@ -1,9 +1,6 @@
 package bridge
 
-import (
-	"strings"
-	"time"
-)
+import "time"
 
 const (
 	TLSModeStartTLS = "starttls"
@@ -91,10 +88,10 @@ func ValidateConfig(input Config) (ValidatedConfig, error) {
 	if !isSafeCredentialCommand(imap.CredentialCommand) {
 		return ValidatedConfig{}, errorCode(CodeInvalidConfig)
 	}
-	if strings.TrimSpace(imap.TLS.TrustAnchorFile) == "" && strings.TrimSpace(imap.TLS.SPKISHA256) == "" {
-		return ValidatedConfig{}, errorCode(CodeTLSRequired)
+	if _, err := imap.TLS.validateTrustAndVersion(); err != nil {
+		return ValidatedConfig{}, err
 	}
-	if _, err := validateTLSConfig(imap.TLS); err != nil {
+	if _, err := imap.TLS.spkiPin(); err != nil {
 		return ValidatedConfig{}, err
 	}
 

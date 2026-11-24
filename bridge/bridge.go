@@ -47,7 +47,7 @@ func NewAdapter(input Config) (*Adapter, error) {
 }
 
 func (adapter *Adapter) openSession(ctx context.Context) (bridgeSession, error) {
-	connection, err := Dial(ctx, Config{IMAP: adapter.config.IMAP, Bounds: boundsPatch(adapter.config.Bounds), Audit: adapter.config.Audit})
+	connection, err := Dial(ctx, Config{IMAP: adapter.config.IMAP})
 	if err != nil {
 		return nil, err
 	}
@@ -80,35 +80,25 @@ func (adapter *Adapter) execute(ctx context.Context, operation func(context.Cont
 	operationContext, cancel := adapter.operationContext(ctx)
 	defer cancel()
 
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := 0; ; attempt++ {
 		session, err := adapter.sessionForOperation(operationContext)
 		if err != nil {
 			err = mapIMAPError(operationContext, err)
-			if attempt == 0 && adapter.canReplay(operationContext, err) {
-				continue
+		} else {
+			err = operation(operationContext, session)
+			if err == nil {
+				return nil
 			}
+		}
 
+		retry := attempt == 0 && adapter.canReplay(operationContext, err)
+		if session != nil && adapter.invalidatesSession(err) {
+			adapter.invalidate(session)
+		}
+		if !retry {
 			return err
 		}
-
-		err = operation(operationContext, session)
-		if err == nil {
-			return nil
-		}
-
-		if attempt == 0 && adapter.canReplay(operationContext, err) {
-			adapter.invalidate(session)
-			continue
-		}
-
-		if adapter.invalidatesSession(err) {
-			adapter.invalidate(session)
-		}
-
-		return err
 	}
-
-	return errorCode(CodeBridgeUnreachable)
 }
 
 func (adapter *Adapter) sessionForOperation(ctx context.Context) (bridgeSession, error) {
@@ -154,12 +144,6 @@ func (adapter *Adapter) acquire(ctx context.Context) error {
 
 func (adapter *Adapter) operationContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	timeout := time.Duration(adapter.config.IMAP.CommandTimeoutMs) * time.Millisecond
-	if deadline, ok := ctx.Deadline(); ok {
-		remaining := time.Until(deadline)
-		if remaining < timeout {
-			timeout = remaining
-		}
-	}
 	return context.WithTimeout(ctx, timeout)
 }
 
@@ -178,9 +162,7 @@ func (adapter *Adapter) Close() error {
 	if adapter == nil {
 		return nil
 	}
-	if err := adapter.acquire(context.Background()); err != nil {
-		return err
-	}
+	<-adapter.gate
 	defer func() { adapter.gate <- struct{}{} }()
 
 	adapter.mu.Lock()
@@ -198,19 +180,4 @@ func (adapter *Adapter) Close() error {
 	err := adapter.session.Logout(logoutContext)
 	adapter.session = nil
 	return err
-}
-
-func boundsPatch(bounds Bounds) BoundsPatch {
-	return BoundsPatch{
-		MaxSearchResults:   Int(bounds.MaxSearchResults),
-		MaxFolderResults:   Int(bounds.MaxFolderResults),
-		MaxBodyBytes:       Int(bounds.MaxBodyBytes),
-		MaxHeaderBytes:     Int(bounds.MaxHeaderBytes),
-		MaxMimeParts:       Int(bounds.MaxMimeParts),
-		MaxAttachmentCount: Int(bounds.MaxAttachmentCount),
-		MaxThreadMessages:  Int(bounds.MaxThreadMessages),
-		MaxThreadFetches:   Int(bounds.MaxThreadFetches),
-		MaxPreviewChars:    Int(bounds.MaxPreviewChars),
-		MaxOutputBytes:     Int(bounds.MaxOutputBytes),
-	}
 }
