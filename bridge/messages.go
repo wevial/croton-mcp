@@ -164,7 +164,7 @@ func (selector *textSelector) visit(structure bodyStructure, part []int) error {
 
 	section := &textSection{part: part, encoding: leaf.Encoding, charset: entity.parameters["charset"], size: leaf.Size}
 	switch {
-	case entity.mediaType == "text/plain" && selector.plain == nil:
+	case entity.mediaType == "text/plain":
 		section.source = TextSourcePlain
 		selector.plain = section
 	case entity.mediaType == "text/html" && selector.html == nil:

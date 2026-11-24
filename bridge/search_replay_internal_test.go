@@ -11,7 +11,6 @@ type replaySearchSession struct {
 	boundedSearchSession
 	snapshot        mailboxSnapshot
 	searchResults   [][]uint32
-	searchCalls     int
 	metadataResults []replaySearchResponse
 	metadataCalls   int
 }
@@ -21,8 +20,8 @@ func (session *replaySearchSession) Examine(context.Context, string) (mailboxSna
 }
 
 func (session *replaySearchSession) UIDSearchWindow(context.Context, SearchQuery, uidWindow, int) ([]uint32, error) {
-	result := session.searchResults[session.searchCalls]
-	session.searchCalls++
+	result := session.searchResults[0]
+	session.searchResults = session.searchResults[1:]
 	return result, nil
 }
 
