@@ -28,6 +28,12 @@ const funnelScript = `#!/bin/sh
 set -eu
 cd "${0%/*}"
 printf '%s\n' "$*" >> calls
+case "$1 ${2-}" in
+  'funnel --bg'|'funnel --https=443')
+    if [ -f version-warning ] || [ -f prompt ]; then
+      printf 'Warning: client version "1.104.5-tabc" != tailscaled server version "1.104.6-tdef"\n' >&2
+    fi ;;
+esac
 case "$*" in
   version) exec cat version ;;
   'status --json') exec cat node ;;
@@ -54,6 +60,7 @@ case "$*" in
     printf 'Available on the internet:\n'
     ;;
   'funnel --https=443 off')
+    if [ -f version-warning ]; then sleep 0.05; fi
     if [ ! -f keep-route ]; then cp before config; fi ;;
   *) exit 2 ;;
 esac
@@ -98,13 +105,14 @@ func newFunnelFixture(t *testing.T, config string) funnelFixture {
 	f.write(t, "tailscale", funnelScript)
 	f.write(t, "version", "1.104.5\n  long version: 1.104.5-fixture\n")
 	f.write(t, "node", funnelNodeJSON)
-	// An unrelated TCP proxy must survive both publication and removal.
-	const before = `{"TCP":{"8443":{"TCPForward":"127.0.0.1:8043"}},"AllowFunnel":null}`
+	// Both case-sensitive mounts on 8443 must survive publication and removal.
+	const otherWeb = `"croton.tail.test:8443":{"Handlers":{"/api":{"Text":"lower"},"/API":{"Text":"upper"}}}`
+	const before = `{"TCP":{"8443":{"HTTPS":true}},"AllowFunnel":null,"Web":{` + otherWeb + `}}`
 	f.write(t, "config", before)
 	f.write(t, "before", before)
 	f.write(t, "target", f.target)
-	f.owned = fmt.Sprintf(`{"TCP":{"8443":{"TCPForward":"127.0.0.1:8043"},"443":{"HTTPS":true}},
-		"AllowFunnel":{"croton.tail.test:443":true},"Web":{"croton.tail.test:443":{"Handlers":{"/":{"Proxy":%q}}}}}`, f.target)
+	f.owned = fmt.Sprintf(`{"TCP":{"8443":{"HTTPS":true},"443":{"HTTPS":true}},
+		"AllowFunnel":{"croton.tail.test:443":true},"Web":{"croton.tail.test:443":{"Handlers":{"/":{"Proxy":%q}}},%s}}`, f.target, otherWeb)
 	f.write(t, "owned", f.owned)
 	t.Setenv("PATH", f.dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return f
@@ -131,6 +139,9 @@ func TestFunnelServePreflight(t *testing.T) {
 		{"truncated config", "config", `{"TCP":`, "Run tailscale"},
 		{"wrong shape", "config", "null", "Run tailscale"},
 		{"duplicate field", "config", `{"TCP":{"443":{}},"TCP":{}}`, "Run tailscale"},
+		{"ambiguous field", "config", `{"TCP":{"443":{}},"tcp":{}}`, "Run tailscale"},
+		{"ambiguous handler", "config", `{"Web":{"private.test:8443":{"Handlers":{"/api":{"Text":"x","text":"y"}}}}}`, "Run tailscale"},
+		{"duplicate mount", "config", `{"Web":{"private.test:8443":{"Handlers":{"/api":{},"/api":{}}}}}`, "Run tailscale"},
 		{"invalid port", "config", `{"AllowFunnel":{"private.test":true}}`, "Run tailscale"},
 		{"inconsistent status", "inconsistent", "{}", "changed"},
 	} {
@@ -213,6 +224,7 @@ func TestFunnelServeLifecycle(t *testing.T) {
 		serves, removes  bool
 	}{
 		{"stop", "", true, true},
+		{"version-warning", "", true, true},
 		{"fail-publish", "Tailscale", false, true},
 		{"fail-readback", "verified", false, true},
 		{"wrong readback", "verified", false, false},
@@ -322,5 +334,33 @@ func TestFunnelServeBackendUnavailable(t *testing.T) {
 	}
 	if got := f.calls(t); !slices.Equal(got, slices.Concat(preflightCalls, preflightCalls)) {
 		t.Fatalf("commands after bind failure: %q", got)
+	}
+}
+
+func TestFunnelServeBind(t *testing.T) {
+	config := writeServerConfig(t, fixtureBridge(t))
+	for _, bind := range []string{"127.0.0.2:8787", "[::ffff:127.0.0.1]:8787", "[::1]:8787"} {
+		t.Run(bind, func(t *testing.T) {
+			f := newFunnelFixture(t, config)
+			f.args[len(f.args)-1] = bind
+			asked := false
+			err := runCLI(t.Context(), f.args, io.Discard, owneroauth.Defaults(), func(_ context.Context, _, target string) error {
+				asked = true
+				if target != "http://"+bind {
+					t.Errorf("approval target %q", target)
+				}
+				return errDeclined
+			})
+
+			if bind == "[::1]:8787" {
+				if !asked || err != errDeclined {
+					t.Fatalf("IPv6 loopback approval: %v", err)
+				}
+				return
+			}
+			if asked || err == nil || !strings.Contains(err.Error(), "--bind=127.0.0.1:8787") {
+				t.Fatalf("incompatible bind reached approval or lacked a usable bind: %v", err)
+			}
+		})
 	}
 }

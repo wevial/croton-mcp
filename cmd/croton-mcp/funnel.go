@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -27,6 +29,9 @@ import (
 
 const maxStatusBytes = 4 << 20
 const funnelPortFlag = "--https=443"
+const warningPrefix = `Warning: client version "`
+
+var versionWarning = regexp.MustCompile(`^Warning: client version "[^"\r\n]+" != tailscaled server version "[^"\r\n]+"\n$`)
 
 var (
 	errStatus     = errors.New("cannot verify Tailscale status. Run tailscale status, tailscale serve status and tailscale funnel status before retrying")
@@ -137,17 +142,23 @@ type cliOutput struct {
 	data          bytes.Buffer
 	cancel        context.CancelFunc
 	successPrefix []byte
+	warningOnly   bool
 	err           error
 }
 
 func (out *cliOutput) Write(p []byte) (int, error) {
-	if out.data.Len()+len(p) > maxStatusBytes {
+	if out.warningOnly && out.data.Len()+len(p) > 4096 {
+		out.err = errEnablement
+	} else if out.data.Len()+len(p) > maxStatusBytes {
 		out.err = errStatus
 	} else {
 		out.data.Write(p)
 		if prefix := out.successPrefix; prefix != nil {
 			got := out.data.Bytes()
 			if (len(prefix) == 0 && len(got) != 0) || (!bytes.HasPrefix(got, prefix) && !bytes.HasPrefix(prefix, got)) {
+				out.err = errEnablement
+			}
+			if out.warningOnly && bytes.ContainsRune(got, '\n') && !versionWarning.Match(got) {
 				out.err = errEnablement
 			}
 		}
@@ -164,16 +175,20 @@ func (f *tailscaleFunnel) command(ctx context.Context, successPrefix []byte, arg
 	defer cancel()
 
 	out := &cliOutput{cancel: cancel, successPrefix: successPrefix}
+	warnings := &cliOutput{cancel: cancel, successPrefix: []byte(warningPrefix), warningOnly: true}
 	cmd := exec.CommandContext(ctx, f.cli, args...)
 	cmd.WaitDelay = time.Second
 	cmd.Stdout = out
 	if successPrefix != nil {
-		cmd.Stderr = out
+		cmd.Stderr = warnings
 	}
 
 	err := cmd.Run()
 	if out.err != nil {
 		return nil, out.err
+	}
+	if warnings.err != nil || (warnings.data.Len() != 0 && !versionWarning.Match(warnings.data.Bytes())) {
+		return nil, errEnablement
 	}
 	if err != nil {
 		return nil, errors.New("Tailscale CLI command failed. Inspect Tailscale status and CLI permissions")
@@ -181,11 +196,58 @@ func (f *tailscaleFunnel) command(ctx context.Context, successPrefix []byte, arg
 	return out.data.Bytes(), nil
 }
 
+// The JSON decoder rejects exact duplicates in every object. Also reject
+// case aliases in schema objects. Tailscale's maps have data keys, including
+// case-sensitive HTTP mounts and foreground session IDs.
+func checkServeKeys(dec *jsontext.Decoder, dataKeys bool) bool {
+	token, err := dec.ReadToken()
+	if err != nil || dec.StackDepth() > 32 {
+		return false
+	}
+
+	switch token.Kind() {
+	case '{':
+		var names []string
+		for dec.PeekKind() != '}' {
+			name, err := dec.ReadToken()
+			if err != nil {
+				return false
+			}
+			key := name.String()
+			if !dataKeys {
+				for _, previous := range names {
+					if strings.EqualFold(key, previous) {
+						return false
+					}
+				}
+				names = append(names, key)
+			}
+
+			childMap := !dataKeys && slices.Contains([]string{"TCP", "Web", "Services", "AllowFunnel", "Foreground", "Handlers"}, key)
+			if !checkServeKeys(dec, childMap) {
+				return false
+			}
+		}
+	case '[':
+		for dec.PeekKind() != ']' {
+			if !checkServeKeys(dec, false) {
+				return false
+			}
+		}
+	default:
+		return true
+	}
+	_, err = dec.ReadToken()
+	return err == nil
+}
+
 func (f *tailscaleFunnel) config(ctx context.Context) (serveConfig, error) {
 	var configs [2]serveConfig
 	for i, subcommand := range []string{"serve", "funnel"} {
 		data, err := f.command(ctx, nil, subcommand, "status", "--json")
-		if err != nil || !strictjson.DecodeValue(data, maxStatusBytes, &configs[i]) {
+		dec := jsontext.NewDecoder(bytes.NewReader(data))
+		if err != nil || dec.PeekKind() != '{' || !checkServeKeys(dec, false) ||
+			jsonv2.Unmarshal(data, &configs[i], jsonv2.RejectUnknownMembers(true)) != nil {
 			return serveConfig{}, errStatus
 		}
 	}
@@ -355,6 +417,10 @@ func readFunnelApproval(ctx context.Context, r io.Reader, w io.Writer, host, tar
 }
 
 func approveFunnel(ctx context.Context, address netip.AddrPort, confirm func(context.Context, string, string) error) (*tailscaleFunnel, error) {
+	if ip := address.Addr(); ip.String() != "127.0.0.1" && ip != netip.IPv6Loopback() {
+		return nil, fmt.Errorf("Tailscale Funnel requires a local proxy target. Use --bind=127.0.0.1:%d", address.Port())
+	}
+
 	cli, err := exec.LookPath("tailscale")
 	if err != nil {
 		return nil, errors.New("Tailscale CLI unavailable. Check PATH for Tailscale 1.104.5 or later")
