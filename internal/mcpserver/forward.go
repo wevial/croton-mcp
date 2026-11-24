@@ -268,8 +268,8 @@ func (store *ForwardPreviews) approval(cfg bridge.ForwardConfig, request *mcp.Ca
 	if len(params.Arguments) > stdioframe.MaxFrameBytes {
 		return nil, errorResult(errBoundsExceeded)
 	}
-	args := jsontext.Value(bytes.Clone(params.Arguments))
-	if err := args.Format(jsontext.ReorderRawObjects(true)); err != nil {
+	args := jsontext.Value(params.Arguments).Clone()
+	if args.Format(jsontext.ReorderRawObjects(true)) != nil {
 		return nil, errorResult(errInvalidArgument)
 	}
 

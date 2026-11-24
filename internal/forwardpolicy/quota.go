@@ -14,9 +14,8 @@ import (
 )
 
 const (
-	limit    = 10
-	database = "quota.db"
-	bucket   = "reservations-v1"
+	limit  = 10
+	bucket = "reservations-v1"
 )
 
 var (
@@ -52,8 +51,7 @@ func Initialize(dir string) error {
 			return ErrUnavailable
 		}
 		err = d.Sync()
-		closeErr := d.Close()
-		if err != nil || closeErr != nil {
+		if closeErr := d.Close(); err != nil || closeErr != nil {
 			return ErrUnavailable
 		}
 	}
@@ -108,7 +106,7 @@ func update(dir string, create bool, write func(*bolt.Tx) error) error {
 		return err
 	}
 
-	db, err := bolt.Open(filepath.Join(dir, database), 0600, &bolt.Options{
+	db, err := bolt.Open(filepath.Join(dir, "quota.db"), 0600, &bolt.Options{
 		Timeout: 5 * time.Second,
 		OpenFile: func(path string, flags int, mode os.FileMode) (*os.File, error) {
 			return openFile(path, create)

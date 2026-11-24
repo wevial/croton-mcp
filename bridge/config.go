@@ -125,8 +125,7 @@ func ValidateConfig(input Config) (ValidatedConfig, error) {
 		return ValidatedConfig{}, err
 	}
 
-	forward := input.Forward
-	if forward.Enabled {
+	if forward := input.Forward; forward.Enabled {
 		if _, err := ParseLoopbackEndpoint(imap.Host, forward.SMTPPort); err != nil {
 			return ValidatedConfig{}, err
 		}

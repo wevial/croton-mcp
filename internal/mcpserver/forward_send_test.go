@@ -67,10 +67,9 @@ func newSMTPPeer(t *testing.T, mode, fault string) *smtpPeer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := newQuotaTestDir(t)
 	peer := &smtpPeer{deliveries: make(chan smtpDelivery, 10), config: bridge.ForwardConfig{
 		Enabled: true, SMTPPort: listener.Addr().(*net.TCPAddr).Port, SMTPTLSMode: mode,
-		SMTPSPKISHA256: pin, StateDir: dir,
+		SMTPSPKISHA256: pin, StateDir: newQuotaTestDir(t),
 	}}
 	if fault == "pin" {
 		peer.config.SMTPSPKISHA256 = strings.Repeat("0", 64)
