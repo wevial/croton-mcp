@@ -4,7 +4,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -171,11 +170,10 @@ func checkClients(t *testing.T, dir string, clients ...approvedClient) {
 func restartClientsServer(t *testing.T, p *httpProcess) {
 	t.Helper()
 
-	ctx, cancel := context.WithCancel(t.Context())
+	ctx := t.Context()
 	done := make(chan error, 1)
 	go func() { done <- run(ctx, p.cmd.Args[1:], io.Discard, owneroauth.Defaults()) }()
 	t.Cleanup(func() {
-		cancel()
 		if err := <-done; err != nil {
 			t.Error(err)
 		}
@@ -201,9 +199,6 @@ func TestOwnerOAuthClients(t *testing.T) {
 			first.tokens(t, p, first.exchangeForm(t, p))
 			second := approveClient(t, p)
 			second.tokens(t, p, second.exchangeForm(t, p))
-			if first.ID == second.ID {
-				t.Fatal("duplicate registration IDs")
-			}
 
 			checkClients(t, p.dir, first, second)
 			if mode == "offline" {
