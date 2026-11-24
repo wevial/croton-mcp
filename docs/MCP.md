@@ -214,6 +214,37 @@ header fields, `bounds.maxMimeParts` parts at depth 10,
 `headerCount`, `text`, `mimeParts`, `mimeDepth`, `attachments`, `references`
 and `output`. `truncated` is true whenever any key is.
 
+### `prepare_forward` (local stdio)
+
+Pass the opaque `messageId` and one plain mailbox address in `to`. Optional
+`text` appears above the forwarded message. The tool takes the outgoing From
+address from the authenticated Bridge login. The login must be a plain mailbox
+address too. Only the caller supplies the recipient.
+
+The result contains a `handle` and a complete `preview` with `from`, `to`,
+`subject`, `body` and `omissions`. The body includes the original From, declared
+Date, Subject and complete plain text. The omissions object counts
+`htmlAlternatives`, `files` and `attachedMessages` separately. HTML alternatives
+are skipped automatically. Files and attached messages require explicit
+`text_only: true` consent. Their content is never fetched.
+
+The tool uses one read-only Bridge operation to check the mailbox generation,
+UID, extended BODYSTRUCTURE, header and selected plain section. It refuses
+ambiguous bodies, HTML-only, signed or flowed mail, primary nested messages
+and incomplete or undecodable text. The Bridge header projection retains the
+first Subject field when a message declares several. Text decoding supports
+US-ASCII, UTF-8 and ISO-8859-1. Header, section, part and depth bounds apply. Source MIME reads and stored UTF-8 quoted-printable MIME each have a
+256 KiB ceiling.
+
+Each successful preview replaces the previous handle in that stdio session.
+The handle binds the envelope, preview and serialized message for two minutes
+on the same authenticated Bridge connection. Reconnecting or restarting
+invalidates it. The complete JSON-escaped approval must fit the 64 KiB stdio
+frame. Sizing uses a compact JSON-RPC 2.0 `tools/call` with numeric ID 1,
+name `send_forward`, the returned object as `arguments`, and a final newline.
+Oversize previews fail with `bounds_exceeded`. Previewing writes no mail.
+The catalog has no send tool.
+
 ### `list_attachments`
 
 Reads only `UID BODYSTRUCTURE`, never the body, within a 128 KiB response

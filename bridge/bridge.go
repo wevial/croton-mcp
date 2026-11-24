@@ -20,6 +20,10 @@ type Adapter struct {
 	mu      sync.Mutex
 	session bridgeSession
 	closed  bool
+
+	// Installed only after LOGIN, while the operation gate is held.
+	login            string
+	connectionClosed <-chan struct{}
 }
 
 // NewAdapter validates configuration and creates a read-only adapter. It does
@@ -63,10 +67,14 @@ func (adapter *Adapter) openSession(ctx context.Context) (bridgeSession, error) 
 		_ = session.Abort()
 		return nil, err
 	}
+	login := string(credentials.Username) // Authenticate clears the credential buffers.
 	if err := session.Authenticate(ctx, credentials); err != nil {
 		_ = session.Abort()
 		return nil, err
 	}
+
+	adapter.login = login
+	adapter.connectionClosed = session.client.Closed()
 
 	return session, nil
 }
@@ -153,6 +161,8 @@ func (adapter *Adapter) invalidate(session bridgeSession) {
 	if adapter.session == session {
 		_ = session.Abort()
 		adapter.session = nil
+		adapter.login = ""
+		adapter.connectionClosed = nil
 	}
 }
 
@@ -179,5 +189,7 @@ func (adapter *Adapter) Close() error {
 	defer cancel()
 	err := adapter.session.Logout(logoutContext)
 	adapter.session = nil
+	adapter.login = ""
+	adapter.connectionClosed = nil
 	return err
 }
