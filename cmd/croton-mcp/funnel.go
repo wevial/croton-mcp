@@ -35,10 +35,10 @@ var versionWarning = regexp.MustCompile(`^Warning: client version "[^"\r\n]+" !=
 
 var (
 	errStatus     = errors.New("cannot verify Tailscale status. Run tailscale status, tailscale serve status and tailscale funnel status before retrying")
-	errChanged    = errors.New("Tailscale configuration changed. Inspect the node and reserve port 443 exclusively before retrying")
+	errChanged    = errors.New("the Tailscale configuration changed. Inspect the node and reserve port 443 exclusively before retrying")
 	errOwnership  = errors.New("warning: could not confirm Funnel route ownership. Inspect port 443 manually")
 	errEnablement = errors.New("unexpected Tailscale output. Check HTTPS and Funnel eligibility before retrying")
-	errDeclined   = errors.New("Funnel publication was not confirmed")
+	errDeclined   = errors.New("operator did not confirm Funnel publication")
 )
 
 type funnelNode struct {
@@ -233,7 +233,7 @@ func (f *tailscaleFunnel) command(ctx context.Context, successPrefix []byte, arg
 		return nil, errEnablement
 	}
 	if err != nil {
-		return nil, errors.New("Tailscale CLI command failed. Inspect Tailscale status and CLI permissions")
+		return nil, errors.New("the Tailscale CLI command failed. Inspect Tailscale status and CLI permissions")
 	}
 	return out.data.Bytes(), nil
 }
@@ -426,7 +426,7 @@ func (f *tailscaleFunnel) preflight(ctx context.Context) error {
 func confirmFunnel(ctx context.Context, host, target string) error {
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return errors.New("Funnel approval requires an owner terminal")
+		return errors.New("an owner terminal is required to approve Funnel publication")
 	}
 	defer tty.Close()
 
@@ -460,12 +460,12 @@ func readFunnelApproval(ctx context.Context, r io.Reader, w io.Writer, host, tar
 
 func approveFunnel(ctx context.Context, address netip.AddrPort, confirm func(context.Context, string, string) error) (*tailscaleFunnel, error) {
 	if ip := address.Addr(); ip.String() != "127.0.0.1" && ip != netip.IPv6Loopback() {
-		return nil, fmt.Errorf("Tailscale Funnel requires a local proxy target. Use --bind=127.0.0.1:%d", address.Port())
+		return nil, fmt.Errorf("use a loopback proxy target for Tailscale Funnel. Set --bind=127.0.0.1:%d", address.Port())
 	}
 
 	cli, err := exec.LookPath("tailscale")
 	if err != nil {
-		return nil, errors.New("Tailscale CLI unavailable. Check PATH for Tailscale 1.104.5 or later")
+		return nil, errors.New("cannot find the Tailscale CLI. Check PATH for Tailscale 1.104.5 or later")
 	}
 
 	approved := tailscaleFunnel{cli: cli, target: "http://" + address.String()}
