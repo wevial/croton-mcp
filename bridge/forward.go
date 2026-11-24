@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"mime"
 	"net/mail"
@@ -15,6 +16,9 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/text/encoding/ianaindex"
+	"golang.org/x/text/encoding/japanese"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	textunicode "golang.org/x/text/encoding/unicode"
 )
 
 // MaxForwardMIMEBytes bounds both the source literals and the serialized message.
@@ -80,8 +84,7 @@ func (adapter *Adapter) ReadForwardSource(ctx context.Context, identifier string
 			return errorCode(CodeBoundsExceeded)
 		}
 		if headers.Metadata.From == "" || headers.Metadata.DateSource != DateSourceHeader ||
-			!validSenderEncodedWords(headers.Metadata.Subject) || !utf8.ValidString(headers.Metadata.Subject) ||
-			strings.Contains(h.Subject, "=?") {
+			!validSenderEncodedWords(headers.Metadata.Subject) || !utf8.ValidString(headers.Metadata.Subject) {
 			return errorCode(CodeUnsupported)
 		}
 		for _, value := range []string{h.From, h.Date, h.Subject} {
@@ -269,13 +272,17 @@ func (entity inlineEntity) validHeader(header mail.Header, plain *textSection) b
 	if !ok || kind != entity.mediaType {
 		return false
 	}
+	transfer := cmp.Or(header.Get("Content-Transfer-Encoding"), "7bit")
+	if strings.HasPrefix(kind, "multipart/") {
+		return strings.EqualFold(transfer, "7bit") || strings.EqualFold(transfer, "8bit") || strings.EqualFold(transfer, "binary")
+	}
 	if kind != "text/plain" {
 		return true
 	}
 
 	return strings.EqualFold(cmp.Or(params["format"], "fixed"), "fixed") &&
 		strings.EqualFold(cmp.Or(params["charset"], "us-ascii"), cmp.Or(plain.charset, "us-ascii")) &&
-		strings.EqualFold(cmp.Or(header.Get("Content-Transfer-Encoding"), "7bit"), cmp.Or(plain.encoding, "7bit"))
+		strings.EqualFold(transfer, cmp.Or(plain.encoding, "7bit"))
 }
 
 var quotedParameterValue = regexp.MustCompile(`"(?:[^"\\]|\\.)*"`)
@@ -348,6 +355,11 @@ func decodeForwardText(raw []byte, part *textSection) (string, error) {
 		}
 	case "8bit", "binary":
 	case "base64":
+		for line := range bytes.SplitSeq(raw, []byte("\r\n")) {
+			if len(line) > 76 || bytes.ContainsAny(line, "\r\n") {
+				return "", errorCode(CodeUnsupported)
+			}
+		}
 		raw, err = base64.StdEncoding.Strict().DecodeString(string(raw))
 	case "quoted-printable":
 		raw, err = decodeForwardQP(raw)
@@ -365,20 +377,10 @@ func decodeForwardText(raw []byte, part *textSection) (string, error) {
 		}
 	case "utf-8":
 	default:
-		encoding, err := ianaindex.MIME.Encoding(part.charset)
-		if err != nil || encoding == nil {
-			return "", errorCode(CodeUnsupported)
-		}
-
-		decoded, err := encoding.NewDecoder().Bytes(raw)
+		raw, err = decodeForwardCharset(raw, part.charset)
 		if err != nil {
-			return "", errorCode(CodeUnsupported)
+			return "", err
 		}
-		original, err := encoding.NewEncoder().Bytes(decoded)
-		if err != nil || !bytes.Equal(original, raw) {
-			return "", errorCode(CodeUnsupported)
-		}
-		raw = decoded
 	}
 
 	body := strings.ReplaceAll(string(raw), "\r\n", "\n")
@@ -387,6 +389,132 @@ func decodeForwardText(raw []byte, part *textSection) (string, error) {
 		return "", errorCode(CodeUnsupported)
 	}
 	return body, nil
+}
+
+// In HZ ASCII mode a tilde starts an escape. Each GB run contains pairs
+// of graphic bytes between an opening ~{ and its closing ~} (RFC 1843).
+var forwardHZ = regexp.MustCompile(`^(?:[\x00-\x7d\x7f]|~[~\n]|~\{(?:[!-\x77][!-~])+~\})*$`)
+
+func decodeForwardCharset(raw []byte, charset string) ([]byte, error) {
+	enc, err := ianaindex.MIME.Encoding(charset)
+	if err != nil || enc == nil {
+		return nil, errorCode(CodeUnsupported)
+	}
+	switch enc {
+	case japanese.ISO2022JP:
+		return decodeForwardISO2022JP(raw)
+	case simplifiedchinese.HZGB2312:
+		if !forwardHZ.Match(raw) {
+			return nil, errorCode(CodeUnsupported)
+		}
+	case textunicode.UTF8:
+		return raw, nil // The caller checks UTF-8, including charset aliases.
+	}
+
+	decoded, err := enc.NewDecoder().Bytes(raw)
+	if err != nil {
+		return nil, errorCode(CodeUnsupported)
+	}
+
+	// x/text substitutes U+FFFD for malformed code units. Only UTF and
+	// GB18030 in the IANA decoder table can encode that character literally.
+	replacements := bytes.Count(decoded, []byte("�"))
+	switch enc {
+	case textunicode.UTF16(textunicode.BigEndian, textunicode.UseBOM),
+		textunicode.UTF16(textunicode.BigEndian, textunicode.IgnoreBOM),
+		textunicode.UTF16(textunicode.LittleEndian, textunicode.IgnoreBOM):
+		if replacements == 0 {
+			return decoded, nil
+		}
+
+		var order binary.ByteOrder = binary.BigEndian
+		if enc == textunicode.UTF16(textunicode.LittleEndian, textunicode.IgnoreBOM) ||
+			(enc == textunicode.UTF16(textunicode.BigEndian, textunicode.UseBOM) && bytes.HasPrefix(raw, []byte{0xff, 0xfe})) {
+			order = binary.LittleEndian
+		}
+		for len(raw) >= 2 {
+			if order.Uint16(raw) == utf8.RuneError {
+				replacements--
+			}
+			raw = raw[2:]
+		}
+	case simplifiedchinese.GB18030:
+		for len(raw) > 0 {
+			if raw[0] <= 0x80 {
+				raw = raw[1:]
+				continue
+			}
+			if raw[0] == 0xff || len(raw) < 2 {
+				return nil, errorCode(CodeUnsupported)
+			}
+
+			switch {
+			case raw[1] >= 0x40 && raw[1] != 0x7f && raw[1] != 0xff:
+				raw = raw[2:]
+			case len(raw) >= 4 && raw[1] >= '0' && raw[1] <= '9' &&
+				raw[2] >= 0x81 && raw[2] <= 0xfe && raw[3] >= '0' && raw[3] <= '9':
+				if string(raw[:4]) == "\x84\x31\xa4\x37" {
+					replacements--
+				}
+				raw = raw[4:]
+			default:
+				return nil, errorCode(CodeUnsupported)
+			}
+		}
+	}
+	if replacements != 0 {
+		return nil, errorCode(CodeUnsupported)
+	}
+	return decoded, nil
+}
+
+var jisRoman = strings.NewReplacer("\\", "¥", "~", "‾")
+
+// RFC 1468 designations select the character set for each run. Validate the
+// original byte ranges and final ASCII state before accepting the decoded text.
+func decodeForwardISO2022JP(raw []byte) ([]byte, error) {
+	if hasNonASCII(raw) {
+		return nil, errorCode(CodeUnsupported)
+	}
+
+	decoder := japanese.ISO2022JP.NewDecoder()
+	var out []byte
+	for len(raw) > 0 {
+		mode := "(B"
+		encoded := raw
+		if raw[0] == 0x1b {
+			if len(raw) < 3 {
+				return nil, errorCode(CodeUnsupported)
+			}
+			mode, raw = string(raw[1:3]), raw[3:]
+		}
+
+		run, _, _ := bytes.Cut(raw, []byte{0x1b})
+		raw = raw[len(run):]
+		switch mode {
+		case "(B":
+			out = append(out, run...)
+		case "(J":
+			out = append(out, jisRoman.Replace(string(run))...)
+		case "$@", "$B":
+			if len(run) == 0 || len(run)%2 != 0 || bytes.ContainsFunc(run, func(r rune) bool { return r < 0x21 || r > 0x7e }) {
+				return nil, errorCode(CodeUnsupported)
+			}
+
+			decoded, err := decoder.Bytes(encoded[:3+len(run)])
+			if err != nil || bytes.ContainsRune(decoded, utf8.RuneError) {
+				return nil, errorCode(CodeUnsupported)
+			}
+			out = append(out, decoded...)
+		default:
+			return nil, errorCode(CodeUnsupported)
+		}
+		if len(raw) == 0 && mode != "(B" {
+			return nil, errorCode(CodeUnsupported)
+		}
+	}
+
+	return out, nil
 }
 
 func hasNonASCII(raw []byte) bool {

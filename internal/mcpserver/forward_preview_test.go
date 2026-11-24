@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/sha256"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -257,7 +258,8 @@ func TestForwardPreview(t *testing.T) {
 		// Search metadata caps From at 512 bytes. The bounded header
 		// projection keeps this entire display name, including its comma.
 		namePrefix := strings.Repeat("Archive contact ", 33)
-		f.setHeader(strings.Replace(forwardHeader, "From: ", "From: "+namePrefix, 1))
+		header := strings.Replace(forwardHeader, "From: ", "From: "+namePrefix, 1)
+		f.setHeader(strings.Replace(header, "Original  subject", "=?UTF-8?Q?What_does_x=3D=3F__mean?=", 1))
 
 		const raw = "one=0A=c3=a9\r\nlast\r\n\r\n"
 		const qpMIME = "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n"
@@ -292,8 +294,8 @@ func TestForwardPreview(t *testing.T) {
 				f.set(tc.structure, tc.section, raw)
 				f.setMIME(tc.fields)
 				result := f.prepare(t, tc.omissions.Files != 0)
-				want := forwardPreview{From: forwardLogin, To: forwardTo, Subject: "Fwd: Original subject", Omissions: tc.omissions,
-					Body: "My note\r\n\r\n---------- Forwarded message ----------\r\nFrom: " + namePrefix + forwardFrom + "\r\nDate: " + declaredDate + "\r\nSubject: Original  subject\r\n\r\none\r\né\r\nlast\r\n\r\n"}
+				want := forwardPreview{From: forwardLogin, To: forwardTo, Subject: "Fwd: What does x=? mean", Omissions: tc.omissions,
+					Body: "My note\r\n\r\n---------- Forwarded message ----------\r\nFrom: " + namePrefix + forwardFrom + "\r\nDate: " + declaredDate + "\r\nSubject: What does x=?  mean\r\n\r\none\r\né\r\nlast\r\n\r\n"}
 				if result.Preview != want {
 					t.Fatalf("preview = %+v", result.Preview)
 				}
@@ -316,6 +318,12 @@ func TestForwardPreview(t *testing.T) {
 	t.Run("Wire/lossless text", func(t *testing.T) {
 		f := newForwardFixture(t, bridge.BoundsPatch{})
 		for _, tc := range []struct{ charset, encoding, raw, want string }{
+			{"ISO-2022-JP", "7bit", "\x1b(J\\~\x1b(B", "¥‾"},
+			{"HZ-GB-2312", "7bit", "ab~\ncd", "abcd"},
+			{"UTF-16", "binary", "\xff\xfe\xfd\xff", "�"},
+			{"GB18030", "8bit", "\x80\x84\x31\xa4\x37", "€�"},
+			{"ISO-2022-JP", "7bit", "\x1b$@$\"\x1b(B", "あ"},
+			{"us-ascii", "base64", strings.Repeat("YWJj", 19) + "\r\neA==", strings.Repeat("abc", 19) + "x"},
 			{"windows-1252", "quoted-printable", "Price =8012", "Price €12"},
 			{"utf-8", "8bit", "literal U+FFFD: �", "literal U+FFFD: �"},
 			{"us-ascii", "quoted-printable", strings.Repeat("a", 75) + "=\r\nb", strings.Repeat("a", 75) + "b"},
@@ -339,8 +347,6 @@ func TestForwardPreview(t *testing.T) {
 			{"ambiguous", multiStructure("mixed", plain, plain), "ok", true},
 			{"signed", multiStructure("signed", plain, file), "ok", true},
 			{"flowed", textStructure("plain", "7bit", `("format" "flowed")`, 2), "ok", true},
-			{"attachment", multiStructure("mixed", plain, file), "ok", false},
-			{"attached message", multiStructure("mixed", plain, nested), "ok", false},
 			{"short", plain, "o", false}, {"underdeclared", plain, "okay", false},
 			{"oversize", textStructure("plain", "8bit", utf8Params, 262145), "ok", false},
 			{"damaged name parameter", textStructure("plain", "7bit", `("name*" "unknown''file.txt")`, 2), "ok", true},
@@ -352,6 +358,24 @@ func TestForwardPreview(t *testing.T) {
 				f.refuse(t, f.arguments(tc.consent))
 			})
 		}
+		for _, tc := range []struct {
+			name, omitted, mimeFields string
+			want                      bridge.ForwardOmissions
+		}{
+			{"attachment", file, "Content-Type: application/pdf\r\nContent-Disposition: attachment; filename=file.pdf\r\nContent-Transfer-Encoding: base64\r\n", bridge.ForwardOmissions{Files: 1}},
+			{"attached message", nested, "Content-Type: message/rfc822\r\n", bridge.ForwardOmissions{AttachedMessages: 1}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				f.set(fmt.Sprintf(`(%s %s "mixed" ("boundary" "mixed") NIL NIL NIL)`, plain, tc.omitted), "1", "ok")
+				f.setMIME(map[string]string{"HEADER": "Content-Type: multipart/mixed; boundary=mixed\r\n", "1.MIME": plainMIME, "2.MIME": tc.mimeFields})
+
+				requireToolError(t, callTool(t, f.client, forwardTool, f.arguments(false)), errUnsupported)
+				if got := f.prepare(t, true).Preview.Omissions; got != tc.want {
+					t.Fatalf("omissions = %+v, want %+v", got, tc.want)
+				}
+			})
+		}
+
 		t.Run("primary nested", func(t *testing.T) {
 			f.set(multiStructure("mixed", nested, plain), "2", "ok")
 			f.setMIME(map[string]string{"HEADER": "Content-Type: multipart/mixed; boundary=test\r\n", "2.MIME": plainMIME})
@@ -366,9 +390,15 @@ func TestForwardPreview(t *testing.T) {
 		})
 
 		for _, tc := range []struct{ name, charset, encoding, raw string }{
+			{"overlong base64 line", "us-ascii", "base64", base64.StdEncoding.EncodeToString([]byte(strings.Repeat("a", 58)))},
+			{"spurious HZ shift", "HZ-GB-2312", "7bit", "a~}b"},
+			{"truncated ISO-2022-JP", "ISO-2022-JP", "7bit", "\x1b$@$"},
+			{"unterminated ISO-2022-JP shift", "ISO-2022-JP", "7bit", "\x1b$@$\""},
 			{"bad base64", "utf-8", "base64", "x!=="},
 			{"bad QP", "utf-8", "quoted-printable", "=xz"},
 			{"overlong QP line", "utf-8", "quoted-printable", strings.Repeat("a", 77) + "\r\n"},
+			{"bad GB18030 digit", "GB18030", "8bit", "\x81:\x810"},
+			{"lossy UTF-16", "UTF-16", "binary", "\xff\xfe\xfd\xff\x00\xdc"},
 			{"lossy UTF-8", "utf-8", "8bit", "\xff"},
 			{"lossy Windows-1252", "windows-1252", "8bit", "\x81"},
 			{"bad charset", "bogus", "8bit", "ok"},
@@ -388,6 +418,8 @@ func TestForwardPreview(t *testing.T) {
 			consent                  bool
 			fields                   map[string]string
 		}{
+			{"encoded multipart", multiStructure("alternative", plain), "1", false,
+				map[string]string{"HEADER": "Content-Type: multipart/alternative; boundary=a\r\nContent-Transfer-Encoding: quoted-printable\r\n", "1.MIME": plainMIME}},
 			{"hidden root attachment", plain, "1", false, map[string]string{"HEADER": plainMIME + hiddenDisposition}},
 			{"normalized format", fixed, "1", false, map[string]string{"HEADER": conflictingFormat}},
 			{"malformed disposition field", plain, "1", false, map[string]string{"HEADER": plainMIME + "Content-Disposition : attachment\r\n"}},
@@ -441,6 +473,13 @@ func TestForwardPreview(t *testing.T) {
 		f.mu.Lock()
 		f.commands = nil
 		f.mu.Unlock()
+
+		for _, malformed := range []string{`\ud800`, "\xff"} {
+			args := json.RawMessage(fmt.Sprintf(`{"messageId":%q,"to":%q,"text":"%s"}`, f.id, forwardTo, malformed))
+			if _, code := runPrepareForward(t.Context(), Options{Forward: f.store}, args); code != errInvalidArgument {
+				t.Fatalf("malformed authored text returned %q", code)
+			}
+		}
 
 		for _, to := range []string{"", "A <a@b.test>", "a@b.test,c@d.test", "a@b.test\r\nBcc: trap@sender.test", "a@b.test (comment)",
 			"reviewer@[IPv6:192.0.2.1]", "reviewer@[::ffff:192.0.2.1]", "recipient@bad/path.test", "recipient@-bad.test", "recipient@" + strings.Repeat("x", 64) + ".test"} {
@@ -576,7 +615,12 @@ func TestForwardPreview(t *testing.T) {
 			for _, unit := range []string{"p", "\"\\<&"} {
 				encoded, _ := json.Marshal(unit)
 				cost := len(encoded) - 2
-				content := strings.Repeat(unit, room/cost) + strings.Repeat("x", room%cost)
+				prefix := ""
+				if field == "authored" {
+					prefix = "�"
+				}
+				padding := room - len(prefix)
+				content := prefix + strings.Repeat(unit, padding/cost) + strings.Repeat("x", padding%cost)
 				args := f.arguments(false)
 				want := base.Preview.Body + content
 				if field == "authored" {

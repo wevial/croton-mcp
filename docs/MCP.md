@@ -236,10 +236,12 @@ it checks the original MIME declarations in the message header and the
 headers of inline parts. Ambiguous declarations, HTML-only, signed or flowed
 mail, primary nested messages and incomplete or undecodable text are refused.
 A declared charset or format must have a single, decodable parameter value.
-US-ASCII and UTF-8 text must be valid. Other supported MIME charsets,
-including ISO-8859-1 and Windows-1252, must reproduce the original bytes
-when the decoded text is re-encoded. Quoted-printable source lines can contain
-up to 76 encoded characters before CRLF.
+Multipart containers accept 7bit (the default), 8bit or binary transfer
+encoding. Base64 and quoted-printable source lines can contain up to 76
+encoded characters before CRLF. Source text must decode losslessly.
+Supported charsets include UTF-8, ISO-8859-1, Windows-1252 and ISO-2022-JP
+with either JIS X 0208 designation. Authored text can include a literal
+Unicode replacement character (U+FFFD).
 
 Header, section, part and depth bounds apply. The partial PEEK requests one
 octet beyond the declared section length to verify it is complete. That octet

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"fmt"
 	"mime/quotedprintable"
 	"net/mail"
@@ -85,9 +86,14 @@ func runPrepareForward(ctx context.Context, options Options, args json.RawMessag
 	if !strictjson.DecodeObject(args, stdioframe.MaxFrameBytes, &in) || !validMessageIdentifier(in.MessageID) || !plainMailbox(in.To) {
 		return nil, errInvalidArgument
 	}
+	// encoding/json repairs malformed UTF-8 and unpaired surrogate escapes.
+	if strings.ContainsRune(in.Text, utf8.RuneError) && !jsontext.Value(args).IsValid() {
+		return nil, errInvalidArgument
+	}
+
 	authored := strings.ReplaceAll(in.Text, "\r\n", "\n")
 	if strings.ContainsFunc(authored, func(r rune) bool {
-		return r == utf8.RuneError || (unicode.IsControl(r) && r != '\t' && r != '\n')
+		return unicode.IsControl(r) && r != '\t' && r != '\n'
 	}) {
 		return nil, errInvalidArgument
 	}
