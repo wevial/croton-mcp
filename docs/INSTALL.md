@@ -98,6 +98,8 @@ JSON: unknown, null, duplicate and case-folded-alias fields fail.
 
 ## 5. Register with your MCP client
 
+### Local client (stdio)
+
 Register a stdio server with command `/home/you/bin/croton-mcp` and arguments
 `["--config", "/home/you/.config/croton/mail.json"]`. Pass no credentials or
 environment. For example, with Hermes:
@@ -110,6 +112,133 @@ hermes mcp test croton
 ```
 
 `--args` must come last; `hermes mcp remove croton` undoes it.
+
+### Remote connector on claude.ai (read-only)
+
+Use a separate configuration and credential helper pointed at a loopback Bridge
+or IMAP fixture containing **only synthetic mail**. Pin its certificate as in
+step 2 and leave `mutations.enabled` false. Claude reads from the account
+selected by that helper. Give Croton a dedicated HTTPS origin with TLS
+termination on the operator's host and no CDN TLS termination.
+
+**Publish the endpoint.** Use Tailscale CLI 1.104.5 or later on a dedicated
+node with HTTPS and Funnel enabled for port 443. On Linux with a root-owned
+`tailscaled`, have an administrator run `sudo tailscale set --operator=CROTON_USER`
+before setup, replacing `CROTON_USER` with the local username that runs Croton.
+This lets that user configure the Funnel route after approving publication.
+Run Croton and its owner commands as that user.
+[Tailscale Linux operator permissions](https://tailscale.com/docs/reference/troubleshooting/linux/linux-operator-permission)
+
+In the owner terminal, check
+`tailscale serve status` and `tailscale funnel status`. Port 443 must be free
+and under your exclusive control until Croton stops. Use your synthetic paths.
+
+```sh
+~/bin/croton-mcp serve --public=tailscale --authorizer owner \
+  --config "$HOME/.config/croton/synthetic.json" \
+  --state-dir "$HOME/.local/state/croton-synthetic"
+```
+
+Check the displayed node hostname and loopback target (default
+`http://127.0.0.1:8787`). Type `yes` only if you approve publishing **every
+path on that host's port 443**. Leave Croton running. Append `/mcp` to the
+displayed HTTPS origin, e.g. `https://croton.tail.test/mcp`.
+
+For an owner-managed HTTPS proxy, start Croton with the synthetic
+configuration and the state directory used by the owner commands below.
+
+```sh
+~/bin/croton-mcp serve --authorizer owner --public-url https://mail.example.test \
+  --config "$HOME/.config/croton/synthetic.json" \
+  --state-dir "$HOME/.local/state/croton-synthetic"
+```
+
+Replace `https://mail.example.test` with your approved origin and configure
+the proxy to forward all paths to Croton before pairing.
+[Owner-managed HTTPS proxy configuration](MCP.md#owner-managed-https-proxy)
+
+**Pair the browser and sign in.**
+
+1. In a second terminal on the same host, under the same user, run
+   `~/bin/croton-mcp pair --state-dir "$HOME/.local/state/croton-synthetic"`.
+   Open its single-use link in the browser profile you use for claude.ai and
+   select **Pair this browser**. Keep this link private. The browser needs
+   JavaScript and local storage.
+2. In Claude's Connectors settings, add a custom web connector with the
+   HTTPS `/mcp` URL. Choose **Sign in now** and **Register automatically**
+   (dynamic client registration). Leave client credentials and request headers
+   empty. Start sign-in in the paired browser while the window is open.
+   [Claude custom connector instructions](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp)
+3. When the browser shows a comparison code, run
+   `~/bin/croton-mcp approve --state-dir "$HOME/.local/state/croton-synthetic"`.
+   Review the client ID and self-reported name. Check the full redirect URI
+   (`https://claude.ai/api/mcp/auth_callback` for Claude), your exact HTTPS
+   `/mcp` resource, the S256 challenge and the comparison code. Enter the
+   matching browser code, then select **Continue after approval** in that
+   tab to return to Claude.
+4. Enable the connector in a chat and request `list_folders`. Check for the
+   expected synthetic folder. A client that registers for both
+   `authorization_code` and `refresh_token` can renew access after expiry
+   without opening another pairing window.
+
+**State and lifetimes.** Use the same absolute, symlink-free `--state-dir`
+for every command. Croton creates it with mode `0700` and stores paired
+grants in `oauth.db` (mode `0600`). The running server accepts local owner
+commands on `owner.sock`. Without the flag, Linux uses
+`$XDG_STATE_HOME/croton-mcp` when the variable is absolute, otherwise
+`~/.local/state/croton-mcp`. macOS uses `~/Library/Application Support/croton-mcp`.
+
+| Setting on the serving process | Default | What it controls |
+| --- | --- | --- |
+| `--pairing-window` | `3m` | Time to register and approve a client |
+| `--handoff-lifetime` | `2m` | Time to claim the terminal link |
+| `--pending-limit` | `8` | Registrations per pairing window |
+| `--code-lifetime` | `1m` | Time after approval to finish and exchange the code |
+| `--access-lifetime` | `10m` | Access token lifetime |
+| `CROTON_REFRESH_IDLE_TIMEOUT` (environment) | `720h` | Idle lifetime, restarted on each refresh |
+
+Keep the default refresh lifetime for the initial setup. Duration settings
+take Go durations. The client must save the new token pair after each refresh.
+After idle expiry, pair again.
+
+**Unpair and take down the route.** While Croton is running, list the paired
+clients and revoke the registration ID for this connector in the owner terminal.
+
+```sh
+~/bin/croton-mcp clients --state-dir "$HOME/.local/state/croton-synthetic"
+~/bin/croton-mcp unpair --state-dir "$HOME/.local/state/croton-synthetic" CLIENT_ID
+```
+
+Disconnect the connector in Claude, then follow the steps for your HTTPS setup.
+
+- **Owner-managed proxy.** While Croton is still running, disable or remove
+  the route for its dedicated origin and apply the proxy configuration. Check
+  the proxy's active routes to confirm that no path on that host forwards to
+  Croton's loopback target. Request `/.well-known/oauth-authorization-server`
+  at the public origin without credentials and confirm it no longer serves
+  Croton's metadata. Then stop Croton with Ctrl-C.
+- **Tailscale Funnel.** Stop Croton with Ctrl-C. Check `tailscale funnel status`
+  and `tailscale serve status` again. Confirm the background HTTPS 443 root
+  route to Croton is gone. After a crash or a cleanup warning, inspect the
+  root mount before reusing the port. If its target matches the Croton loopback
+  target you approved, run `tailscale funnel --https=443 --set-path=/ off`
+  and recheck both statuses.
+
+**Verify from the repository root.** The test uses fake mail, a fake Tailscale
+CLI, Python 3.9 or later to drive the terminal, and Node.js to run the
+browser handoff scripts.
+
+```sh
+go test -race -count=1 -timeout=180s ./cmd/croton-mcp -run '^TestRemoteConnectorSetup$'
+```
+
+A claude.ai smoke test requires separate operator authorization. With synthetic
+mail, confirm discovery, automatic registration, terminal pairing, JSON MCP
+responses, a read after actual access expiry and refresh, refusal in an
+unapproved browser, and local unpair. From the actual `initialize` request,
+record form elicitation as **present**, **absent**, or **unobservable** if you
+cannot inspect the request or its capabilities. Report outcomes only. Omit
+secrets, mail, account identifiers, token-bearing URLs and raw requests.
 
 ## 6. Verify
 
