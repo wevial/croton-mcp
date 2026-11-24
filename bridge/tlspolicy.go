@@ -27,7 +27,7 @@ func NewTLSConfig(input TLSConfig) (*tls.Config, error) {
 
 	var verifier tlsVerifier
 	if input.TrustAnchorFile != "" {
-		verifier.anchor, err = loadTrustAnchor(input.TrustAnchorFile)
+		verifier.anchor, err = loadTrustAnchorWith(input.TrustAnchorFile, trustAnchorFileSupported, openTrustAnchor)
 		if err != nil {
 			return nil, err
 		}
@@ -48,10 +48,6 @@ func NewTLSConfig(input TLSConfig) (*tls.Config, error) {
 type tlsVerifier struct {
 	anchor *x509.Certificate
 	pin    []byte
-}
-
-func loadTrustAnchor(path string) (*x509.Certificate, error) {
-	return loadTrustAnchorWith(path, trustAnchorFileSupported, openTrustAnchor)
 }
 
 type trustAnchorOpener func(string) (*os.File, error)
