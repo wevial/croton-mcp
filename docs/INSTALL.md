@@ -142,9 +142,20 @@ and under your exclusive control until Croton stops. Use your synthetic paths.
 Check the displayed node hostname and loopback target (default
 `http://127.0.0.1:8787`). Type `yes` only if you approve publishing **every
 path on that host's port 443**. Leave Croton running. Append `/mcp` to the
-displayed HTTPS origin, e.g. `https://croton.tail.test/mcp`. For a dedicated
-HTTPS reverse proxy on the host, follow the [owner-managed proxy setup](MCP.md#owner-managed-https-proxy)
-before pairing.
+displayed HTTPS origin, e.g. `https://croton.tail.test/mcp`.
+
+For an owner-managed HTTPS proxy, start Croton with the synthetic
+configuration and the state directory used by the owner commands below.
+
+```sh
+~/bin/croton-mcp serve --authorizer owner --public-url https://mail.example.test \
+  --config "$HOME/.config/croton/synthetic.json" \
+  --state-dir "$HOME/.local/state/croton-synthetic"
+```
+
+Replace `https://mail.example.test` with your approved origin and configure
+the proxy to forward all paths to Croton before pairing.
+[Owner-managed HTTPS proxy configuration](MCP.md#owner-managed-https-proxy)
 
 **Pair the browser and sign in.**
 
@@ -206,7 +217,8 @@ target matches the Croton loopback target you approved, run
 `tailscale funnel --https=443 --set-path=/ off` and recheck both statuses.
 
 **Verify from the repository root.** The test uses fake mail, a fake Tailscale
-CLI and Python 3.9 or later to drive the terminal.
+CLI, Python 3.9 or later to drive the terminal, and Node.js to run the
+browser handoff scripts.
 
 ```sh
 go test -race -count=1 -timeout=180s ./cmd/croton-mcp -run '^TestRemoteConnectorSetup$'

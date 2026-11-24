@@ -53,6 +53,13 @@ sys.exit(os.waitstatus_to_exitcode(status))
 }
 
 func TestRemoteConnectorSetup(t *testing.T) {
+	// Resolve Node.js before the Funnel fixture adds its "node" data file to PATH.
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatal("the setup test requires Node.js on PATH")
+	}
+	browser := setupBrowser{node: node}
+
 	binary := buildCrotonBinary(t)
 	bridge := fixtureBridge(t)
 	funnel := newFunnelFixture(t, writeServerConfig(t, bridge))
@@ -124,16 +131,15 @@ func TestRemoteConnectorSetup(t *testing.T) {
 	if err != nil || link.Scheme+"://"+link.Host != p.origin || link.Fragment == "" {
 		t.Fatal("invalid terminal handoff")
 	}
-	handoff := link.Fragment
+	browserURL := link.String()
 	link.Fragment = ""
-	_, body = p.request(t, "GET", path(link.String()), "", "", http.StatusOK)
-	pairURL, pair := setupPostForm(t, link.String(), body, "Pair this browser")
-	if !pair.Has("handoff") {
-		t.Fatal("pairing form is missing the handoff field")
-	}
-	pair.Set("handoff", handoff)
-	_, body = p.request(t, "POST", path(pairURL), clientForm, pair.Encode(), http.StatusOK)
-	owner := field(body, `data-owner="([^"]+)"`)
+	headers, body = p.request(t, "GET", path(link.String()), "", "", http.StatusOK)
+	page := setupDocument(t, body)
+	pairURL, pair := setupPostForm(t, link.String(), page, "Pair this browser")
+	pair = browser.runScripts(t, browserURL, page, headers, pair, false)
+
+	headers, body = p.request(t, "POST", path(pairURL), clientForm, pair.Encode(), http.StatusOK)
+	browser.runScripts(t, pairURL, setupDocument(t, body), headers, nil, false)
 
 	_, body = p.request(t, "POST", path(metadata.Register), "application/json",
 		`{"client_name":"setup.test","redirect_uris":["`+clientRedirect+`"],"grant_types":["authorization_code","refresh_token"]}`, http.StatusCreated)
@@ -148,16 +154,14 @@ func TestRemoteConnectorSetup(t *testing.T) {
 		"resource": {resource.Resource}, "state": {"setup.test"},
 	}
 	authorizeURL := metadata.Authorize + "?" + authorize.Encode()
-	_, body = p.request(t, "GET", path(authorizeURL), "", "", http.StatusOK)
-	signinURL, signin := setupPostForm(t, authorizeURL, body, "")
-	if !signin.Has("owner") {
-		t.Fatal("sign-in form is missing the browser owner field")
-	}
-	signin.Set("owner", owner)
+	headers, body = p.request(t, "GET", path(authorizeURL), "", "", http.StatusOK)
+	page = setupDocument(t, body)
+	signinURL, signin := setupPostForm(t, authorizeURL, page, "")
+	signin = browser.runScripts(t, authorizeURL, page, headers, signin, true)
 	_, body = p.request(t, "POST", path(signinURL), clientForm, signin.Encode(), http.StatusOK)
 	terminal("approve", field(body, `<strong>([^<]+)</strong>`)+"\n")
 
-	finishURL, continuation := setupPostForm(t, signinURL, body, "Continue after approval")
+	finishURL, continuation := setupPostForm(t, signinURL, setupDocument(t, body), "Continue after approval")
 	headers, _ = p.request(t, "POST", path(finishURL), clientForm, continuation.Encode(), http.StatusSeeOther)
 	callback, err := url.Parse(headers.Get("Location"))
 	if err != nil || callback.Scheme+"://"+callback.Host+callback.Path != clientRedirect ||
@@ -209,16 +213,108 @@ func TestRemoteConnectorSetup(t *testing.T) {
 	}
 }
 
-// A blank button label represents the sign-in page's scripted form.submit().
-func setupPostForm(t *testing.T, pageURL string, body []byte, buttonLabel string) (string, url.Values) {
+func setupDocument(t *testing.T, body []byte) *html.Node {
+	t.Helper()
+	doc, err := html.Parse(bytes.NewReader(body))
+	if err != nil {
+		t.Fatal("invalid browser page")
+	}
+
+	return doc
+}
+
+type setupBrowser struct {
+	node    string
+	storage map[string]string
+}
+
+// Run the served inline scripts with the form controls and local storage of the synthetic browser.
+func (b *setupBrowser) runScripts(t *testing.T, pageURL string, doc *html.Node, headers http.Header, fields url.Values, wantSubmit bool) url.Values {
+	t.Helper()
+	page := struct {
+		URL, Owner string
+		Scripts    []string
+		Fields     url.Values
+		Storage    map[string]string
+	}{URL: pageURL, Fields: fields, Storage: b.storage}
+
+	var scriptSources []string
+	for directive := range strings.SplitSeq(headers.Get("Content-Security-Policy"), ";") {
+		if parts := strings.Fields(directive); len(parts) > 0 && parts[0] == "script-src" {
+			scriptSources = parts[1:]
+			break
+		}
+	}
+
+	for node := range doc.Descendants() {
+		switch node.DataAtom {
+		case atom.Body:
+			for _, attr := range node.Attr {
+				if attr.Key == "data-owner" {
+					page.Owner = attr.Val
+				}
+			}
+		case atom.Script:
+			for _, attr := range node.Attr {
+				if attr.Key == "nonce" && slices.Contains(scriptSources, "'nonce-"+attr.Val+"'") && node.FirstChild != nil {
+					page.Scripts = append(page.Scripts, node.FirstChild.Data)
+				}
+			}
+		}
+	}
+
+	const driver = `
+const page = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+const vm = require("node:vm");
+const location = new URL(page.URL);
+const store = new Map(Object.entries(page.Storage || {}));
+const localStorage = {
+    getItem: key => store.get(key) ?? null,
+    setItem: (key, value) => store.set(key, String(value)),
+};
+const elements = Object.fromEntries(Object.entries(page.Fields || {}).map(
+    ([name, [value]]) => [name, {value}]));
+const values = () => Object.fromEntries(Object.entries(elements).map(
+    ([name, control]) => [name, [control.value]]));
+let submission;
+const form = {...elements, elements, submit() { submission = values(); }};
+const document = {forms: page.Fields ? [form] : [], body: {dataset: {owner: page.Owner}}};
+const history = {replaceState(_, title, url) { location.href = new URL(url, location).href; }};
+const context = vm.createContext({document, history, localStorage, location});
+for (const script of page.Scripts || []) vm.runInContext(script, context, {timeout: 1000});
+process.stdout.write(JSON.stringify({
+    fields: submission ?? values(), submitted: !!submission, storage: Object.fromEntries(store)
+}));
+`
+	input, err := json.Marshal(page)
+	if err != nil {
+		t.Fatal("could not encode synthetic page")
+	}
+	cmd := exec.CommandContext(t.Context(), b.node, "-e", driver)
+	cmd.Stdin = bytes.NewReader(input)
+
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("could not execute browser handoff scripts: %v", err)
+	}
+	var result struct {
+		Fields    url.Values
+		Submitted bool
+		Storage   map[string]string
+	}
+	if json.Unmarshal(output, &result) != nil || result.Submitted != wantSubmit {
+		t.Fatal("unexpected browser handoff form submission")
+	}
+
+	b.storage = result.Storage
+	return result.Fields
+}
+
+func setupPostForm(t *testing.T, pageURL string, doc *html.Node, buttonLabel string) (string, url.Values) {
 	t.Helper()
 	page, err := url.Parse(pageURL)
 	if err != nil {
 		t.Fatal("invalid form page URL")
-	}
-	doc, err := html.Parse(bytes.NewReader(body))
-	if err != nil {
-		t.Fatal("invalid form page")
 	}
 
 	attributes := func(node *html.Node) map[string]string {
