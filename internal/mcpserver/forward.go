@@ -365,8 +365,7 @@ func (store *ForwardPreviews) approval(cfg bridge.ForwardConfig, request *mcp.Ca
 		len(response.Content) != 1 || response.Content["confirm"] != true {
 		return nil, nil, errorResult(errInvalidArgument)
 	}
-	versionAtForm := pending.policyVersion
-	return pending, &versionAtForm, nil
+	return pending, new(pending.policyVersion), nil
 }
 
 // After the login recheck, the reservation survives every SMTP outcome.

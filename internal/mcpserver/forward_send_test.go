@@ -507,9 +507,8 @@ func TestForwardSend(t *testing.T) {
 
 					// Locate the live key/value pair beyond both metadata pages.
 					// Only the current snapshot contains the tenth timestamp.
-					name := []byte("reservations-v2")
 					key := sha256.Sum256([]byte(forwardLogin))
-					stamps := tx.Bucket(name).Get(key[:])
+					stamps := tx.Bucket([]byte("reservations-v2")).Get(key[:])
 					entry := append(key[:], stamps...)
 					pages := data[2*pageSize:]
 					if len(stamps) != 10*8 || bytes.Count(pages, entry) != 1 {

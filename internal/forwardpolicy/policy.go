@@ -82,22 +82,18 @@ func withPolicy(cfg bridge.ForwardConfig, login string, change func(*Policy, *bo
 		}
 
 		encoded, err := json.Marshal(policy)
+		if err == nil && !bytes.Equal(encoded, record) {
+			err = policies.Put(key[:], encoded)
+		}
 		if err != nil {
 			return err
 		}
-		if !bytes.Equal(encoded, record) {
-			if err := policies.Put(key[:], encoded); err != nil {
-				return err
-			}
-		}
+
 		checksum, err = stateChecksum(b)
-		if err != nil {
-			return err
+		if err == nil && !bytes.Equal(checksum, b.Get([]byte(checksumKey))) {
+			err = b.Put([]byte(checksumKey), checksum)
 		}
-		if bytes.Equal(checksum, b.Get([]byte(checksumKey))) {
-			return nil
-		}
-		return b.Put([]byte(checksumKey), checksum)
+		return err
 	})
 }
 
@@ -165,8 +161,7 @@ func Learn(cfg bridge.ForwardConfig, login, recipient string, version uint64) er
 
 	return withPolicy(cfg, login, func(p *Policy, policies *bolt.Bucket) error {
 		key := forgetKey(login, address)
-		value := policies.Get(key[:])
-		if value != nil && binary.BigEndian.Uint64(value) > version {
+		if value := policies.Get(key[:]); value != nil && binary.BigEndian.Uint64(value) > version {
 			return nil
 		}
 		return p.allow(address)
