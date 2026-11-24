@@ -224,8 +224,7 @@ func confirmation(t *testing.T, f *forwardFixture, cfg bridge.ForwardConfig, r f
 
 func requirePreflightRefusal(t *testing.T, f *forwardFixture, cfg bridge.ForwardConfig, req *mcp.CallToolRequest) {
 	t.Helper()
-	result := f.store.send(t.Context(), cfg, req, nil)
-	if result == nil || !result.IsError {
+	if result := f.store.send(t.Context(), cfg, req, nil); result == nil || !result.IsError {
 		t.Fatal("expected a refusal before SMTP")
 	}
 }
@@ -257,13 +256,13 @@ func TestForwardSend(t *testing.T) {
 
 		req := confirmation(t, f, p.config, r)
 		original := req.Params.Arguments
-		for _, invalid := range []string{
-			strings.Replace(string(original), forwardTo, "trap@sender.test", 1),
-			strings.Replace(string(original), `"files":0,`, "", 1),
-			strings.Replace(string(original), "My note", "My Note", 1),
-			strings.Replace(string(original), r.Handle, r.Handle+"x", 1),
+		for _, edit := range []struct{ from, to string }{
+			{forwardTo, "trap@sender.test"},
+			{`"files":0,`, ""},
+			{"My note", "My Note"},
+			{r.Handle, r.Handle + "x"},
 		} {
-			req.Params.Arguments = json.RawMessage(invalid)
+			req.Params.Arguments = json.RawMessage(strings.Replace(string(original), edit.from, edit.to, 1))
 			requirePreflightRefusal(t, f, p.config, req)
 		}
 		req.Params.Arguments = original
@@ -272,9 +271,8 @@ func TestForwardSend(t *testing.T) {
 		requirePreflightRefusal(t, f, p.config, req)
 		req.Session = session
 
-		f.prepare(t, false)
-		requirePreflightRefusal(t, f, p.config, req)
 		r = f.prepare(t, false)
+		requirePreflightRefusal(t, f, p.config, req)
 		req = confirmation(t, f, p.config, r)
 		f.store.mu.Lock()
 		f.store.current.expires = time.Now()
@@ -453,8 +451,7 @@ func TestForwardSend(t *testing.T) {
 		} {
 			t.Run(tc.mode+"/"+tc.fault, func(t *testing.T) {
 				p := newSMTPPeer(t, tc.mode, tc.fault)
-				r := f.prepare(t, false)
-				req := confirmation(t, f, p.config, r)
+				req := confirmation(t, f, p.config, f.prepare(t, false))
 				result := f.store.send(t.Context(), p.config, req, nil)
 				if tc.fault == "" {
 					requireSendOutcome(t, result, "accepted")
