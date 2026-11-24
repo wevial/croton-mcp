@@ -13,6 +13,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -34,6 +35,7 @@ import (
 	"github.com/wevial/croton-mcp/internal/owneroauth"
 	"github.com/wevial/croton-mcp/internal/testkit"
 	"golang.org/x/oauth2"
+	"golang.org/x/sys/unix"
 )
 
 func fixtureBridge(t *testing.T) *testkit.Server {
@@ -138,7 +140,19 @@ type httpProcess struct {
 	client         *http.Client
 }
 
-func startHTTP(t *testing.T, config string, env ...string) *httpProcess {
+func startHTTP(t *testing.T, config string, stderr *os.File, env ...string) *httpProcess {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := l.Addr().String()
+	l.Close()
+
+	return startHTTPAt(t, config, address, "https://"+address, stderr, env...)
+}
+
+func startHTTPAt(t *testing.T, config, address, origin string, stderr *os.File, env ...string) *httpProcess {
 	t.Helper()
 	// Keep the Unix socket under Darwin's sockaddr_un path limit.
 	dir, err := os.MkdirTemp("/tmp", "croton-")
@@ -150,25 +164,26 @@ func startHTTP(t *testing.T, config string, env ...string) *httpProcess {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	args := []string{"serve", "--config", config, "--authorizer", "owner", "--bind", address, "--state-dir", dir}
+	transport := &http.Transport{}
+	if strings.HasPrefix(origin, "https://") {
+		transport.TLSClientConfig = testTLS(t, dir)
+		args = append(args, "--tls-cert", filepath.Join(dir, "cert.pem"), "--tls-key", filepath.Join(dir, "key.pem"))
 	}
-	address := l.Addr().String()
-	l.Close()
-
-	transport := &http.Transport{TLSClientConfig: testTLS(t, dir)}
 	t.Cleanup(transport.CloseIdleConnections)
 	jar, _ := cookiejar.New(nil)
-	p := &httpProcess{dir: dir, origin: "https://" + address, done: make(chan struct{}), client: &http.Client{Transport: transport, Jar: jar, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	p := &httpProcess{dir: dir, origin: origin, done: make(chan struct{}), client: &http.Client{Transport: transport, Jar: jar, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.cmd = exec.Command(executable, "serve", "--config", config, "--authorizer", "owner", "--bind", address, "--state-dir", dir, "--tls-cert", filepath.Join(dir, "cert.pem"), "--tls-key", filepath.Join(dir, "key.pem"))
+	p.cmd = exec.Command(executable, args...)
 	p.cmd.Env = append(os.Environ(), runMainEnv+"=1")
 	p.cmd.Env = append(p.cmd.Env, env...)
 	p.cmd.Stdout, p.cmd.Stderr = &p.stdout, &p.stderr
+	if stderr != nil {
+		p.cmd.Stderr = stderr
+	}
 	if err = p.cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -230,6 +245,36 @@ func (p *httpProcess) request(t *testing.T, method, path, media, body string, st
 	return resp.Header, b
 }
 
+func TestHTTPTransportDefaultPortOrigin(t *testing.T) {
+	config := writeServerConfig(t, fixtureBridge(t))
+	for _, tc := range []struct{ address, origin string }{
+		{"127.0.0.1:80", "http://127.0.0.1"},
+		{"127.0.0.1:443", "https://127.0.0.1"},
+	} {
+		t.Run(tc.origin, func(t *testing.T) {
+			probe, err := net.Listen("tcp", tc.address)
+			if errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EADDRINUSE) {
+				t.Skipf("default port unavailable: %v", err)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			probe.Close()
+
+			p := startHTTPAt(t, config, tc.address, tc.origin, nil)
+			_, body := p.request(t, "GET", owneroauth.ResourceMetadataPath, "", "", http.StatusOK)
+			var metadata struct {
+				Resource string   `json:"resource"`
+				Issuers  []string `json:"authorization_servers"`
+			}
+			if json.Unmarshal(body, &metadata) != nil || metadata.Resource != tc.origin+"/mcp" || !slices.Equal(metadata.Issuers, []string{tc.origin}) {
+				t.Fatal("incorrect default-port discovery metadata")
+			}
+			p.stop(t)
+		})
+	}
+}
+
 type terminalIO struct {
 	io.Reader
 	io.Writer
@@ -287,7 +332,7 @@ func (p *httpProcess) pair(t *testing.T) string {
 			t.Fatal("incomplete terminal review")
 		}
 	}
-	h, _ = p.request(t, "POST", "/owner/finish", form, owner.Encode(), 303)
+	h, _ = p.request(t, "POST", "/owner/finish", form, signin.Encode(), 303)
 	redirect, err := url.Parse(h.Get("Location"))
 	if err != nil || redirect.Host != "client.test" || redirect.Query().Get("iss") != p.origin {
 		t.Fatal("wrong callback")
@@ -318,7 +363,7 @@ func (p *httpProcess) session(t *testing.T, token, version string) *mcp.ClientSe
 
 func TestHTTPTransportPairedReads(t *testing.T) {
 	server := fixtureBridge(t)
-	p := startHTTP(t, writeServerConfig(t, server))
+	p := startHTTP(t, writeServerConfig(t, server), nil)
 	token := p.pair(t)
 	session := p.session(t, token, "2026-07-28")
 	listed, err := session.ListTools(t.Context(), nil)
@@ -378,7 +423,7 @@ func TestHTTPTransportBridgeQueue(t *testing.T) {
 				imap["commandTimeoutMs"] = budget.Milliseconds()
 				imap["credentialCommand"] = []string{"/bin/sh", "-c", `echo started >> "$1"; exec /bin/sleep 45`, "fixture.test", marker}
 			})
-			p := startHTTP(t, config, "CROTON_TEST_BRIDGE_GATE="+marker)
+			p := startHTTP(t, config, nil, "CROTON_TEST_BRIDGE_GATE="+marker)
 			session := p.session(t, p.pair(t), version)
 			results := make(chan bool, 2)
 			call := func() {
@@ -435,6 +480,48 @@ func TestHTTPTransportBridgeQueue(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHTTPTransportBlockedAuditShutdown(t *testing.T) {
+	config := writeServerConfig(t, fixtureBridge(t))
+	marker := filepath.Join(canonicalTempDir(t), "active")
+	editConfig(t, config, func(cfg map[string]any) {
+		imap := cfg["imap"].(map[string]any)
+		imap["commandTimeoutMs"] = 30000
+		imap["credentialCommand"] = []string{"/bin/sh", "-c", `touch "$1"; exec /bin/sleep 45`, "fixture.test", marker}
+	})
+
+	reader, stderr, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer stderr.Close()
+
+	// Fill the pipe before passing its blocking write end to the subprocess.
+	fd := int(stderr.Fd())
+	if err := unix.SetNonblock(fd, true); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		_, err := unix.Write(fd, []byte{'x'})
+		if errors.Is(err, unix.EAGAIN) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := unix.SetNonblock(fd, false); err != nil {
+		t.Fatal(err)
+	}
+
+	p := startHTTP(t, config, stderr)
+	session := p.session(t, p.pair(t), "2026-07-28")
+	go session.CallTool(t.Context(), &mcp.CallToolParams{Name: "list_folders", Arguments: map[string]any{}})
+	waitForMarker(t, marker)
+
+	p.stop(t)
 }
 
 // Serve the pipe first so a TLS write blocks until the test peer reads it.

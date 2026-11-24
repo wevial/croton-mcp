@@ -20,7 +20,7 @@ import (
 
 const (
 	ResourceMetadataPath = "/.well-known/oauth-protected-resource/mcp"
-	requestCookie        = "croton-request"
+	requestCookiePrefix  = "croton-request-"
 )
 
 var errInvalid = errors.New("invalid request")
@@ -30,7 +30,7 @@ var signinPage = template.Must(template.New("signin").Funcs(template.FuncMap{"qu
 <p>Self-reported client name <code>{{quote .Name}}</code></p>
 <p>Redirect URI <code>{{quote .Redirect}}</code></p>
 <p>Run <code>croton-mcp approve</code> in your terminal. Check the client and redirect, then enter <strong>{{.Code}}</strong>.</p>
-<form method="post" action="/owner/finish"><input type="hidden" name="owner" value="{{.Owner}}"><button>Continue after approval</button></form>`))
+<form method="post" action="/owner/finish"><input type="hidden" name="request" value="{{.RequestID}}"><input type="hidden" name="owner" value="{{.Owner}}"><button>Continue after approval</button></form>`))
 
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -46,9 +46,9 @@ func cookie(r *http.Request, name string) string {
 	return cookies[0].Value
 }
 
-func (a *Authority) setRequestCookie(w http.ResponseWriter, value string) {
+func (a *Authority) setRequestCookie(w http.ResponseWriter, req *authorization) {
 	http.SetCookie(w, &http.Cookie{
-		Name: requestCookie, Value: value, Path: "/owner/",
+		Name: requestCookiePrefix + req.requestID, Value: req.browser, Path: "/owner/",
 		Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode,
 		MaxAge: int(a.settings.PairingWindow/time.Second) + int(a.settings.CodeLifetime/time.Second) + 1,
 	})
@@ -200,7 +200,7 @@ func (a *Authority) route(w http.ResponseWriter, r *http.Request) error {
 			return err
 		}
 
-		a.setRequestCookie(w, req.browser)
+		a.setRequestCookie(w, req)
 		nonce := browserPage(w)
 		fmt.Fprintf(w, `<!doctype html><title>Sign in to Croton</title>
 <form method="post" action="/owner/signin"><input type="hidden" name="request" value="%s"><input type="hidden" name="owner"></form>
@@ -236,7 +236,8 @@ func (a *Authority) route(w http.ResponseWriter, r *http.Request) error {
 <script nonce="%s">localStorage.setItem("croton-owner", document.body.dataset.owner)</script>`, owner, nonce)
 		case "/owner/signin":
 			owner := form.Get("owner")
-			details, err := a.signin(owner, cookie(r, requestCookie), form.Get("request"))
+			id := form.Get("request")
+			details, err := a.signin(owner, cookie(r, requestCookiePrefix+id), id)
 			if err != nil {
 				return err
 			}
@@ -247,7 +248,7 @@ func (a *Authority) route(w http.ResponseWriter, r *http.Request) error {
 				Owner string
 			}{details, owner})
 		case "/owner/finish":
-			location, err := a.finish(form.Get("owner"), cookie(r, requestCookie))
+			location, err := a.finish(form.Get("owner"), cookie(r, requestCookiePrefix+form.Get("request")))
 			if err != nil {
 				return err
 			}

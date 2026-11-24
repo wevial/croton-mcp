@@ -32,8 +32,10 @@ croton-mcp serve --authorizer owner --config /absolute/path/to/croton.json
 ```
 
 Set the client’s Streamable HTTP endpoint to `http://127.0.0.1:8787/mcp`.
-`--bind` accepts a loopback IP literal and port. Pairing uses a Secure, HttpOnly
-request cookie. If your browser rejects it over HTTP, use HTTPS.
+`--bind` accepts a loopback IP literal and port. Omit port 80 for HTTP or
+port 443 for HTTPS in the endpoint URL, Host and Origin. Include any other
+port. Each authorization request uses its own Secure, HttpOnly cookie.
+If your browser rejects it over HTTP, use HTTPS.
 For HTTPS, supply both `--tls-cert` and `--tls-key` and use `https://` in the
 endpoint. Your browser and client must trust the certificate for the listener
 IP. The Bridge connection uses the TLS pin or anchor in the Croton configuration.
@@ -49,9 +51,9 @@ IP. The Bridge connection uses the TLS pin or anchor in the Croton configuration
 3. Run `croton-mcp approve` in the terminal. Check the self-reported client
    name, client ID, full redirect URI, S256 challenge, resource and browser
    code. Enter the matching code to approve that request.
-4. Select **Continue after approval** in the same browser. The client receives
-   the code and issuer at its redirect URI. It has 60 seconds from terminal
-   approval to collect and exchange the code with the original redirect,
+4. Select **Continue after approval** in the approved request’s browser tab.
+   The client receives the code and issuer at its redirect URI. It has 60 seconds
+   from terminal approval to collect and exchange the code with the original redirect,
    resource and PKCE verifier. If the exchange returns `500 server_error`, the
    client can retry the same code before it expires. The bearer grants ten
    minutes of access to the six read tools. Pair again for a new grant.
@@ -84,7 +86,9 @@ to the entire registration request. Clients may register HTTPS redirects or
 HTTP redirects to loopback IP literals. A native client may select its loopback
 port at authorization. The server checks Host, any Origin header, bearer, and the
 64 KiB JSON frame before MCP dispatch. Tool calls share the configured IMAP
-command timeout across queuing and execution.
+command timeout across queuing and execution. On shutdown, the listener
+cancels tool calls and allows one second for HTTP connections to drain
+before closing any remaining sockets.
 
 ## Read tools
 

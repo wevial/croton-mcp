@@ -132,7 +132,7 @@ func run(ctx context.Context, arguments []string, stderr io.Writer) error {
 }
 
 func serveHTTP(ctx context.Context, cfg bridge.Config, address, dir, cert, key string, settings owneroauth.Settings, auditor *mcpserver.Auditor) error {
-	origin := "http://" + address
+	origin := "http://" + strings.TrimSuffix(address, ":80")
 	var tlsConfig *tls.Config
 	if cert != "" || key != "" {
 		pair, err := tls.LoadX509KeyPair(cert, key)
@@ -140,7 +140,7 @@ func serveHTTP(ctx context.Context, cfg bridge.Config, address, dir, cert, key s
 			return errors.New("HTTP TLS unavailable")
 		}
 		tlsConfig = &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}
-		origin = "https://" + address
+		origin = "https://" + strings.TrimSuffix(address, ":443")
 	}
 
 	validated, err := bridge.ValidateConfig(cfg)
@@ -193,7 +193,6 @@ func runHTTP(parent context.Context, listener net.Listener, handler http.Handler
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
-	var connections sync.WaitGroup
 	var sockets sync.Map // net.Conn to underlying transport
 
 	server := &http.Server{
@@ -213,10 +212,8 @@ func runHTTP(parent context.Context, listener net.Listener, handler http.Handler
 					raw = secured.NetConn()
 				}
 				sockets.Store(conn, raw)
-				connections.Add(1)
 			case http.StateClosed:
 				sockets.Delete(conn)
-				connections.Done()
 			}
 		},
 	}
@@ -225,13 +222,25 @@ func runHTTP(parent context.Context, listener net.Listener, handler http.Handler
 	err := server.Serve(listener)
 	cancel()
 
-	// Serve has registered every accepted connection. Interrupt the transport
-	// underneath TLS so a peer that stopped reading cannot stall close_notify.
-	sockets.Range(func(_, raw any) bool {
-		_ = raw.(net.Conn).Close()
-		return true
-	})
-	connections.Wait()
+	// Reserve time for owner IPC and Bridge logout within the CLI exit budget.
+	drain, stopDrain := context.WithTimeout(context.Background(), time.Second)
+	defer stopDrain()
+	drained := make(chan struct{})
+	go func() {
+		if server.Shutdown(drain) == nil {
+			close(drained)
+		}
+	}()
+
+	select {
+	case <-drained:
+	case <-drain.Done():
+		// Close underneath TLS even if Shutdown is stuck writing close_notify.
+		sockets.Range(func(_, raw any) bool {
+			_ = raw.(net.Conn).Close()
+			return true
+		})
+	}
 
 	if !errors.Is(err, net.ErrClosed) || parent.Err() == nil {
 		return errors.New("HTTP listener unavailable")

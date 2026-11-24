@@ -360,7 +360,16 @@ func TestOwnerOAuthCodeRedemption(t *testing.T) {
 }
 
 func TestOwnerOAuthCodeBrowserBinding(t *testing.T) {
-	a := openTest(t, privateDir(t), Defaults())
+	// Keep the actual owner IPC socket within the Unix path length limit.
+	t.Setenv("TMPDIR", "/tmp")
+	dir := privateDir(t)
+	a := openTest(t, dir, Defaults())
+	stopOwner, err := a.ListenOwner(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopOwner()
+
 	jar, _ := cookiejar.New(nil)
 	// A cookie jar exposes matching cookies at this port as well.
 	sibling, _ := url.Parse("https://127.0.0.1:9999/owner/")
@@ -407,13 +416,35 @@ func TestOwnerOAuthCodeBrowserBinding(t *testing.T) {
 		t.Fatal("cookie-only sign-in reached terminal review")
 	}
 	form.Set("owner", proof[1])
-	request("POST", "/owner/signin", form, 200)
-	if err := a.approve(req.requestID, req.comparison); err != nil {
+	page := request("POST", "/owner/signin", form, 200)
+	if !strings.Contains(page.Body.String(), `name="request" value="`+req.requestID+`"`) {
+		t.Fatal("Continue form lost the first request")
+	}
+	comparison := regexp.MustCompile(`<strong>([A-Z0-9_-]+)</strong>`).FindStringSubmatch(page.Body.String())
+	if comparison == nil {
+		t.Fatal("missing comparison code for the first request")
+	}
+
+	const otherRedirect = "https://other.test/callback"
+	other := registerClient(t, a, registration{Redirects: []string{otherRedirect}})
+	request("GET", "/authorize?"+authorizationQuery(other, otherRedirect).Encode(), nil, 200)
+	otherForm := url.Values{"owner": {proof[1]}, "request": {a.window.requests[other].requestID}}
+	request("POST", "/owner/signin", otherForm, 403)
+
+	if err := Terminal(t.Context(), dir, "approve", bytes.NewBufferString(comparison[1]+"\n")); err != nil {
 		t.Fatal(err)
 	}
 
 	request("POST", "/owner/finish", nil, 403)
-	request("POST", "/owner/finish", form, 303)
+	request("POST", "/owner/finish", otherForm, 403)
+	response := request("POST", "/owner/finish", form, 303)
+	callback, err := url.Parse(response.Header().Get("Location"))
+	if err != nil || callback.Host != "127.0.0.1" || callback.Path != "/callback" {
+		t.Fatal("wrong client callback")
+	}
+	if _, err := a.redeem(callback.Query().Get("code"), id, nativeRedirect, issuer+"/mcp", verifier); err != nil {
+		t.Fatal("first client could not redeem its code")
+	}
 }
 
 func TestOwnerOAuthCodeTokenStorageFailure(t *testing.T) {
