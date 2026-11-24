@@ -39,7 +39,15 @@ func run(ctx context.Context, arguments []string, stderr io.Writer, settings own
 	if len(arguments) > 0 && !strings.HasPrefix(arguments[0], "-") {
 		command, arguments = arguments[0], arguments[1:]
 		switch command {
-		case "serve", "pair", "approve":
+		case "pair", "approve", "clients", "unpair":
+			tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+			if err != nil {
+				return errors.New("owner terminal unavailable")
+			}
+			defer tty.Close()
+
+			return runOwnerCommand(ctx, command, arguments, tty)
+		case "serve":
 		default:
 			return errors.New("invalid command")
 		}
@@ -48,13 +56,9 @@ func run(ctx context.Context, arguments []string, stderr io.Writer, settings own
 	flags := flag.NewFlagSet("croton-mcp", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	var configPath, bind, authorizer, cert, key, dir string
-	if command == "" || command == "serve" {
-		flags.StringVar(&configPath, "config", "", "absolute path to the Croton configuration file")
-	}
-	if command != "" {
-		flags.StringVar(&dir, "state-dir", "", "private owner state directory")
-	}
+	flags.StringVar(&configPath, "config", "", "absolute path to the Croton configuration file")
 	if command == "serve" {
+		flags.StringVar(&dir, "state-dir", "", "private owner state directory")
 		flags.StringVar(&bind, "bind", "127.0.0.1:8787", "loopback IP and port")
 		flags.StringVar(&authorizer, "authorizer", "", "owner")
 		flags.StringVar(&cert, "tls-cert", "", "HTTPS certificate")
@@ -74,14 +78,6 @@ func run(ctx context.Context, arguments []string, stderr io.Writer, settings own
 		if err != nil {
 			return err
 		}
-	}
-	if command == "pair" || command == "approve" {
-		tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
-		if err != nil {
-			return errors.New("owner terminal unavailable")
-		}
-		defer tty.Close()
-		return owneroauth.Terminal(ctx, dir, command, tty)
 	}
 	if configPath == "" {
 		return errors.New("usage: croton-mcp --config <absolute path>")
@@ -129,6 +125,40 @@ func run(ctx context.Context, arguments []string, stderr io.Writer, settings own
 	server := mcpserver.New(options)
 
 	return mcpserver.Serve(ctx, server, stdioframe.NewTransport(os.Stdin, os.Stdout))
+}
+
+func runOwnerCommand(ctx context.Context, command string, args []string, tty io.ReadWriter) error {
+	flags := flag.NewFlagSet(command, flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	dir := flags.String("state-dir", "", "private owner state directory")
+
+	// A client ID on either side of --state-dir can start with a dash.
+	var id string
+	if command == "unpair" && len(args) > 0 {
+		flagName, _, _ := strings.Cut(args[0], "=")
+		if flagName == "--state-dir" || flagName == "-state-dir" || flagName == "--" {
+			id, args = args[len(args)-1], args[:len(args)-1]
+		} else {
+			id, args = args[0], args[1:]
+		}
+	}
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+		return errors.New("invalid arguments")
+	}
+
+	if *dir == "" {
+		var err error
+		*dir, err = owneroauth.DefaultDir()
+		if err != nil {
+			return err
+		}
+	}
+
+	if command == "clients" || command == "unpair" {
+		return owneroauth.Admin(ctx, *dir, command, id, tty)
+	}
+
+	return owneroauth.Terminal(ctx, *dir, command, tty)
 }
 
 func serveHTTP(ctx context.Context, cfg bridge.Config, address netip.AddrPort, dir, cert, key string, settings owneroauth.Settings, auditor *mcpserver.Auditor) error {

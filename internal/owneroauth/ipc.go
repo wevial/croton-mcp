@@ -11,10 +11,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
 const socketName = "owner.sock"
+
+var errOffline = errors.New("owner socket unavailable")
 
 // JSON can use six bytes per byte of the 2048-byte redirect and 256-byte
 // client name. The remaining space covers the loopback resource, IDs and framing.
@@ -30,9 +33,11 @@ func sameUser(c *net.UnixConn) bool {
 }
 
 type reply struct {
-	OK      bool
-	Handoff string  `json:",omitempty"`
-	Review  *review `json:",omitempty"`
+	OK            bool
+	Handoff       string        `json:",omitempty"`
+	Review        *review       `json:",omitempty"`
+	Client        *pairedClient `json:",omitempty"`
+	UnknownClient bool          `json:",omitempty"`
 }
 
 // ListenOwner runs only while the caller holds the exclusive database lock.
@@ -76,13 +81,17 @@ func (a *Authority) handleOwner(conn *net.UnixConn) {
 	if !sameUser(conn) {
 		return
 	}
-	conn.SetDeadline(time.Now().Add(time.Second))
+	if err := conn.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		return
+	}
+
 	data, err := bufio.NewReader(io.LimitReader(conn, 128)).ReadString('\n')
 	if err != nil {
 		return
 	}
 
 	command, arg, _ := strings.Cut(strings.TrimSuffix(data, "\n"), " ")
+	encoder := json.NewEncoder(conn)
 	var out reply
 	switch {
 	case command == "pair" && arg == "":
@@ -92,37 +101,67 @@ func (a *Authority) handleOwner(conn *net.UnixConn) {
 		if details, err := a.inspect(); err == nil {
 			out = reply{OK: true, Review: &details}
 		}
+	case command == "clients" && arg == "":
+		out.OK = listClients(a.db, func(client pairedClient) error {
+			return encoder.Encode(reply{OK: true, Client: &client})
+		}) == nil
+	case command == "unpair" && validClientID(arg):
+		err := unpair(a.db, arg)
+		out.OK = err == nil
+		out.UnknownClient = errors.Is(err, errUnknownClient)
 	case command == "approve":
 		id, code, _ := strings.Cut(arg, " ")
 		out.OK = a.approve(id, code) == nil
 	}
-	_ = json.NewEncoder(conn).Encode(out)
+	_ = encoder.Encode(out)
+}
+
+func sendOwnerRequest(ctx context.Context, dir, command string) (net.Conn, error) {
+	if err := secureDir(dir, false); err != nil {
+		return nil, err
+	}
+
+	path := filepath.Join(dir, socketName)
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, errOffline
+	}
+	if err != nil || info.Mode()&os.ModeSocket == 0 {
+		return nil, errState
+	}
+
+	dialer := net.Dialer{Timeout: time.Second}
+	conn, err := dialer.DialContext(ctx, "unix", path)
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) {
+		return nil, errOffline
+	}
+	if err != nil {
+		return nil, errState
+	}
+	if !sameUser(conn.(*net.UnixConn)) {
+		conn.Close()
+		return nil, errDenied
+	}
+
+	if conn.SetDeadline(time.Now().Add(2*time.Second)) != nil {
+		conn.Close()
+		return nil, errState
+	}
+	if _, err := fmt.Fprintln(conn, command); err != nil {
+		conn.Close()
+		return nil, errState
+	}
+
+	return conn, nil
 }
 
 func ownerRequest(ctx context.Context, dir, command string) (reply, error) {
-	if err := secureDir(dir, false); err != nil {
+	conn, err := sendOwnerRequest(ctx, dir, command)
+	if err != nil {
 		return reply{}, err
 	}
-	path := filepath.Join(dir, socketName)
-	info, err := os.Lstat(path)
-	if err != nil || info.Mode()&os.ModeSocket == 0 {
-		return reply{}, errState
-	}
-
-	var dialer net.Dialer
-	conn, err := dialer.DialContext(ctx, "unix", path)
-	if err != nil {
-		return reply{}, errState
-	}
 	defer conn.Close()
-	if !sameUser(conn.(*net.UnixConn)) {
-		return reply{}, errDenied
-	}
 
-	conn.SetDeadline(time.Now().Add(2 * time.Second))
-	if _, err = fmt.Fprintln(conn, command); err != nil {
-		return reply{}, errState
-	}
 	var out reply
 	if json.NewDecoder(io.LimitReader(conn, maxOwnerReplyBytes)).Decode(&out) != nil || !out.OK {
 		return reply{}, errDenied

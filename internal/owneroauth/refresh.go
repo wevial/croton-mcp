@@ -191,7 +191,8 @@ func (s *refreshTx) RotateRefreshToken(ctx context.Context, id, signature string
 }
 
 func (s *refreshTx) CreateAccessTokenSession(_ context.Context, signature string, req oauth2.Requester) error {
-	return putRecord(s.bucket.Tx().Bucket([]byte("access")), []byte(signature), access{s.family.Resource, req.GetSession().GetExpiresAt(oauth2.AccessToken)})
+	record := access{Client: s.client.ID, Resource: s.family.Resource, Expires: req.GetSession().GetExpiresAt(oauth2.AccessToken)}
+	return putRecord(s.bucket.Tx().Bucket([]byte("access")), []byte(signature), record)
 }
 
 func (s *refreshTx) CreateRefreshTokenSession(_ context.Context, signature, accessSignature string, req oauth2.Requester) error {

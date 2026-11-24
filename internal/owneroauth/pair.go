@@ -16,6 +16,8 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
+const maxClientNameBytes = 256
+
 type registration struct {
 	Name        string
 	Redirects   []string
@@ -148,7 +150,7 @@ func (a *Authority) register(c registration) (string, error) {
 	if !a.openWindow() || len(a.window.clients) >= a.settings.PendingLimit {
 		return "", errDenied
 	}
-	if len(c.Redirects) == 0 || len(c.Redirects) > 8 || len(c.Name) > 256 || (c.Auth != "" && c.Auth != "none") || (c.Application != "" && c.Application != "native" && c.Application != "web") {
+	if len(c.Redirects) == 0 || len(c.Redirects) > 8 || len(c.Name) > maxClientNameBytes || (c.Auth != "" && c.Auth != "none") || (c.Application != "" && c.Application != "native" && c.Application != "web") {
 		return "", errInvalid
 	}
 	grants := c.grantTypes()
@@ -288,6 +290,15 @@ func (a *Authority) approve(id, comparison string) error {
 		if err := prune(tx, now); err != nil {
 			return err
 		}
+
+		clients, err := tx.CreateBucketIfNotExists([]byte("clients"))
+		if err != nil {
+			return err
+		}
+		if err := clients.Put([]byte(r.Client), []byte(a.window.clients[r.Client].Name)); err != nil {
+			return err
+		}
+
 		return put(tx, "deliveries", a.issuer, d)
 	})
 	if err != nil {
