@@ -102,8 +102,7 @@ func newIMAPSession(ctx context.Context, connection *Connection) (*imapSession, 
 	return newIMAPSessionOver(ctx, transport, startTLS)
 }
 
-// newIMAPSessionOver builds the client stack over an established transport.
-// Every client write passes through the dispatch guard.
+// Every client write must pass through the dispatch guard.
 func newIMAPSessionOver(ctx context.Context, transport net.Conn, startTLS bool) (*imapSession, error) {
 	wrapped := &deadlineConn{Conn: transport}
 	guard := &dispatchGuardConn{Conn: wrapped}
@@ -850,11 +849,9 @@ func headerTerminatorEnd(header []byte) int {
 	return -1
 }
 
-// errFlagsOnly reports a FETCH reply that carried UID or FLAGS but none of
-// the requested items. go-imap takes one untagged FETCH per requested UID, so
-// an unsolicited flag update that arrives first fills the slot and the real
-// response is discarded. It carries the imap_protocol code, so it surfaces
-// unchanged through mapIMAPError and as the result of a second such reply.
+// go-imap keeps one FETCH per requested UID, so an unsolicited flag update
+// arriving first displaces the requested data. This sentinel survives mapIMAPError
+// and reports CodeIMAPProtocol if the retry also gets a flags-only reply.
 var errFlagsOnly = &Error{Code: CodeIMAPProtocol}
 
 // Draining the FETCH gives a tagged command error precedence over the response-shape error.
