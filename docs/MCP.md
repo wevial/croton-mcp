@@ -231,6 +231,8 @@ complete plain text. The omissions object counts
 `htmlAlternatives`, `files` and `attachedMessages` separately. HTML alternatives
 are skipped automatically. A `multipart/related` HTML alternative counts once,
 and each inline resource counts as a file or an attached message.
+Both BODYSTRUCTURE and the original MIME header must declare `type="text/html"`.
+Without a `start` parameter, the first child is the HTML root.
 Files and attached messages require explicit `text_only: true` consent.
 Their content is never fetched.
 

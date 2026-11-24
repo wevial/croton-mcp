@@ -222,7 +222,7 @@ func (plan *forwardSelection) visitRelatedHTML(entity projectedEntity, path []in
 	if len(entity.children) > plan.remaining {
 		return errorCode(CodeBoundsExceeded)
 	}
-	if !strings.EqualFold(cmp.Or(entity.parameters["type"], "text/html"), "text/html") {
+	if !strings.EqualFold(entity.parameters["type"], "text/html") {
 		return errorCode(CodeUnsupported)
 	}
 
@@ -370,7 +370,7 @@ func (entity inlineEntity) validHeader(header mail.Header, plain *textSection) b
 	if !ok || kind != entity.mediaType {
 		return false
 	}
-	if kind == "multipart/related" && (!strings.EqualFold(cmp.Or(params["type"], "text/html"), "text/html") ||
+	if kind == "multipart/related" && (!strings.EqualFold(params["type"], "text/html") ||
 		params["start"] != entity.rootID) {
 		return false
 	}

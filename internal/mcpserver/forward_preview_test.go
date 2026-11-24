@@ -404,6 +404,7 @@ func TestForwardPreview(t *testing.T) {
 			})
 		}
 		const signature = `("application" "pgp-signature" NIL NIL NIL "7bit" 2 NIL ("attachment" NIL) NIL NIL)`
+		html := textStructure("html", "7bit", "NIL", 2)
 		for _, tc := range []struct {
 			name, structure string
 			fields          map[string]string
@@ -411,6 +412,9 @@ func TestForwardPreview(t *testing.T) {
 		}{
 			{"HTML only", textStructure("html", "8bit", utf8Params, 2),
 				map[string]string{"HEADER": "Content-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n"}, nil},
+			{"missing related type in BODYSTRUCTURE", multiStructure("alternative", plain, fmt.Sprintf(`(%s "related" ("boundary" "r") NIL NIL NIL)`, html)),
+				map[string]string{"HEADER": "Content-Type: multipart/alternative; boundary=a\r\n", "1.MIME": plainMIME,
+					"2.MIME": "Content-Type: multipart/related; boundary=r; type=\"text/html\"\r\n", "2.1.MIME": "Content-Type: text/html\r\n"}, nil},
 			{"related root is an image", multiStructure("alternative", plain, fmt.Sprintf(`(%s %s "related" ("type" "image/png" "boundary" "r") NIL NIL NIL)`, imagePart, textStructure("html", "7bit", "NIL", 2))),
 				map[string]string{"HEADER": "Content-Type: multipart/alternative; boundary=a\r\n", "1.MIME": plainMIME,
 					"2.MIME": "Content-Type: multipart/related; boundary=r; type=\"image/png\"\r\n", "2.2.MIME": "Content-Type: text/html\r\n"}, nil},
@@ -498,6 +502,9 @@ func TestForwardPreview(t *testing.T) {
 		}{
 			{"encoded multipart", multiStructure("alternative", plain), "1", false,
 				map[string]string{"HEADER": "Content-Type: multipart/alternative; boundary=a\r\nContent-Transfer-Encoding: quoted-printable\r\n", "1.MIME": plainMIME}},
+			{"missing related type in MIME header", multiStructure("alternative", plain, fmt.Sprintf(`(%s "related" ("boundary" "r" "type" "text/html") NIL NIL NIL)`, html)), "1", false,
+				map[string]string{"HEADER": "Content-Type: multipart/alternative; boundary=a\r\n", "1.MIME": plainMIME,
+					"2.MIME": "Content-Type: multipart/related; boundary=r\r\n", "2.1.MIME": "Content-Type: text/html\r\n"}},
 			{"hidden root attachment", plain, "1", false, map[string]string{"HEADER": plainMIME + hiddenDisposition}},
 			{"normalized format", fixed, "1", false, map[string]string{"HEADER": conflictingFormat}},
 			{"malformed disposition field", plain, "1", false, map[string]string{"HEADER": plainMIME + "Content-Disposition : attachment\r\n"}},
