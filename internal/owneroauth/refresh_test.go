@@ -266,6 +266,7 @@ func TestOwnerOAuthRefreshTransaction(t *testing.T) {
 	dir := privateDir(t)
 	a := openTest(t, dir, Defaults())
 	client, first := approvedPair(t, a)
+	current := IssuedPair(t, PostToken(a, refreshForm(client, first.Refresh)))
 
 	// Pin old pages so the size limit eventually fails a commit with both tokens staged.
 	pin, err := a.db.Begin(false)
@@ -273,7 +274,6 @@ func TestOwnerOAuthRefreshTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.db.MaxSize = 1
-	current := first
 	var w *httptest.ResponseRecorder
 	for range 100 {
 		w = PostToken(a, refreshForm(client, current.Refresh))
@@ -302,6 +302,10 @@ func TestOwnerOAuthRefreshTransaction(t *testing.T) {
 	}
 
 	replacement := IssuedPair(t, PostToken(a, refreshForm(client, current.Refresh)))
+	if !a.ValidBearer(replacement.Access) {
+		t.Fatal("retried exchange issued unusable access")
+	}
+
 	raw, err := os.ReadFile(filepath.Join(dir, "oauth.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -311,8 +315,10 @@ func TestOwnerOAuthRefreshTransaction(t *testing.T) {
 			t.Fatal("database contained a plaintext token")
 		}
 	}
+
 	requireGrantDenial(t, PostToken(a, refreshForm(client, first.Refresh)))
 	if a.ValidBearer(replacement.Access) {
 		t.Fatal("reuse marker failed to revoke retried exchange")
 	}
+	requireGrantDenial(t, PostToken(a, refreshForm(client, replacement.Refresh)))
 }
