@@ -1,6 +1,9 @@
 package bridge
 
-import "time"
+import (
+	"path/filepath"
+	"time"
+)
 
 const (
 	TLSModeStartTLS = "starttls"
@@ -69,6 +72,10 @@ type ForwardConfig struct {
 	StateDir       string `json:"stateDir"`
 }
 
+func (cfg ForwardConfig) validTLSMode() bool {
+	return cfg.SMTPTLSMode == "" || cfg.SMTPTLSMode == TLSModeStartTLS || cfg.SMTPTLSMode == TLSModeImplicit
+}
+
 // ValidatedConfig has defaults and hard ceilings applied and is safe to use for connections.
 type ValidatedConfig struct {
 	IMAP   IMAPConfig
@@ -116,6 +123,22 @@ func ValidateConfig(input Config) (ValidatedConfig, error) {
 	bounds, err := mergeBounds(input.Bounds)
 	if err != nil {
 		return ValidatedConfig{}, err
+	}
+
+	forward := input.Forward
+	if forward.Enabled {
+		if _, err := ParseLoopbackEndpoint(imap.Host, forward.SMTPPort); err != nil {
+			return ValidatedConfig{}, err
+		}
+		if !forward.validTLSMode() {
+			return ValidatedConfig{}, errorCode(CodeInvalidConfig)
+		}
+		if !filepath.IsAbs(forward.StateDir) || filepath.Clean(forward.StateDir) != forward.StateDir || forward.StateDir == "/" {
+			return ValidatedConfig{}, errorCode(CodeInvalidConfig)
+		}
+		if _, err := (TLSConfig{SPKISHA256: forward.SMTPSPKISHA256}).spkiPin(); err != nil {
+			return ValidatedConfig{}, err
+		}
 	}
 
 	return ValidatedConfig{IMAP: imap, Bounds: bounds, Audit: input.Audit}, nil

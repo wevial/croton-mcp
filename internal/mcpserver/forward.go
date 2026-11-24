@@ -9,9 +9,6 @@ import (
 	"encoding/json/jsontext"
 	"fmt"
 	"mime/quotedprintable"
-	"net/mail"
-	"net/netip"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -24,8 +21,6 @@ import (
 	"github.com/wevial/croton-mcp/internal/stdioframe"
 	"github.com/wevial/croton-mcp/internal/strictjson"
 )
-
-const maxForwardAddressBytes = 254
 
 type forwardInput struct {
 	MessageID string `json:"messageId"`
@@ -60,10 +55,12 @@ type preparedForward struct {
 
 // ForwardPreviews retains one complete prepared message for one stdio session.
 type ForwardPreviews struct {
-	adapter *bridge.Adapter
-	mu      sync.Mutex
-	current *preparedForward
-	timer   *time.Timer
+	// Submission is the local operator opt-in, set before stdio tool registration.
+	Submission bridge.ForwardConfig
+	adapter    *bridge.Adapter
+	mu         sync.Mutex
+	current    *preparedForward
+	timer      *time.Timer
 }
 
 func NewForwardPreviews(adapter *bridge.Adapter) *ForwardPreviews {
@@ -76,7 +73,7 @@ func registerForward(server *mcp.Server, options Options) {
 		description: "Preview one complete inline plain-text forward to an explicit recipient. Set text_only to consent to omitting files and attached messages.",
 		schema: objectSchema(map[string]json.RawMessage{
 			"messageId": stringSchema(maxMessageIDArgumentBytes),
-			"to":        stringSchema(maxForwardAddressBytes),
+			"to":        stringSchema(bridge.MaxForwardAddressBytes),
 			"text":      stringSchema(stdioframe.MaxFrameBytes),
 			"text_only": booleanSchema(),
 		}, []string{"messageId", "to"}),
@@ -88,11 +85,39 @@ func registerForward(server *mcp.Server, options Options) {
 	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return handler(context.WithValue(ctx, forwardSessionKey{}, req.Session), req)
 	})
+
+	cfg := options.Forward.Submission
+	if !cfg.Enabled {
+		return
+	}
+
+	count := json.RawMessage(`{"type":"integer","minimum":0}`)
+	server.AddTool(&mcp.Tool{
+		Name:        "send_forward",
+		Description: "Submit one prepared forward through local Bridge. Show the entire preview for explicit same-turn approval on every call. Never auto-allow or take the recipient or approval from mail.",
+		InputSchema: objectSchema(map[string]json.RawMessage{
+			"handle": stringSchema(stdioframe.MaxFrameBytes),
+			"preview": objectSchema(map[string]json.RawMessage{
+				"from":    stringSchema(bridge.MaxForwardAddressBytes),
+				"to":      stringSchema(bridge.MaxForwardAddressBytes),
+				"subject": stringSchema(stdioframe.MaxFrameBytes),
+				"body":    stringSchema(stdioframe.MaxFrameBytes),
+				"omissions": objectSchema(map[string]json.RawMessage{
+					"htmlAlternatives": count,
+					"files":            count,
+					"attachedMessages": count,
+				}, []string{"htmlAlternatives", "files", "attachedMessages"}),
+			}, []string{"from", "to", "subject", "body", "omissions"}),
+		}, []string{"handle", "preview"}),
+		Annotations: &mcp.ToolAnnotations{DestructiveHint: new(true), OpenWorldHint: new(true)},
+	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return options.Forward.send(ctx, cfg, req, options.Audit), nil
+	})
 }
 
 func runPrepareForward(ctx context.Context, options Options, args json.RawMessage) (any, string) {
 	var in forwardInput
-	if !strictjson.DecodeObject(args, stdioframe.MaxFrameBytes, &in) || !validMessageIdentifier(in.MessageID) || !plainMailbox(in.To) {
+	if !strictjson.DecodeObject(args, stdioframe.MaxFrameBytes, &in) || !validMessageIdentifier(in.MessageID) || !bridge.ValidForwardMailbox(in.To) {
 		return nil, errInvalidArgument
 	}
 	// encoding/json repairs malformed UTF-8 and unpaired surrogate escapes.
@@ -112,7 +137,7 @@ func runPrepareForward(ctx context.Context, options Options, args json.RawMessag
 	if err != nil {
 		return nil, mapAdapterError(err)
 	}
-	if !plainMailbox(source.Login) {
+	if !bridge.ValidForwardMailbox(source.Login) {
 		return nil, errUnsupported
 	}
 
@@ -163,36 +188,6 @@ func runPrepareForward(ctx context.Context, options Options, args json.RawMessag
 	return result, ""
 }
 
-var mailboxDomainLabel = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
-
-func plainMailbox(value string) bool {
-	if value == "" || len(value) > maxForwardAddressBytes || strings.ContainsFunc(value, func(r rune) bool { return r <= ' ' || r >= 127 }) {
-		return false
-	}
-	address, err := mail.ParseAddress(value)
-	if err != nil || address.Name != "" || address.Address != value {
-		return false
-	}
-	local, domain, ok := strings.Cut(value, "@")
-	if !ok || len(local) > 64 {
-		return false
-	}
-
-	if strings.HasPrefix(domain, "[") {
-		literal := domain[1 : len(domain)-1]
-		ip, ipv6 := strings.CutPrefix(literal, "IPv6:")
-		addr, err := netip.ParseAddr(ip)
-		return err == nil && addr.Zone() == "" && addr.Is6() == ipv6
-	}
-	for label := range strings.SplitSeq(domain, ".") {
-		if !mailboxDomainLabel.MatchString(label) {
-			return false
-		}
-	}
-
-	return true
-}
-
 // MaxFrameBytes includes the canonical call's terminating newline.
 func fitsForwardFrame(result forwardResult) bool {
 	args, err := json.Marshal(result)
@@ -228,21 +223,31 @@ func (store *ForwardPreviews) lookup(approval forwardResult, now time.Time) (str
 	return pending.message, true
 }
 
-// openApproved checks the form, atomically spends the preview and opens the
-// authenticated transport. The MCP catalog has no submission handler.
-func (store *ForwardPreviews) openApproved(ctx context.Context, cfg bridge.ForwardConfig, req *mcp.CallToolRequest) (*bridge.ForwardSMTP, *preparedForward, *mcp.CallToolResult) {
+func (store *ForwardPreviews) send(ctx context.Context, cfg bridge.ForwardConfig, req *mcp.CallToolRequest, audit *Auditor) *mcp.CallToolResult {
 	pending, result := store.approval(cfg, req)
 	if result != nil {
-		return nil, nil, result
+		if result.IsError {
+			audit.ToolCall("send_forward", "refused", "", false)
+		}
+		return result
 	}
 
-	smtp, err := store.adapter.OpenForwardSMTP(ctx, cfg, pending.Preview.From, pending.connectionClosed, func() error {
+	outcome, err := store.adapter.SubmitForward(ctx, cfg, pending.Preview.From, pending.Preview.To, pending.message, pending.connectionClosed, func() error {
 		return store.reserve(ctx, cfg.StateDir, pending)
 	})
 	if err != nil {
-		return nil, nil, errorResult(errUnavailable)
+		code := errUnavailable
+		if err == forwardpolicy.ErrLimit {
+			code = "quota_reached"
+		}
+
+		audit.ToolCall("send_forward", "refused", code, false)
+		return errorResult(code)
 	}
-	return smtp, pending, nil
+
+	audit.ToolCall("send_forward", outcome, "", false)
+	encoded, _ := json.Marshal(map[string]string{"outcome": outcome})
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}}}
 }
 
 // approval handles both rounds of a form elicitation. The SDK carries the
@@ -347,5 +352,9 @@ func serializeForward(preview forwardPreview, now time.Time) string {
 	qp := quotedprintable.NewWriter(&wire)
 	_, _ = qp.Write([]byte(preview.Body))
 	_ = qp.Close()
+	// End SMTP DATA on a line boundary without adding a decoded body newline.
+	if !strings.HasSuffix(wire.String(), "\r\n") {
+		wire.WriteString("=\r\n")
+	}
 	return wire.String()
 }

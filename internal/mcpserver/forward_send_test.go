@@ -2,15 +2,19 @@ package mcpserver
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/quotedprintable"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/mail"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,11 +28,28 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/wevial/croton-mcp/bridge"
 	"github.com/wevial/croton-mcp/internal/forwardpolicy"
+	"github.com/wevial/croton-mcp/internal/stdioframe"
 )
 
 type smtpPeer struct {
-	config                       bridge.ForwardConfig
-	connections, auth, clearAuth atomic.Int32
+	config                                   bridge.ForwardConfig
+	connections, auth, clearAuth, rcpt, data atomic.Int32
+	deliveries                               chan smtpDelivery
+}
+
+type smtpDelivery struct {
+	from, to, message string
+}
+
+// macOS can put temporary directories under the /var symlink. Give quota
+// setup the physical path, as an operator must.
+func quotaTestDir(t *testing.T) string {
+	t.Helper()
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(parent, "state")
 }
 
 func newSMTPPeer(t *testing.T, mode, fault string) *smtpPeer {
@@ -42,11 +63,11 @@ func newSMTPPeer(t *testing.T, mode, fault string) *smtpPeer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(t.TempDir(), "state")
+	dir := quotaTestDir(t)
 	if err := forwardpolicy.Initialize(dir); err != nil {
 		t.Fatal(err)
 	}
-	peer := &smtpPeer{config: bridge.ForwardConfig{
+	peer := &smtpPeer{deliveries: make(chan smtpDelivery, 10), config: bridge.ForwardConfig{
 		Enabled: true, SMTPPort: listener.Addr().(*net.TCPAddr).Port, SMTPTLSMode: mode,
 		SMTPSPKISHA256: pin, StateDir: dir,
 	}}
@@ -85,6 +106,8 @@ func (p *smtpPeer) serve(conn net.Conn, policy *tls.Config, mode, fault string) 
 	}
 
 	reader := bufio.NewReader(conn)
+	var envelope smtpDelivery
+	authenticated := false
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
@@ -120,8 +143,45 @@ func (p *smtpPeer) serve(conn net.Conn, policy *tls.Config, mode, fault string) 
 				io.WriteString(conn, "535 refused\r\n")
 				return
 			}
+			authenticated = true
 			p.auth.Add(1)
 			io.WriteString(conn, "235 authenticated\r\n")
+		case authenticated && envelope.from == "" && strings.HasPrefix(line, "MAIL FROM:"):
+			envelope.from = line
+			io.WriteString(conn, "250 sender ok\r\n")
+		case envelope.from != "" && envelope.to == "" && strings.HasPrefix(line, "RCPT TO:"):
+			envelope.to = line
+			p.rcpt.Add(1)
+			if fault == "rcpt refused" {
+				io.WriteString(conn, "550 recipient refused\r\n")
+			} else {
+				io.WriteString(conn, "250 recipient ok\r\n")
+			}
+		case envelope.to != "" && line == "DATA\r\n":
+			p.data.Add(1)
+			io.WriteString(conn, "354 send message\r\n")
+			var body strings.Builder
+			for {
+				line, err := reader.ReadString('\n')
+				if err != nil {
+					return
+				}
+				if line == ".\r\n" {
+					break
+				}
+				body.WriteString(strings.TrimPrefix(line, "."))
+			}
+			envelope.message = body.String()
+			p.deliveries <- envelope
+			switch fault {
+			case "lost final reply":
+				return
+			case "final refusal":
+				io.WriteString(conn, "554 refused\r\n")
+			default:
+				io.WriteString(conn, "250 accepted\r\n")
+			}
+			return
 		default:
 			return
 		}
@@ -145,8 +205,8 @@ func forwardRequest(t *testing.T, f *forwardFixture, r forwardResult) *mcp.CallT
 func confirmation(t *testing.T, f *forwardFixture, cfg bridge.ForwardConfig, r forwardResult) *mcp.CallToolRequest {
 	t.Helper()
 	req := forwardRequest(t, f, r)
-	conn, msg, result := f.store.openApproved(t.Context(), cfg, req)
-	if conn != nil || msg != nil || result == nil || result.IsError || result.RequestState == "" || len(result.InputRequests) != 1 {
+	result := f.store.send(t.Context(), cfg, req, nil)
+	if result == nil || result.IsError || result.RequestState == "" || len(result.InputRequests) != 1 {
 		t.Fatal("expected one form before authentication")
 	}
 	form, ok := result.InputRequests["confirmation"].(*mcp.ElicitParams)
@@ -165,8 +225,8 @@ func confirmation(t *testing.T, f *forwardFixture, cfg bridge.ForwardConfig, r f
 
 func requirePreflightRefusal(t *testing.T, f *forwardFixture, cfg bridge.ForwardConfig, req *mcp.CallToolRequest) {
 	t.Helper()
-	conn, msg, result := f.store.openApproved(t.Context(), cfg, req)
-	if conn != nil || msg != nil || result == nil || !result.IsError {
+	result := f.store.send(t.Context(), cfg, req, nil)
+	if result == nil || !result.IsError {
 		t.Fatal("expected a refusal before SMTP")
 	}
 }
@@ -230,19 +290,16 @@ func TestForwardSend(t *testing.T) {
 		var group sync.WaitGroup
 		for range 8 {
 			group.Go(func() {
-				conn, msg, _ := f.store.openApproved(t.Context(), p.config, req)
-				if conn != nil {
-					defer conn.Close()
-					if msg == nil || msg.forwardResult != r {
-						t.Error("stored message identity changed")
-					}
+				result := f.store.send(t.Context(), p.config, req, nil)
+				if !result.IsError {
+					requireSendOutcome(t, result, "accepted")
 					successes.Add(1)
 				}
 			})
 		}
 		group.Wait()
 		requirePreflightRefusal(t, f, p.config, req)
-		if successes.Load() != 1 || p.connections.Load() != 1 || p.auth.Load() != 1 {
+		if successes.Load() != 1 || p.data.Load() != 1 || p.connections.Load() != 1 || p.auth.Load() != 1 {
 			t.Fatal("concurrent approval did not spend exactly one handle")
 		}
 
@@ -303,10 +360,10 @@ func TestForwardSend(t *testing.T) {
 	t.Run("Policy", func(t *testing.T) {
 		f := newForwardFixture(t, bridge.BoundsPatch{})
 		f.set(plainStructure("Hello"), "1", "Hello")
-		p := newSMTPPeer(t, "", "upgrade refused")
-		// A committed slot stays spent even when the transport fails.
+		p := newSMTPPeer(t, "", "lost final reply")
+		// Even an uncertain post-DATA result consumes one durable slot.
 		r := f.prepare(t, false)
-		requirePreflightRefusal(t, f, p.config, confirmation(t, f, p.config, r))
+		requireSendOutcome(t, f.store.send(t.Context(), p.config, confirmation(t, f, p.config, r), nil), "unknown")
 		var group sync.WaitGroup
 		var reserved atomic.Int32
 		for range 12 {
@@ -324,7 +381,7 @@ func TestForwardSend(t *testing.T) {
 			t.Fatal("concurrent reservations exceeded or fell short of the cap")
 		}
 		r = f.prepare(t, false)
-		requirePreflightRefusal(t, f, p.config, confirmation(t, f, p.config, r))
+		requireToolError(t, f.store.send(t.Context(), p.config, confirmation(t, f, p.config, r), nil), "quota_reached")
 		if p.connections.Load() != 1 {
 			t.Fatal("quota refusal opened SMTP")
 		}
@@ -339,7 +396,7 @@ func TestForwardSend(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Run("window", func(t *testing.T) {
-			dir := filepath.Join(t.TempDir(), "state")
+			dir := quotaTestDir(t)
 			if err := forwardpolicy.Initialize(dir); err != nil {
 				t.Fatal(err)
 			}
@@ -362,7 +419,7 @@ func TestForwardSend(t *testing.T) {
 		})
 		for _, kind := range []string{"missing", "empty", "damaged", "loose permissions", "symlink"} {
 			t.Run(kind, func(t *testing.T) {
-				dir := filepath.Join(t.TempDir(), "quota")
+				dir := quotaTestDir(t)
 				if err := forwardpolicy.Initialize(dir); err != nil {
 					t.Fatal(err)
 				}
@@ -402,14 +459,17 @@ func TestForwardSend(t *testing.T) {
 				p := newSMTPPeer(t, tc.mode, tc.fault)
 				r := f.prepare(t, false)
 				req := confirmation(t, f, p.config, r)
-				conn, _, result := f.store.openApproved(t.Context(), p.config, req)
+				result := f.store.send(t.Context(), p.config, req, nil)
 				if tc.fault == "" {
-					if conn == nil || result != nil || p.auth.Load() != 1 {
+					requireSendOutcome(t, result, "accepted")
+					if p.auth.Load() != 1 {
 						t.Fatal("missing authenticated TLS session")
 					}
-					conn.Close()
-				} else if conn != nil || result == nil || !result.IsError || p.auth.Load() != 0 {
-					t.Fatal("accepted failed TLS negotiation")
+				} else {
+					requireSendOutcome(t, result, "not_submitted")
+					if p.auth.Load() != 0 {
+						t.Fatal("sent AUTH after failed TLS negotiation")
+					}
 				}
 				if p.connections.Load() != 1 || p.clearAuth.Load() != 0 {
 					t.Fatal("unexpected connection count or plaintext AUTH")
@@ -417,4 +477,90 @@ func TestForwardSend(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("Wire", func(t *testing.T) {
+		f := newForwardFixture(t, bridge.BoundsPatch{})
+		f.setWrappedText(t, strings.Repeat("long é", 800)+"\r\n.\r\n..last")
+		for _, tc := range []struct{ version, fault, want string }{
+			{"2026-07-28", "", "accepted"},
+			{"2025-11-25", "", "accepted"},
+			{"2026-07-28", "rcpt refused", "not_submitted"},
+			{"2026-07-28", "lost final reply", "unknown"},
+			{"2026-07-28", "final refusal", "unknown"},
+		} {
+			t.Run(tc.version+"/"+tc.want+"/"+tc.fault, func(t *testing.T) {
+				p := newSMTPPeer(t, "", tc.fault)
+				store := NewForwardPreviews(f.store.adapter)
+				store.Submission = p.config
+				var audit bytes.Buffer
+				server := New(Options{Mail: store.adapter, Forward: store, Audit: NewAuditor(&audit)})
+				local, remote := net.Pipe()
+				ss, err := server.sdk.Connect(t.Context(), stdioframe.NewTransport(local, local), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { ss.Close() })
+
+				var forms atomic.Int32
+				client := mcp.NewClient(&mcp.Implementation{Name: "synthetic", Version: "1"}, &mcp.ClientOptions{
+					ElicitationHandler: func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+						forms.Add(1)
+						return &mcp.ElicitResult{Action: "accept", Content: map[string]any{"confirm": true}}, nil
+					},
+				})
+				cs, err := client.Connect(t.Context(), &mcp.IOTransport{Reader: remote, Writer: remote}, &mcp.ClientSessionOptions{ProtocolVersion: tc.version})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { cs.Close() })
+
+				var r forwardResult
+				callJSON(t, cs, forwardTool, f.arguments(false), &r)
+				stored, ok := store.lookup(r, time.Now())
+				if !ok {
+					t.Fatal("missing stored MIME")
+				}
+				requireSendOutcome(t, callTool(t, cs, "send_forward", r), tc.want)
+				requireToolError(t, callTool(t, cs, "send_forward", r), errUnavailable)
+				if forms.Load() != 1 || p.connections.Load() != 1 || p.rcpt.Load() != 1 {
+					t.Fatal("expected one form and one SMTP recipient across both calls")
+				}
+				if tc.fault == "rcpt refused" {
+					if p.data.Load() != 0 {
+						t.Fatal("sent DATA after RCPT refusal")
+					}
+					return
+				}
+				if p.data.Load() != 1 {
+					t.Fatal("expected one DATA transaction")
+				}
+				got := <-p.deliveries
+				if got.from != "MAIL FROM:<"+forwardLogin+">\r\n" || got.to != "RCPT TO:<"+forwardTo+">\r\n" || got.message != stored {
+					t.Fatal("SMTP envelope or MIME differs from the stored forward")
+				}
+				msg, err := mail.ReadMessage(strings.NewReader(got.message))
+				if err != nil {
+					t.Fatal(err)
+				}
+				body, err := io.ReadAll(quotedprintable.NewReader(msg.Body))
+				if err != nil || string(body) != r.Preview.Body {
+					t.Fatal("SMTP altered the approved body")
+				}
+				event := auditEvent{Event: "tool_call", Tool: "send_forward", Outcome: tc.want}
+				encoded, _ := json.Marshal(event)
+				if !strings.Contains(audit.String(), string(encoded)) || strings.ContainsAny(audit.String(), "@<>") || strings.Contains(audit.String(), r.Handle) {
+					t.Fatal("missing content-free submission audit")
+				}
+			})
+		}
+	})
+}
+
+func requireSendOutcome(t *testing.T, result *mcp.CallToolResult, want string) {
+	t.Helper()
+	var got struct{ Outcome string }
+	decodeResult(t, result, &got)
+	if got.Outcome != want {
+		t.Errorf("outcome = %q, want %q", got.Outcome, want)
+	}
 }

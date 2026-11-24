@@ -7,34 +7,33 @@ import (
 	"encoding/base64"
 	"io"
 	"net"
+	"net/textproto"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 )
 
-// ForwardSMTP owns an authenticated, deadline-bound local SMTP connection.
-type ForwardSMTP struct {
-	conn net.Conn
-}
+const (
+	forwardAccepted     = "accepted"
+	forwardNotSubmitted = "not_submitted"
+)
 
-// Close releases the authenticated transport.
-func (s *ForwardSMTP) Close() error { return s.conn.Close() }
-
-// OpenForwardSMTP rechecks the preview's authenticated Bridge session and
-// helper login, then calls reserve before opening the SMTP socket. It never
-// enters the adapter's IMAP retry loop.
-func (adapter *Adapter) OpenForwardSMTP(ctx context.Context, cfg ForwardConfig, login string, closed <-chan struct{}, reserve func() error) (*ForwardSMTP, error) {
-	if !cfg.Enabled || closed == nil || reserve == nil {
-		return nil, errorCode(CodeInvalidRequest)
+// SubmitForward spends the reservation while holding the preview's Bridge
+// session, then submits the stored envelope and MIME in one SMTP transaction.
+func (adapter *Adapter) SubmitForward(ctx context.Context, cfg ForwardConfig, login, to, message string, closed <-chan struct{}, reserve func() error) (string, error) {
+	if !cfg.Enabled || closed == nil || reserve == nil || !ValidForwardMailbox(login) || !ValidForwardMailbox(to) ||
+		len(message) > MaxForwardMIMEBytes || !strings.HasSuffix(message, "\r\n") {
+		return "", errorCode(CodeInvalidRequest)
 	}
+
 	imap := adapter.config.IMAP
 	endpoint, err := ParseLoopbackEndpoint(imap.Host, cfg.SMTPPort)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	if cfg.SMTPTLSMode != "" && cfg.SMTPTLSMode != TLSModeStartTLS && cfg.SMTPTLSMode != TLSModeImplicit {
-		return nil, errorCode(CodeInvalidConfig)
+	if !cfg.validTLSMode() {
+		return "", errorCode(CodeInvalidConfig)
 	}
 	trust := imap.TLS
 	if cfg.SMTPSPKISHA256 != "" {
@@ -42,131 +41,164 @@ func (adapter *Adapter) OpenForwardSMTP(ctx context.Context, cfg ForwardConfig, 
 	}
 	policy, err := NewTLSConfig(trust)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
 	ctx, cancel := adapter.operationContext(ctx)
 	defer cancel()
 	if err := adapter.acquire(ctx); err != nil {
-		return nil, err
+		return "", err
 	}
 	defer func() { adapter.gate <- struct{}{} }()
+
 	if adapter.closed || adapter.session == nil || adapter.connectionClosed != closed || adapter.login != login {
-		return nil, errorCode(CodeAuthentication)
+		return "", errorCode(CodeAuthentication)
 	}
 
 	creds, err := LoadCredentials(ctx, imap.CredentialCommand, time.Duration(imap.CommandTimeoutMs)*time.Millisecond)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	defer creds.Zero()
-	if string(creds.Username) != login || strings.IndexByte(login, 0) >= 0 || slices.Contains(creds.Password, 0) {
-		return nil, errorCode(CodeAuthentication)
+	if string(creds.Username) != login || slices.Contains(creds.Password, 0) {
+		return "", errorCode(CodeAuthentication)
 	}
 
 	select {
 	case <-closed:
-		return nil, errorCode(CodeAuthentication)
+		return "", errorCode(CodeAuthentication)
+	case <-ctx.Done():
+		return "", errorCode(CodeOperationCanceled)
 	default:
 	}
-
 	if err := reserve(); err != nil {
-		return nil, err
+		return "", err
 	}
 
 	dial := net.Dialer{Timeout: time.Duration(imap.ConnectTimeoutMs) * time.Millisecond}
 	raw, err := dial.DialContext(ctx, "tcp", endpoint.String())
 	if err != nil {
-		return nil, connectionError(ctx, err)
+		return forwardNotSubmitted, nil
 	}
+	defer raw.Close()
 	stop := closeOnContext(ctx, raw)
 	defer stop()
 	deadline, _ := ctx.Deadline()
 	if err := raw.SetDeadline(deadline); err != nil {
-		raw.Close()
-		return nil, errorCode(CodeBridgeUnreachable)
+		return forwardNotSubmitted, nil
 	}
 
-	conn, err := authenticateSMTP(ctx, raw, policy, cfg.SMTPTLSMode, creds)
-	if err != nil {
-		raw.Close()
-		return nil, err
+	smtp := smtpSession{conn: raw, reader: bufio.NewReaderSize(raw, maxStartTLSLineBytes+1)}
+	if err := smtp.authenticate(ctx, policy, cfg.SMTPTLSMode, creds); err != nil {
+		return forwardNotSubmitted, nil
 	}
-	return &ForwardSMTP{conn: conn}, nil
+	if !smtp.command("MAIL FROM:<"+login+">", 250) ||
+		!smtp.command("RCPT TO:<"+to+">", 250, 251, 252) ||
+		!smtp.command("DATA", 354) {
+		return forwardNotSubmitted, nil
+	}
+
+	data := textproto.NewWriter(bufio.NewWriter(smtp.conn)).DotWriter()
+	if _, err := io.WriteString(data, message); err != nil {
+		return OutcomeUnknown, nil
+	}
+	if err := data.Close(); err != nil {
+		return OutcomeUnknown, nil
+	}
+	if _, err := smtp.reply(250); err != nil {
+		return OutcomeUnknown, nil
+	}
+
+	return forwardAccepted, nil
 }
 
-// SMTP replies share a fixed line, byte and count budget through AUTH.
-func authenticateSMTP(ctx context.Context, raw net.Conn, policy *tls.Config, mode string, creds Credentials) (net.Conn, error) {
-	conn := raw
-	reader := bufio.NewReaderSize(conn, maxStartTLSLineBytes+1)
-	var budget startTLSResponseBudget
-	reply := func(code int) ([]string, error) {
-		prefix := strconv.Itoa(code)
-		var lines []string
-		for {
-			line, n, err := readStartTLSLine(reader, maxStartTLSLineBytes)
-			if err != nil || budget.add(n) != nil || !strings.HasPrefix(line, prefix) {
-				return nil, errorCode(CodeTLSNegotiation)
-			}
-			rest := line[3:]
-			if rest == "" || rest[0] == ' ' {
-				return append(lines, strings.TrimPrefix(rest, " ")), nil
-			}
-			if rest[0] != '-' {
-				return nil, errorCode(CodeTLSNegotiation)
-			}
-			lines = append(lines, rest[1:])
-		}
-	}
-	ehlo := func() ([]string, error) {
-		if _, err := io.WriteString(conn, "EHLO localhost\r\n"); err != nil {
-			return nil, errorCode(CodeBridgeUnreachable)
-		}
-		lines, err := reply(250)
-		if err != nil {
-			return nil, err
-		}
-		return lines[1:], nil // First line identifies the server.
-	}
+// Replies share one line, count and byte budget from greeting to acceptance.
+type smtpSession struct {
+	conn   net.Conn
+	reader *bufio.Reader
+	budget startTLSResponseBudget
+}
 
-	if mode != TLSModeImplicit {
-		if _, err := reply(220); err != nil {
-			return nil, err
-		}
-		extensions, err := ehlo()
-		if err != nil || !slices.ContainsFunc(extensions, func(ext string) bool { return strings.EqualFold(ext, "STARTTLS") }) {
+func (smtp *smtpSession) reply(allowed ...int) ([]string, error) {
+	var lines []string
+	var code int
+	for {
+		line, n, err := readStartTLSLine(smtp.reader, maxStartTLSLineBytes)
+		if err != nil || smtp.budget.add(n) != nil || len(line) < 3 {
 			return nil, errorCode(CodeTLSNegotiation)
 		}
-		if _, err := io.WriteString(conn, "STARTTLS\r\n"); err != nil {
+		status, err := strconv.Atoi(line[:3])
+		if err != nil || !slices.Contains(allowed, status) || (len(lines) > 0 && status != code) {
 			return nil, errorCode(CodeTLSNegotiation)
 		}
-		if _, err := reply(220); err != nil || reader.Buffered() != 0 {
+		code = status
+		rest := line[3:]
+		if rest == "" || rest[0] == ' ' {
+			return append(lines, strings.TrimPrefix(rest, " ")), nil
+		}
+		if rest[0] != '-' {
 			return nil, errorCode(CodeTLSNegotiation)
 		}
+		lines = append(lines, rest[1:])
 	}
+}
 
-	secure := tls.Client(raw, policy)
-	if err := secure.HandshakeContext(ctx); err != nil {
-		return nil, connectionError(ctx, err)
+func (smtp *smtpSession) command(line string, codes ...int) bool {
+	if _, err := io.WriteString(smtp.conn, line+"\r\n"); err != nil {
+		return false
 	}
-	conn = secure
-	reader.Reset(conn)
-	if mode == TLSModeImplicit {
-		if _, err := reply(220); err != nil {
-			return nil, err
-		}
-	}
+	_, err := smtp.reply(codes...)
+	return err == nil
+}
 
-	extensions, err := ehlo()
+func (smtp *smtpSession) ehlo() ([]string, error) {
+	if _, err := io.WriteString(smtp.conn, "EHLO localhost\r\n"); err != nil {
+		return nil, errorCode(CodeBridgeUnreachable)
+	}
+	lines, err := smtp.reply(250)
 	if err != nil {
 		return nil, err
+	}
+
+	return lines[1:], nil // First line identifies the server.
+}
+
+func (smtp *smtpSession) authenticate(ctx context.Context, policy *tls.Config, mode string, creds Credentials) error {
+	if mode != TLSModeImplicit {
+		if _, err := smtp.reply(220); err != nil {
+			return err
+		}
+		extensions, err := smtp.ehlo()
+		if err != nil || !slices.ContainsFunc(extensions, func(ext string) bool { return strings.EqualFold(ext, "STARTTLS") }) {
+			return errorCode(CodeTLSNegotiation)
+		}
+		if !smtp.command("STARTTLS", 220) || smtp.reader.Buffered() != 0 {
+			return errorCode(CodeTLSNegotiation)
+		}
+	}
+
+	secure := tls.Client(smtp.conn, policy)
+	if err := secure.HandshakeContext(ctx); err != nil {
+		return connectionError(ctx, err)
+	}
+	smtp.conn = secure
+	smtp.reader.Reset(secure)
+	if mode == TLSModeImplicit {
+		if _, err := smtp.reply(220); err != nil {
+			return err
+		}
+	}
+
+	extensions, err := smtp.ehlo()
+	if err != nil {
+		return err
 	}
 	plain := slices.ContainsFunc(extensions, func(ext string) bool {
 		fields := strings.Fields(strings.ToUpper(ext))
 		return len(fields) > 1 && fields[0] == "AUTH" && slices.Contains(fields[1:], "PLAIN")
 	})
 	if !plain {
-		return nil, errorCode(CodeAuthentication)
+		return errorCode(CodeAuthentication)
 	}
 
 	payload := make([]byte, 1, 2+len(creds.Username)+len(creds.Password))
@@ -176,14 +208,13 @@ func authenticateSMTP(ctx context.Context, raw net.Conn, policy *tls.Config, mod
 	command := base64.StdEncoding.AppendEncode([]byte("AUTH PLAIN "), payload)
 	clear(payload)
 	command = append(command, '\r', '\n')
-	_, err = conn.Write(command)
+	_, err = smtp.conn.Write(command)
 	clear(command)
 	if err != nil {
-		return nil, errorCode(CodeBridgeUnreachable)
+		return errorCode(CodeBridgeUnreachable)
 	}
-	if _, err := reply(235); err != nil {
-		return nil, errorCode(CodeAuthentication)
+	if _, err := smtp.reply(235); err != nil {
+		return errorCode(CodeAuthentication)
 	}
-
-	return conn, nil
+	return nil
 }
