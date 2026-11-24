@@ -25,9 +25,11 @@ type registration struct {
 	Responses   []string
 }
 
+var supportedGrantTypes = []string{"authorization_code", "refresh_token"}
+
 func (c registration) grantTypes() oauth2.Arguments {
 	if c.Grants == nil {
-		return []string{"authorization_code", "refresh_token"}
+		return supportedGrantTypes
 	}
 
 	return c.Grants
@@ -144,7 +146,7 @@ func (a *Authority) register(c registration) (string, error) {
 		return "", errInvalid
 	}
 	grants := c.grantTypes()
-	if !grants.ExactOne("authorization_code") && !grants.Matches("authorization_code", "refresh_token") {
+	if !grants.ExactOne("authorization_code") && !grants.Matches(supportedGrantTypes...) {
 		return "", errInvalid
 	}
 	if c.Responses != nil && !slices.Equal(c.Responses, []string{"code"}) {

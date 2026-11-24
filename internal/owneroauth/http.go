@@ -174,7 +174,7 @@ func (a *Authority) route(w http.ResponseWriter, r *http.Request) error {
 			RegistrationEndpoint:              a.issuer + "/register",
 			TokenEndpoint:                     a.issuer + "/token",
 			ResponseTypesSupported:            []string{"code"},
-			GrantTypesSupported:               []string{"authorization_code", "refresh_token"},
+			GrantTypesSupported:               supportedGrantTypes,
 			TokenEndpointAuthMethodsSupported: []string{"none"},
 			CodeChallengeMethodsSupported:     []string{"S256"},
 			RFC9207AuthorizationServerIssuerIdentificationMetadata: &oauth2.RFC9207AuthorizationServerIssuerIdentificationMetadata{

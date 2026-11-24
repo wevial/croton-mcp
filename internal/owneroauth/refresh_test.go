@@ -18,11 +18,12 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-func postToken(a *Authority, form url.Values) *httptest.ResponseRecorder {
+// PostToken sends a form through the supplied token endpoint handler.
+func PostToken(handler http.Handler, form url.Values) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(http.MethodPost, issuer+"/token", strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
-	a.ServeHTTP(w, r)
+	handler.ServeHTTP(w, r)
 	return w
 }
 
@@ -39,11 +40,7 @@ func issuedPair(t *testing.T, w *httptest.ResponseRecorder) tokenPair {
 func approvedPair(t *testing.T, a *Authority) (string, tokenPair) {
 	t.Helper()
 	code, r := approvedGrant(t, a)
-	w := postToken(a, url.Values{
-		"grant_type": {"authorization_code"}, "client_id": {r.Client}, "code": {code},
-		"redirect_uri": {r.Redirect}, "code_verifier": {verifier}, "resource": {r.Resource},
-	})
-	return r.Client, issuedPair(t, w)
+	return r.Client, issuedPair(t, PostToken(a, codeForm(code, r)))
 }
 
 // PairedRefreshFixture gives the transport-facing test a closed pairing window
@@ -116,13 +113,10 @@ func TestOwnerOAuthRefreshReuse(t *testing.T) {
 			var current tokenPair
 			if scenario == "after restart" {
 				now = now.Add(29 * 24 * time.Hour)
-				second := issuedPair(t, postToken(a, form))
+				second := issuedPair(t, PostToken(a, form))
 				now = now.Add(2 * 24 * time.Hour)
-				current = issuedPair(t, postToken(a, refreshForm(client, second.Refresh)))
-				if err := a.Close(); err != nil {
-					t.Fatal(err)
-				}
-				a = openTest(t, dir, settings)
+				current = issuedPair(t, PostToken(a, refreshForm(client, second.Refresh)))
+				a = reopenTest(t, a, dir, settings)
 				if !a.ValidBearer(current.Access) {
 					t.Fatal("lost current access before replay")
 				}
@@ -136,7 +130,7 @@ func TestOwnerOAuthRefreshReuse(t *testing.T) {
 				for range 2 {
 					go func() {
 						<-start
-						results <- postToken(a, form)
+						results <- PostToken(a, form)
 					}()
 				}
 				close(start)
@@ -147,21 +141,18 @@ func TestOwnerOAuthRefreshReuse(t *testing.T) {
 				current = issuedPair(t, winner)
 				requireGrantDenial(t, loser)
 			} else {
-				requireGrantDenial(t, postToken(a, form))
+				requireGrantDenial(t, PostToken(a, form))
 			}
 
-			if err := a.Close(); err != nil {
-				t.Fatal(err)
-			}
-			a = openTest(t, dir, settings)
+			a = reopenTest(t, a, dir, settings)
 			if a.ValidBearer(first.Access) || a.ValidBearer(current.Access) {
 				t.Fatal("access survived family revocation")
 			}
-			requireGrantDenial(t, postToken(a, refreshForm(client, current.Refresh)))
+			requireGrantDenial(t, PostToken(a, refreshForm(client, current.Refresh)))
 			if !a.ValidBearer(other.Access) {
 				t.Fatal("replay revoked a different grant")
 			}
-			issuedPair(t, postToken(a, refreshForm(otherClient, other.Refresh)))
+			issuedPair(t, PostToken(a, refreshForm(otherClient, other.Refresh)))
 
 			if err := a.db.View(func(tx *bolt.Tx) error {
 				if tx.Bucket([]byte("families")).Bucket(digest(client)) != nil {
@@ -191,7 +182,7 @@ func TestOwnerOAuthRefreshTransaction(t *testing.T) {
 	current := first
 	var w *httptest.ResponseRecorder
 	for range 100 {
-		w = postToken(a, refreshForm(client, current.Refresh))
+		w = PostToken(a, refreshForm(client, current.Refresh))
 		if w.Code != http.StatusOK {
 			break
 		}
@@ -203,10 +194,7 @@ func TestOwnerOAuthRefreshTransaction(t *testing.T) {
 	if w.Code != http.StatusInternalServerError || strings.TrimSpace(w.Body.String()) != `{"error":"server_error"}` {
 		t.Fatalf("failed commit response (HTTP %d)", w.Code)
 	}
-	if err := a.Close(); err != nil {
-		t.Fatal(err)
-	}
-	a = openTest(t, dir, Defaults())
+	a = reopenTest(t, a, dir, Defaults())
 	if !a.ValidBearer(current.Access) {
 		t.Fatal("failed exchange consumed original access")
 	}
@@ -219,7 +207,7 @@ func TestOwnerOAuthRefreshTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	replacement := issuedPair(t, postToken(a, refreshForm(client, current.Refresh)))
+	replacement := issuedPair(t, PostToken(a, refreshForm(client, current.Refresh)))
 	raw, err := os.ReadFile(filepath.Join(dir, "oauth.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -229,7 +217,7 @@ func TestOwnerOAuthRefreshTransaction(t *testing.T) {
 			t.Fatal("database contained a plaintext token")
 		}
 	}
-	requireGrantDenial(t, postToken(a, form))
+	requireGrantDenial(t, PostToken(a, form))
 	if a.ValidBearer(replacement.Access) {
 		t.Fatal("reuse marker failed to revoke retried exchange")
 	}

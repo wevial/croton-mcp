@@ -67,10 +67,7 @@ func TestOwnerOAuthRefreshFlow(t *testing.T) {
 		if scope != "" {
 			f.Set("scope", scope)
 		}
-		req := httptest.NewRequest(http.MethodPost, origin+"/token", strings.NewReader(f.Encode()))
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		w := httptest.NewRecorder()
-		handler.ServeHTTP(w, req)
+		w := owneroauth.PostToken(handler, f)
 		if w.Code != status {
 			t.Fatalf("refresh returned HTTP %d, want %d", w.Code, status)
 		}
