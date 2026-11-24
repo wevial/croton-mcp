@@ -13,9 +13,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -408,8 +410,12 @@ func TestOwnerOAuthCodeBrowserBinding(t *testing.T) {
 	if proof == nil {
 		t.Fatal("missing origin-scoped proof")
 	}
-	id := registerClient(t, a, registration{Redirects: []string{nativeRedirect}})
-	request("GET", "/authorize?"+authorizationQuery(id, nativeRedirect).Encode(), nil, 200)
+
+	// Exercise terminal review at the redirect and client name limits. Each
+	// ampersand expands to six bytes in the JSON reply on the owner socket.
+	redirect := nativeRedirect + strings.Repeat("&", 2048-len(nativeRedirect))
+	id := registerClient(t, a, registration{Name: strings.Repeat("&", 256), Redirects: []string{redirect}})
+	request("GET", "/authorize?"+authorizationQuery(id, redirect).Encode(), nil, 200)
 	shared := jar.Cookies(sibling)
 	if len(shared) == 0 {
 		t.Fatal("fixture has no cross-port cookie")
@@ -442,8 +448,12 @@ func TestOwnerOAuthCodeBrowserBinding(t *testing.T) {
 	otherForm := url.Values{"owner": {proof[1]}, "request": {a.window.requests[other].requestID}}
 	request("POST", "/owner/signin", otherForm, 403)
 
-	if err := Terminal(t.Context(), dir, "approve", bytes.NewBufferString(comparison[1]+"\n")); err != nil {
+	tty := bytes.NewBufferString(comparison[1] + "\n")
+	if err := Terminal(t.Context(), dir, "approve", tty); err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(tty.String(), "Full redirect: "+strconv.QuoteToASCII(redirect)+"\n") {
+		t.Fatal("terminal review omitted or truncated the redirect")
 	}
 
 	request("POST", "/owner/finish", nil, 403)
@@ -453,9 +463,60 @@ func TestOwnerOAuthCodeBrowserBinding(t *testing.T) {
 	if err != nil || callback.Host != "127.0.0.1" || callback.Path != "/callback" {
 		t.Fatal("wrong client callback")
 	}
-	if _, err := a.redeem(callback.Query().Get("code"), id, nativeRedirect, issuer+"/mcp", verifier); err != nil {
+	if _, err := a.redeem(callback.Query().Get("code"), id, redirect, issuer+"/mcp", verifier); err != nil {
 		t.Fatal("first client could not redeem its code")
 	}
+}
+
+func TestOwnerOAuthCodeLateApprovalCookie(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		settings := Defaults()
+		settings.PairingWindow = 12900 * time.Millisecond
+		settings.CodeLifetime = 3900 * time.Millisecond
+		a := openTest(t, privateDir(t), settings)
+		link := startWindow(t, a)
+		owner, err := a.claim(link.Fragment)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		id := registerClient(t, a, registration{Redirects: []string{nativeRedirect}})
+		time.Sleep(100 * time.Millisecond)
+		authorize := httptest.NewRequest("GET", issuer+"/authorize?"+authorizationQuery(id, nativeRedirect).Encode(), nil)
+		w := httptest.NewRecorder()
+		a.ServeHTTP(w, authorize)
+		if w.Code != http.StatusOK {
+			t.Fatalf("authorize returned %d", w.Code)
+		}
+
+		jar, _ := cookiejar.New(nil)
+		jar.SetCookies(authorize.URL, w.Result().Cookies())
+		req := a.window.requests[id]
+		details, err := a.signin(owner, req.browser, req.requestID)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Approve at 12.8s, then continue at 16.3s, before delivery expires at 16.7s.
+		time.Sleep(12700 * time.Millisecond)
+		if err := a.approve(req.requestID, details.Code); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(3500 * time.Millisecond)
+
+		form := url.Values{"owner": {owner}, "request": {req.requestID}}
+		finish := httptest.NewRequest("POST", issuer+"/owner/finish", strings.NewReader(form.Encode()))
+		finish.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		finish.Header.Set("Origin", issuer)
+		for _, c := range jar.Cookies(finish.URL) {
+			finish.AddCookie(c)
+		}
+		w = httptest.NewRecorder()
+		a.ServeHTTP(w, finish)
+		if w.Code != http.StatusSeeOther {
+			t.Fatalf("Continue returned %d while delivery was still valid", w.Code)
+		}
+	})
 }
 
 func TestOwnerOAuthCodeTokenStorageFailure(t *testing.T) {

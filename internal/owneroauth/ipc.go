@@ -16,6 +16,10 @@ import (
 
 const socketName = "owner.sock"
 
+// JSON can use six bytes per byte of the 2048-byte redirect and 256-byte
+// client name. The remaining space covers the loopback resource, IDs and framing.
+const maxOwnerReplyBytes = 16 << 10
+
 func sameUser(c *net.UnixConn) bool {
 	raw, err := c.SyscallConn()
 	if err != nil {
@@ -120,7 +124,7 @@ func ownerRequest(ctx context.Context, dir, command string) (reply, error) {
 		return reply{}, errState
 	}
 	var out reply
-	if json.NewDecoder(io.LimitReader(conn, 8192)).Decode(&out) != nil || !out.OK {
+	if json.NewDecoder(io.LimitReader(conn, maxOwnerReplyBytes)).Decode(&out) != nil || !out.OK {
 		return reply{}, errDenied
 	}
 	return out, nil

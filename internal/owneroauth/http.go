@@ -47,10 +47,15 @@ func cookie(r *http.Request, name string) string {
 }
 
 func (a *Authority) setRequestCookie(w http.ResponseWriter, req *authorization) {
+	// Both durations are positive. Their sum fits in uint64 even when it
+	// exceeds time.Duration, and Max-Age must round up to a whole second.
+	lifetime := uint64(a.settings.PairingWindow) + uint64(a.settings.CodeLifetime)
+	seconds := 1 + (lifetime-1)/uint64(time.Second)
+
 	http.SetCookie(w, &http.Cookie{
 		Name: requestCookiePrefix + req.requestID, Value: req.browser, Path: "/owner/",
 		Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode,
-		MaxAge: int(a.settings.PairingWindow/time.Second) + int(a.settings.CodeLifetime/time.Second) + 1,
+		MaxAge: int(seconds),
 	})
 }
 

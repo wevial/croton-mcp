@@ -36,7 +36,8 @@ Set the client’s Streamable HTTP endpoint to `http://127.0.0.1:8787/mcp`.
 port 443 for HTTPS in the endpoint URL, Host and Origin. Include any other
 port. For an IPv4-mapped IPv6 bind such as `[::ffff:127.0.0.1]:8787`, use
 the browser spelling `[::ffff:7f00:1]:8787` in the URL, Host and Origin.
-Each authorization request uses its own Secure, HttpOnly cookie.
+Each authorization request uses its own Secure, HttpOnly cookie. Its lifetime
+covers the pairing window plus the code lifetime, rounded up to a whole second.
 If your browser rejects it over HTTP, use HTTPS.
 For HTTPS, supply both `--tls-cert` and `--tls-key` and use `https://` in the
 endpoint. Your browser and client must trust the certificate for the listener
@@ -84,11 +85,12 @@ origin and the resource is the full `/mcp` URL. The issuer advertises dynamic
 registration and S256. `POST /register` ignores unsupported client metadata,
 including extensions that contain `null`. Supported fields require values of
 the declared type. The 64 KiB limit and duplicate-key checks apply
-to the entire registration request. Clients may register HTTPS redirects or
-HTTP redirects to loopback IP literals. A native client may select its loopback
-port at authorization. The server checks Host, any Origin header, bearer, and the
-64 KiB JSON frame before MCP dispatch. Tool calls share the configured IMAP
-command timeout across queuing and execution. On shutdown, the listener
+to the entire registration request. Each redirect URI can be up to 2,048 bytes.
+Clients may register HTTPS redirects or HTTP redirects to loopback IP literals.
+A native client may select its loopback port at authorization. The server checks
+Host, any Origin header, bearer, and the 64 KiB JSON frame before MCP dispatch.
+Tool calls share the configured IMAP command timeout across queuing and execution.
+On shutdown, the listener
 cancels tool calls and allows one second for HTTP connections to drain
 before closing any remaining sockets. It then waits up to one second for owner
 IPC and OAuth database cleanup and up to one second for Bridge logout.
