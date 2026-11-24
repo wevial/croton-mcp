@@ -97,7 +97,7 @@ func Reserve(dir, login string) error {
 				return ErrUnavailable
 			}
 			if stamp > cutoff {
-				times = binary.BigEndian.AppendUint64(times, uint64(stamp))
+				times = append(times, record[:8]...)
 			}
 			record = record[8:]
 		}

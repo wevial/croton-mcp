@@ -302,8 +302,8 @@ func (store *ForwardPreviews) approval(cfg bridge.ForwardConfig, request *mcp.Ca
 		return nil, errorResult(errInvalidArgument)
 	}
 	pending.challenge = ""
-	response, ok := params.InputResponses["confirmation"].(*mcp.ElicitResult)
-	if !ok || response == nil || len(params.InputResponses) != 1 || response.Action != "accept" ||
+	response, _ := params.InputResponses["confirmation"].(*mcp.ElicitResult)
+	if response == nil || len(params.InputResponses) != 1 || response.Action != "accept" ||
 		len(response.Content) != 1 || response.Content["confirm"] != true {
 		return nil, errorResult(errInvalidArgument)
 	}

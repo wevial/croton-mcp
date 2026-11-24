@@ -14,10 +14,7 @@ import (
 	"time"
 )
 
-const (
-	forwardAccepted     = "accepted"
-	forwardNotSubmitted = "not_submitted"
-)
+const forwardNotSubmitted = "not_submitted"
 
 // SubmitForward spends the reservation while holding the preview's Bridge
 // session, then submits the stored envelope and MIME in one SMTP transaction.
@@ -109,7 +106,7 @@ func (adapter *Adapter) SubmitForward(ctx context.Context, cfg ForwardConfig, lo
 		return OutcomeUnknown, nil
 	}
 
-	return forwardAccepted, nil
+	return "accepted", nil
 }
 
 // Replies share one line, count and byte budget from greeting to acceptance.
