@@ -122,7 +122,14 @@ selected by that helper. Give Croton a dedicated HTTPS origin with TLS
 termination on the operator's host and no CDN TLS termination.
 
 **Publish the endpoint.** Use Tailscale CLI 1.104.5 or later on a dedicated
-node with HTTPS and Funnel enabled for port 443. In the owner terminal, check
+node with HTTPS and Funnel enabled for port 443. On Linux with a root-owned
+`tailscaled`, have an administrator run `sudo tailscale set --operator=CROTON_USER`
+before setup, replacing `CROTON_USER` with the local username that runs Croton.
+This lets that user configure the Funnel route after approving publication.
+Run Croton and its owner commands as that user.
+[Tailscale Linux operator permissions](https://tailscale.com/docs/reference/troubleshooting/linux/linux-operator-permission)
+
+In the owner terminal, check
 `tailscale serve status` and `tailscale funnel status`. Port 443 must be free
 and under your exclusive control until Croton stops. Use your synthetic paths.
 

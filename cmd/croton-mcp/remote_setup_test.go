@@ -124,8 +124,15 @@ func TestRemoteConnectorSetup(t *testing.T) {
 	if err != nil || link.Scheme+"://"+link.Host != p.origin || link.Fragment == "" {
 		t.Fatal("invalid terminal handoff")
 	}
-	p.request(t, "GET", link.Path, "", "", http.StatusOK)
-	_, body = p.request(t, "POST", link.Path, clientForm, url.Values{"handoff": {link.Fragment}}.Encode(), http.StatusOK)
+	handoff := link.Fragment
+	link.Fragment = ""
+	_, body = p.request(t, "GET", path(link.String()), "", "", http.StatusOK)
+	pairURL, pair := setupPostForm(t, link.String(), body, "Pair this browser")
+	if !pair.Has("handoff") {
+		t.Fatal("pairing form is missing the handoff field")
+	}
+	pair.Set("handoff", handoff)
+	_, body = p.request(t, "POST", path(pairURL), clientForm, pair.Encode(), http.StatusOK)
 	owner := field(body, `data-owner="([^"]+)"`)
 
 	_, body = p.request(t, "POST", path(metadata.Register), "application/json",
@@ -142,7 +149,7 @@ func TestRemoteConnectorSetup(t *testing.T) {
 	}
 	authorizeURL := metadata.Authorize + "?" + authorize.Encode()
 	_, body = p.request(t, "GET", path(authorizeURL), "", "", http.StatusOK)
-	signinURL, signin := setupPostForm(t, authorizeURL, body)
+	signinURL, signin := setupPostForm(t, authorizeURL, body, "")
 	if !signin.Has("owner") {
 		t.Fatal("sign-in form is missing the browser owner field")
 	}
@@ -150,7 +157,7 @@ func TestRemoteConnectorSetup(t *testing.T) {
 	_, body = p.request(t, "POST", path(signinURL), clientForm, signin.Encode(), http.StatusOK)
 	terminal("approve", field(body, `<strong>([^<]+)</strong>`)+"\n")
 
-	finishURL, continuation := setupPostForm(t, signinURL, body)
+	finishURL, continuation := setupPostForm(t, signinURL, body, "Continue after approval")
 	headers, _ = p.request(t, "POST", path(finishURL), clientForm, continuation.Encode(), http.StatusSeeOther)
 	callback, err := url.Parse(headers.Get("Location"))
 	if err != nil || callback.Scheme+"://"+callback.Host+callback.Path != clientRedirect ||
@@ -202,7 +209,8 @@ func TestRemoteConnectorSetup(t *testing.T) {
 	}
 }
 
-func setupPostForm(t *testing.T, pageURL string, body []byte) (string, url.Values) {
+// A blank button label represents the sign-in page's scripted form.submit().
+func setupPostForm(t *testing.T, pageURL string, body []byte, buttonLabel string) (string, url.Values) {
 	t.Helper()
 	page, err := url.Parse(pageURL)
 	if err != nil {
@@ -225,22 +233,58 @@ func setupPostForm(t *testing.T, pageURL string, body []byte) (string, url.Value
 			continue
 		}
 		attrs := attributes(form)
-		action, err := page.Parse(attrs["action"])
-		if err != nil || !strings.EqualFold(attrs["method"], "post") {
-			t.Fatal("expected a form with a valid POST action")
-		}
-
+		method, target := attrs["method"], attrs["action"]
+		foundButton := false
 		fields := url.Values{}
-		for input := range form.Descendants() {
-			if input.DataAtom != atom.Input {
+		for control := range form.Descendants() {
+			if control.DataAtom != atom.Input && control.DataAtom != atom.Button {
 				continue
 			}
-			attrs := attributes(input)
-			if _, disabled := attrs["disabled"]; !disabled && attrs["name"] != "" {
-				fields.Add(attrs["name"], attrs["value"])
+			controlAttrs := attributes(control)
+			if _, disabled := controlAttrs["disabled"]; disabled {
+				continue
+			}
+			if owner, ok := controlAttrs["form"]; ok && (owner == "" || owner != attrs["id"]) {
+				continue
+			}
+
+			if control.DataAtom == atom.Button {
+				var label strings.Builder
+				for node := range control.Descendants() {
+					if node.Type == html.TextNode {
+						label.WriteString(node.Data)
+					}
+				}
+				if buttonLabel == "" || strings.Join(strings.Fields(label.String()), " ") != buttonLabel {
+					continue
+				}
+				if kind := controlAttrs["type"]; kind != "" && !strings.EqualFold(kind, "submit") {
+					continue
+				}
+				foundButton = true
+				if override, ok := controlAttrs["formmethod"]; ok {
+					method = override
+				}
+				if override, ok := controlAttrs["formaction"]; ok {
+					target = override
+				}
+			}
+			if name := controlAttrs["name"]; name != "" {
+				fields.Add(name, controlAttrs["value"])
 			}
 		}
+		if buttonLabel != "" && !foundButton {
+			continue
+		}
+
+		action, err := page.Parse(target)
+		if err != nil || !strings.EqualFold(method, "post") {
+			t.Fatal("expected a form with a valid POST action")
+		}
 		return action.String(), fields
+	}
+	if buttonLabel != "" {
+		t.Fatalf("missing enabled submit button %q", buttonLabel)
 	}
 	t.Fatal("missing OAuth form")
 	return "", nil
