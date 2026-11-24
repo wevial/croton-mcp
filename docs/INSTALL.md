@@ -209,12 +209,20 @@ clients and revoke the registration ID for this connector in the owner terminal.
 ~/bin/croton-mcp unpair --state-dir "$HOME/.local/state/croton-synthetic" CLIENT_ID
 ```
 
-Disconnect the connector in Claude and stop the serving process with Ctrl-C.
-Check `tailscale funnel status` and `tailscale serve status` again. Confirm
-the background HTTPS 443 root route to Croton is gone. After a crash or a
-cleanup warning, inspect the root mount before reusing the port. If its
-target matches the Croton loopback target you approved, run
-`tailscale funnel --https=443 --set-path=/ off` and recheck both statuses.
+Disconnect the connector in Claude, then follow the steps for your HTTPS setup.
+
+- **Owner-managed proxy.** While Croton is still running, disable or remove
+  the route for its dedicated origin and apply the proxy configuration. Check
+  the proxy's active routes to confirm that no path on that host forwards to
+  Croton's loopback target. Request `/.well-known/oauth-authorization-server`
+  at the public origin without credentials and confirm it no longer serves
+  Croton's metadata. Then stop Croton with Ctrl-C.
+- **Tailscale Funnel.** Stop Croton with Ctrl-C. Check `tailscale funnel status`
+  and `tailscale serve status` again. Confirm the background HTTPS 443 root
+  route to Croton is gone. After a crash or a cleanup warning, inspect the
+  root mount before reusing the port. If its target matches the Croton loopback
+  target you approved, run `tailscale funnel --https=443 --set-path=/ off`
+  and recheck both statuses.
 
 **Verify from the repository root.** The test uses fake mail, a fake Tailscale
 CLI, Python 3.9 or later to drive the terminal, and Node.js to run the
