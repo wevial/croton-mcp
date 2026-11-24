@@ -6,10 +6,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -266,8 +268,16 @@ func approvedGrant(t *testing.T, a *Authority) (string, *authorization) {
 	t.Helper()
 
 	owner, req := approveRequest(t, a)
+	return collectGrant(t, a, owner, req), req
+}
+
+func collectGrant(t *testing.T, a *Authority, owner string, req *authorization) string {
+	t.Helper()
 	if _, err := a.start(); err != errDenied {
 		t.Fatal("opened a window while callback awaited delivery")
+	}
+	if _, err := a.finish("", req.browser); err == nil {
+		t.Fatal("delivered callback with only the request cookie")
 	}
 	if _, err := a.finish(owner, "other"); err == nil {
 		t.Fatal("foreign delivery")
@@ -283,7 +293,7 @@ func approvedGrant(t *testing.T, a *Authority) (string, *authorization) {
 	if _, err := a.finish(owner, req.browser); err == nil {
 		t.Fatal("replayed delivery")
 	}
-	return u.Query().Get("code"), req
+	return u.Query().Get("code")
 }
 
 func TestOwnerOAuthCodeRedemption(t *testing.T) {
@@ -292,13 +302,21 @@ func TestOwnerOAuthCodeRedemption(t *testing.T) {
 	now := time.Now()
 	settings.Now = func() time.Time { return now }
 	a := openTest(t, dir, settings)
-	code, req := approvedGrant(t, a)
-	now = now.Add(60 * time.Second)
+	owner, req := approveRequest(t, a)
+	now = now.Add(59 * time.Second)
+	code := collectGrant(t, a, owner, req)
+	now = now.Add(time.Second)
 	if _, err := a.redeem(code, req.Client, req.Redirect, req.Resource, verifier); err == nil {
 		t.Fatal("expired code")
 	}
 
-	code, req = approvedGrant(t, a)
+	owner, req = approveRequest(t, a)
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	a = openTest(t, dir, settings)
+	now = now.Add(59 * time.Second)
+	code = collectGrant(t, a, owner, req)
 	if err := a.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +326,6 @@ func TestOwnerOAuthCodeRedemption(t *testing.T) {
 			t.Fatal("redeemed unbound request")
 		}
 	}
-	now = now.Add(59 * time.Second)
 	var wg sync.WaitGroup
 	results := make(chan string, 12)
 	for range cap(results) {
@@ -337,9 +354,66 @@ func TestOwnerOAuthCodeRedemption(t *testing.T) {
 		t.Fatal("expired access")
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, "oauth.db"))
-	if err != nil || bytes.Contains(raw, []byte(code)) || bytes.Contains(raw, []byte(token)) {
+	if err != nil || bytes.Contains(raw, []byte(code)) || bytes.Contains(raw, []byte(token)) || bytes.Contains(raw, []byte(owner)) || bytes.Contains(raw, []byte(req.browser)) {
 		t.Fatal("token storage")
 	}
+}
+
+func TestOwnerOAuthCodeBrowserBinding(t *testing.T) {
+	a := openTest(t, privateDir(t), Defaults())
+	jar, _ := cookiejar.New(nil)
+	// A cookie jar exposes matching cookies at this port as well.
+	sibling, _ := url.Parse("https://127.0.0.1:9999/owner/")
+	request := func(method, path string, form url.Values, status int) *httptest.ResponseRecorder {
+		t.Helper()
+		r := httptest.NewRequest(method, issuer+path, strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.Header.Set("Origin", issuer)
+		for _, c := range jar.Cookies(sibling) {
+			r.AddCookie(c)
+		}
+		w := httptest.NewRecorder()
+		a.ServeHTTP(w, r)
+		if w.Code != status {
+			t.Fatalf("%s %s returned %d, want %d", method, r.URL.Path, w.Code, status)
+		}
+
+		jar.SetCookies(r.URL, w.Result().Cookies())
+		return w
+	}
+
+	link := startWindow(t, a)
+	paired := request("POST", link.Path, url.Values{"handoff": {link.Fragment}}, 200)
+	proof := regexp.MustCompile(`data-owner="([A-Za-z0-9_-]+)"`).FindStringSubmatch(paired.Body.String())
+	if proof == nil {
+		t.Fatal("missing origin-scoped proof")
+	}
+	id := registerClient(t, a, registration{Redirects: []string{nativeRedirect}})
+	request("GET", "/authorize?"+authorizationQuery(id, nativeRedirect).Encode(), nil, 200)
+	shared := jar.Cookies(sibling)
+	if len(shared) == 0 {
+		t.Fatal("fixture has no cross-port cookie")
+	}
+	for _, c := range shared {
+		if strings.Contains(c.Value, proof[1]) {
+			t.Fatal("owner proof exposed in a cross-port cookie")
+		}
+	}
+
+	req := a.window.requests[id]
+	form := url.Values{"request": {req.requestID}}
+	request("POST", "/owner/signin", form, 403)
+	if _, err := a.inspect(); err == nil {
+		t.Fatal("cookie-only sign-in reached terminal review")
+	}
+	form.Set("owner", proof[1])
+	request("POST", "/owner/signin", form, 200)
+	if err := a.approve(req.requestID, req.comparison); err != nil {
+		t.Fatal(err)
+	}
+
+	request("POST", "/owner/finish", nil, 403)
+	request("POST", "/owner/finish", form, 303)
 }
 
 func TestOwnerOAuthCodeTokenStorageFailure(t *testing.T) {

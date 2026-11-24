@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/pprof"
 	"strconv"
 	"strings"
 	"syscall"
@@ -25,11 +26,30 @@ const runMainEnv = "CROTON_MCP_RUN_MAIN"
 
 func TestMain(m *testing.M) {
 	if os.Getenv(runMainEnv) == "1" {
+		if marker := os.Getenv("CROTON_TEST_BRIDGE_GATE"); marker != "" {
+			go markQueuedCall(marker)
+		}
 		main()
 		os.Exit(0)
 	}
 
 	os.Exit(m.Run())
+}
+
+// Observe the real adapter in the serving process, without adding a test hook
+// to its gate. Once the helper holds the gate, only the second call can wait here.
+func markQueuedCall(active string) {
+	for {
+		if _, err := os.Stat(active); err == nil {
+			var stacks bytes.Buffer
+			_ = pprof.Lookup("goroutine").WriteTo(&stacks, 1)
+			if bytes.Contains(stacks.Bytes(), []byte("github.com/wevial/croton-mcp/bridge.(*Adapter).acquire")) {
+				_ = os.WriteFile(active+".queued", nil, 0600)
+				return
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func TestCmdCredentialHelperProcess(t *testing.T) {

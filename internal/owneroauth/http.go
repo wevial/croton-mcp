@@ -20,7 +20,6 @@ import (
 
 const (
 	ResourceMetadataPath = "/.well-known/oauth-protected-resource/mcp"
-	ownerCookie          = "croton-owner"
 	requestCookie        = "croton-request"
 )
 
@@ -31,7 +30,7 @@ var signinPage = template.Must(template.New("signin").Funcs(template.FuncMap{"qu
 <p>Self-reported client name <code>{{quote .Name}}</code></p>
 <p>Redirect URI <code>{{quote .Redirect}}</code></p>
 <p>Run <code>croton-mcp approve</code> in your terminal. Check the client and redirect, then enter <strong>{{.Code}}</strong>.</p>
-<form method="post" action="/owner/finish"><button>Continue after approval</button></form>`))
+<form method="post" action="/owner/finish"><input type="hidden" name="owner" value="{{.Owner}}"><button>Continue after approval</button></form>`))
 
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -47,12 +46,20 @@ func cookie(r *http.Request, name string) string {
 	return cookies[0].Value
 }
 
-func (a *Authority) setCookie(w http.ResponseWriter, name, value string) {
+func (a *Authority) setRequestCookie(w http.ResponseWriter, value string) {
 	http.SetCookie(w, &http.Cookie{
-		Name: name, Value: value, Path: "/owner/",
+		Name: requestCookie, Value: value, Path: "/owner/",
 		Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode,
 		MaxAge: int(a.settings.PairingWindow/time.Second) + int(a.settings.CodeLifetime/time.Second) + 1,
 	})
+}
+
+// The nonce allows only the script that transfers the browser proof at this origin.
+func browserPage(w http.ResponseWriter) string {
+	nonce := secret()
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'nonce-"+nonce+"'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	return nonce
 }
 
 func parseValues(raw string) (url.Values, error) {
@@ -193,9 +200,11 @@ func (a *Authority) route(w http.ResponseWriter, r *http.Request) error {
 			return err
 		}
 
-		a.setCookie(w, requestCookie, req.browser)
-		w.Header().Set("Location", "/owner/signin?request="+req.requestID)
-		w.WriteHeader(http.StatusSeeOther)
+		a.setRequestCookie(w, req.browser)
+		nonce := browserPage(w)
+		fmt.Fprintf(w, `<!doctype html><title>Sign in to Croton</title>
+<form method="post" action="/owner/signin"><input type="hidden" name="request" value="%s"><input type="hidden" name="owner"></form>
+<script nonce="%s">const form=document.forms[0];form.elements.owner.value=localStorage.getItem("croton-owner") || "";form.submit()</script>`, req.requestID, nonce)
 	case "GET /owner/pair":
 		a.mu.Lock()
 		open := a.openWindow() && a.window.handoff != "" && a.settings.Now().Before(a.window.handoffExpires)
@@ -204,11 +213,9 @@ func (a *Authority) route(w http.ResponseWriter, r *http.Request) error {
 			return errDenied
 		}
 
-		nonce := secret()
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'nonce-"+nonce+"'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		nonce := browserPage(w)
 		fmt.Fprintf(w, `<!doctype html><title>Pair Croton</title><form method="post"><input name="handoff" type="hidden"><button>Pair this browser</button></form><script nonce="%s">document.forms[0].handoff.value=location.hash.slice(1);history.replaceState(null,"",location.pathname)</script>`, nonce)
-	case "POST /owner/pair", "POST /owner/finish":
+	case "POST /owner/pair", "POST /owner/signin", "POST /owner/finish":
 		if r.Header.Get("Origin") != a.issuer {
 			return errDenied
 		}
@@ -216,35 +223,38 @@ func (a *Authority) route(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return err
 		}
-		if r.URL.Path == "/owner/pair" {
+		switch r.URL.Path {
+		case "/owner/pair":
 			owner, err := a.claim(form.Get("handoff"))
 			if err != nil {
 				return err
 			}
 
-			a.setCookie(w, ownerCookie, owner)
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			fmt.Fprintln(w, "Start authorization in your MCP client using this browser.")
-			return nil
-		}
-		location, err := a.finish(cookie(r, ownerCookie), cookie(r, requestCookie))
-		if err != nil {
-			return err
-		}
-		w.Header().Set("Location", location)
-		w.WriteHeader(http.StatusSeeOther)
-	case "GET /owner/signin":
-		q, err := parseValues(r.URL.RawQuery)
-		if err != nil {
-			return err
-		}
-		details, err := a.signin(cookie(r, ownerCookie), cookie(r, requestCookie), q.Get("request"))
-		if err != nil {
-			return err
-		}
+			nonce := browserPage(w)
+			fmt.Fprintf(w, `<!doctype html><title>Browser paired</title><body data-owner="%s">
+<p>Start authorization in your MCP client using this browser.</p>
+<script nonce="%s">localStorage.setItem("croton-owner", document.body.dataset.owner)</script>`, owner, nonce)
+		case "/owner/signin":
+			owner := form.Get("owner")
+			details, err := a.signin(owner, cookie(r, requestCookie), form.Get("request"))
+			if err != nil {
+				return err
+			}
 
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_ = signinPage.Execute(w, details)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_ = signinPage.Execute(w, struct {
+				review
+				Owner string
+			}{details, owner})
+		case "/owner/finish":
+			location, err := a.finish(form.Get("owner"), cookie(r, requestCookie))
+			if err != nil {
+				return err
+			}
+
+			w.Header().Set("Location", location)
+			w.WriteHeader(http.StatusSeeOther)
+		}
 	case "POST /token":
 		form, err := readForm(w, r)
 		if err != nil {

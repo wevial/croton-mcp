@@ -194,6 +194,8 @@ func runHTTP(parent context.Context, listener net.Listener, handler http.Handler
 	defer cancel()
 
 	var connections sync.WaitGroup
+	var sockets sync.Map // net.Conn to underlying transport
+
 	server := &http.Server{
 		Handler:           handler,
 		BaseContext:       func(net.Listener) context.Context { return ctx },
@@ -203,27 +205,35 @@ func runHTTP(parent context.Context, listener net.Listener, handler http.Handler
 		IdleTimeout:       30 * time.Second,
 		MaxHeaderBytes:    16 << 10,
 		ErrorLog:          log.New(io.Discard, "", 0),
-		ConnState: func(_ net.Conn, state http.ConnState) {
+		ConnState: func(conn net.Conn, state http.ConnState) {
 			switch state {
 			case http.StateNew:
+				raw := conn
+				if secured, ok := conn.(*tls.Conn); ok {
+					raw = secured.NetConn()
+				}
+				sockets.Store(conn, raw)
 				connections.Add(1)
 			case http.StateClosed:
+				sockets.Delete(conn)
 				connections.Done()
 			}
 		},
 	}
-	done := make(chan struct{})
-	context.AfterFunc(ctx, func() {
-		// Canceling BaseContext stops SDK calls. Close interrupts partial reads and idle connections.
-		_ = server.Close()
-		close(done)
-	})
+	stop := context.AfterFunc(ctx, func() { _ = listener.Close() })
+	defer stop()
 	err := server.Serve(listener)
 	cancel()
-	<-done
+
+	// Serve has registered every accepted connection. Interrupt the transport
+	// underneath TLS so a peer that stopped reading cannot stall close_notify.
+	sockets.Range(func(_, raw any) bool {
+		_ = raw.(net.Conn).Close()
+		return true
+	})
 	connections.Wait()
 
-	if !errors.Is(err, http.ErrServerClosed) {
+	if !errors.Is(err, net.ErrClosed) || parent.Err() == nil {
 		return errors.New("HTTP listener unavailable")
 	}
 	return nil

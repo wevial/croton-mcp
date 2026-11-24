@@ -32,15 +32,17 @@ croton-mcp serve --authorizer owner --config /absolute/path/to/croton.json
 ```
 
 Set the client’s Streamable HTTP endpoint to `http://127.0.0.1:8787/mcp`.
-`--bind` accepts a loopback IP literal and port. Pairing uses Secure cookies. If
-your browser rejects them over HTTP, reaching the approval page requires HTTPS.
+`--bind` accepts a loopback IP literal and port. Pairing uses a Secure, HttpOnly
+request cookie. If your browser rejects it over HTTP, use HTTPS.
 For HTTPS, supply both `--tls-cert` and `--tls-key` and use `https://` in the
 endpoint. Your browser and client must trust the certificate for the listener
 IP. The Bridge connection uses the TLS pin or anchor in the Croton configuration.
 
 1. Run `croton-mcp pair` in a local terminal. Open the displayed link in the
    browser your MCP client uses and select **Pair this browser**. The fragment
-   contains a single-use secret valid for two minutes.
+   contains a single-use secret valid for two minutes. The pairing page saves
+   a browser proof in local storage for the exact listener origin, including
+   its port. Allow JavaScript and local storage in the pairing browser.
 2. Start authorization in the MCP client. Its public client registration and
    authorization request must arrive during the three-minute pairing window.
    The browser displays a comparison code.
@@ -48,11 +50,11 @@ IP. The Bridge connection uses the TLS pin or anchor in the Croton configuration
    name, client ID, full redirect URI, S256 challenge, resource and browser
    code. Enter the matching code to approve that request.
 4. Select **Continue after approval** in the same browser. The client receives
-   the code and issuer at its redirect URI. It has 60 seconds to exchange the
-   code with the original redirect, resource and PKCE verifier. If the exchange
-   returns `500 server_error`, the client can retry the same code before it
-   expires. The bearer grants ten minutes of access to the six read tools.
-   Pair again for a new grant.
+   the code and issuer at its redirect URI. It has 60 seconds from terminal
+   approval to collect and exchange the code with the original redirect,
+   resource and PKCE verifier. If the exchange returns `500 server_error`, the
+   client can retry the same code before it expires. The bearer grants ten
+   minutes of access to the six read tools. Pair again for a new grant.
 
 Opening a pairing window replaces any pending window. Each window admits
 eight registrations and closes on its first approval. After approval, `pair`
@@ -66,9 +68,11 @@ each. Linux uses `$XDG_STATE_HOME/croton-mcp` when `XDG_STATE_HOME` is
 absolute and falls back to `~/.local/state/croton-mcp` otherwise. macOS uses
 `~/Library/Application Support/croton-mcp`. The owner directory is mode
 `0700` and the bbolt database is mode `0600`. Terminal commands communicate
-over a Unix socket that checks the peer UID at both ends. Pending pairings
-expire on restart. Issued codes and access tokens survive restart at the same
-resource URL and are stored by hash.
+over a Unix socket that checks the peer UID at both ends. Unapproved requests
+expire on restart. After approval, the same browser can select **Continue**
+even if the listener restarts at the same origin. Collection succeeds once,
+within the original expiry. Issued codes and access tokens are stored by hash
+and survive restart at the same resource URL.
 
 A request without a valid bearer receives a `401` with the resource metadata
 URL at `/.well-known/oauth-protected-resource/mcp`. The issuer is the listener

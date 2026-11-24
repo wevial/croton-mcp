@@ -138,7 +138,7 @@ type httpProcess struct {
 	client         *http.Client
 }
 
-func startHTTP(t *testing.T, config string) *httpProcess {
+func startHTTP(t *testing.T, config string, env ...string) *httpProcess {
 	t.Helper()
 	// Keep the Unix socket under Darwin's sockaddr_un path limit.
 	dir, err := os.MkdirTemp("/tmp", "croton-")
@@ -167,6 +167,7 @@ func startHTTP(t *testing.T, config string) *httpProcess {
 	}
 	p.cmd = exec.Command(executable, "serve", "--config", config, "--authorizer", "owner", "--bind", address, "--state-dir", dir, "--tls-cert", filepath.Join(dir, "cert.pem"), "--tls-key", filepath.Join(dir, "key.pem"))
 	p.cmd.Env = append(os.Environ(), runMainEnv+"=1")
+	p.cmd.Env = append(p.cmd.Env, env...)
 	p.cmd.Stdout, p.cmd.Stderr = &p.stdout, &p.stderr
 	if err = p.cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -246,13 +247,14 @@ func (p *httpProcess) pair(t *testing.T) string {
 	}
 	const form = "application/x-www-form-urlencoded"
 	p.request(t, "GET", link.Path, "", "", 200)
-	h, _ := p.request(t, "POST", link.Path, form, url.Values{"handoff": {link.Fragment}}.Encode(), 200)
-	cookies := (&http.Response{Header: h}).Cookies()
-	if len(cookies) != 1 || !cookies[0].Secure || !cookies[0].HttpOnly || cookies[0].SameSite == http.SameSiteDefaultMode {
-		t.Fatal("insecure owner cookie")
+	_, b := p.request(t, "POST", link.Path, form, url.Values{"handoff": {link.Fragment}}.Encode(), 200)
+	proof := regexp.MustCompile(`data-owner="([A-Za-z0-9_-]+)"`).FindSubmatch(b)
+	if proof == nil {
+		t.Fatal("missing origin-scoped pairing proof")
 	}
+	owner := url.Values{"owner": {string(proof[1])}}
 
-	_, b := p.request(t, "POST", "/register", "application/json", `{"client_name":"Client\u001b\n.test","redirect_uris":["https://client.test/callback?tag=fixture"],"token_endpoint_auth_method":"none"}`, 201)
+	_, b = p.request(t, "POST", "/register", "application/json", `{"client_name":"Client\u001b\n.test","redirect_uris":["https://client.test/callback?tag=fixture"],"token_endpoint_auth_method":"none"}`, 201)
 	var dcr struct {
 		ID string `json:"client_id"`
 	}
@@ -261,8 +263,17 @@ func (p *httpProcess) pair(t *testing.T) string {
 	}
 	const verifier = "verifier.test-000000000000000000000000000000000000000000"
 	params := url.Values{"client_id": {dcr.ID}, "redirect_uri": {"https://client.test/callback?tag=fixture"}, "response_type": {"code"}, "code_challenge_method": {"S256"}, "code_challenge": {oauth2.S256ChallengeFromVerifier(verifier)}, "resource": {p.origin + "/mcp"}}
-	h, _ = p.request(t, "GET", "/authorize?"+params.Encode(), "", "", 303)
-	_, b = p.request(t, "GET", h.Get("Location"), "", "", 200)
+	h, b := p.request(t, "GET", "/authorize?"+params.Encode(), "", "", 200)
+	cookies := (&http.Response{Header: h}).Cookies()
+	if len(cookies) != 1 || !cookies[0].Secure || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteLaxMode {
+		t.Fatal("insecure request cookie")
+	}
+	request := regexp.MustCompile(`name="request" value="([A-Za-z0-9_-]+)"`).FindSubmatch(b)
+	if request == nil {
+		t.Fatal("missing sign-in form")
+	}
+	signin := url.Values{"owner": {owner.Get("owner")}, "request": {string(request[1])}}
+	_, b = p.request(t, "POST", "/owner/signin", form, signin.Encode(), 200)
 	match := regexp.MustCompile(`<strong>([A-Z0-9_-]+)</strong>`).FindSubmatch(b)
 	if match == nil {
 		t.Fatal("missing comparison code")
@@ -276,7 +287,7 @@ func (p *httpProcess) pair(t *testing.T) string {
 			t.Fatal("incomplete terminal review")
 		}
 	}
-	h, _ = p.request(t, "POST", "/owner/finish", form, "", 303)
+	h, _ = p.request(t, "POST", "/owner/finish", form, owner.Encode(), 303)
 	redirect, err := url.Parse(h.Get("Location"))
 	if err != nil || redirect.Host != "client.test" || redirect.Query().Get("iss") != p.origin {
 		t.Fatal("wrong callback")
@@ -338,7 +349,19 @@ func TestHTTPTransportPairedReads(t *testing.T) {
 	}
 }
 
-// The marker proves the stalled credential helper holds the gate before the second call.
+func waitForMarker(t *testing.T, marker string) {
+	t.Helper()
+
+	until := time.Now().Add(3 * time.Second)
+	for time.Now().Before(until) {
+		if _, err := os.Stat(marker); err == nil {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("Bridge call did not reach %s", filepath.Base(marker))
+}
+
 func TestHTTPTransportBridgeQueue(t *testing.T) {
 	for _, shutdown := range []bool{false, true} {
 		t.Run(fmt.Sprintf("shutdown=%t", shutdown), func(t *testing.T) {
@@ -355,7 +378,7 @@ func TestHTTPTransportBridgeQueue(t *testing.T) {
 				imap["commandTimeoutMs"] = budget.Milliseconds()
 				imap["credentialCommand"] = []string{"/bin/sh", "-c", `echo started >> "$1"; exec /bin/sleep 45`, "fixture.test", marker}
 			})
-			p := startHTTP(t, config)
+			p := startHTTP(t, config, "CROTON_TEST_BRIDGE_GATE="+marker)
 			session := p.session(t, p.pair(t), version)
 			results := make(chan bool, 2)
 			call := func() {
@@ -363,17 +386,9 @@ func TestHTTPTransportBridgeQueue(t *testing.T) {
 				results <- err != nil || result.IsError
 			}
 			go call()
-			until := time.Now().Add(3 * time.Second)
-			for {
-				if _, err := os.Stat(marker); err == nil {
-					break
-				}
-				if time.Now().After(until) {
-					t.Fatal("active request did not reach Bridge gate")
-				}
-				time.Sleep(5 * time.Millisecond)
-			}
+			waitForMarker(t, marker)
 			go call()
+			waitForMarker(t, marker+".queued")
 			if shutdown {
 				// Establish an idle keep-alive independently of the active calls.
 				conn, err := tls.Dial("tcp", strings.TrimPrefix(p.origin, "https://"), p.client.Transport.(*http.Transport).TLSClientConfig)
@@ -393,6 +408,10 @@ func TestHTTPTransportBridgeQueue(t *testing.T) {
 				io.Copy(io.Discard, response.Body)
 				response.Body.Close()
 				p.stop(t)
+				// Audit events are emitted as the server-side calls return.
+				if strings.Count(p.stderr.String(), `"code":"canceled"`) != 2 {
+					t.Fatal("active and queued calls did not both report cancellation")
+				}
 				conn.SetReadDeadline(time.Now().Add(time.Second))
 				if _, err := reader.ReadByte(); err != io.EOF {
 					t.Fatalf("idle connection not closed: %v", err)
@@ -415,5 +434,73 @@ func TestHTTPTransportBridgeQueue(t *testing.T) {
 				p.stop(t)
 			}
 		})
+	}
+}
+
+// Serve the pipe first so a TLS write blocks until the test peer reads it.
+type pipeListener struct {
+	net.Listener
+	pipe net.Conn
+}
+
+func (l *pipeListener) Accept() (net.Conn, error) {
+	if l.pipe != nil {
+		conn := l.pipe
+		l.pipe = nil
+		return conn, nil
+	}
+	return l.Listener.Accept()
+}
+
+func TestHTTPTransportBackpressuredTLSShutdown(t *testing.T) {
+	dir := t.TempDir()
+	clientTLS := testTLS(t, dir)
+	clientTLS.ServerName = "127.0.0.1"
+	cert, err := tls.LoadX509KeyPair(filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	rawServer, rawClient := net.Pipe()
+	defer rawClient.Close()
+	client := tls.Client(rawClient, clientTLS)
+	client.SetDeadline(time.Now().Add(10 * time.Second))
+	secured := tls.NewListener(&pipeListener{listener, rawServer}, &tls.Config{Certificates: []tls.Certificate{cert}})
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- runHTTP(ctx, secured, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}))
+	}()
+
+	req, err := http.NewRequest("GET", "https://127.0.0.1/", nil)
+	if err != nil || req.Write(client) != nil {
+		t.Fatal("could not send TLS request")
+	}
+	response, err := http.ReadResponse(bufio.NewReader(client), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatal("TLS request failed")
+	}
+
+	// Leave the peer open without reading the server's TLS close notification.
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("TLS close notification blocked HTTP shutdown")
 	}
 }

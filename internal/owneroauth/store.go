@@ -50,7 +50,6 @@ type Authority struct {
 	settings Settings
 	db       *bolt.DB
 	window   window
-	delivery delivery
 }
 
 func DefaultDir() (string, error) {
@@ -86,7 +85,7 @@ func Open(dir, issuer string, settings Settings) (*Authority, error) {
 	}
 
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, name := range []string{"codes", "access"} {
+		for _, name := range []string{"codes", "access", "deliveries"} {
 			if _, err := tx.CreateBucketIfNotExists([]byte(name)); err != nil {
 				return err
 			}
@@ -139,7 +138,7 @@ func put(tx *bolt.Tx, bucket, token string, value any) error {
 
 // Only terminal-approved grants can grow the database, so prune on issuance.
 func prune(tx *bolt.Tx, now time.Time) error {
-	for _, name := range []string{"codes", "access"} {
+	for _, name := range []string{"codes", "access", "deliveries"} {
 		b := tx.Bucket([]byte(name))
 		c := b.Cursor()
 		for k, v := c.First(); k != nil; {

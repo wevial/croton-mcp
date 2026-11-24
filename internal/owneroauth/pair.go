@@ -3,6 +3,8 @@ package owneroauth
 import (
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"net"
 	"net/url"
 	"slices"
@@ -38,8 +40,9 @@ type window struct {
 
 // Only the approving browser may collect the redirect after the window closes.
 type delivery struct {
-	owner, browser, location string
-	expires                  time.Time
+	grant
+	State                  string
+	OwnerHash, BrowserHash []byte
 }
 
 func matches(a, b string) bool {
@@ -52,11 +55,25 @@ func (a *Authority) start() (string, error) {
 	defer a.mu.Unlock()
 
 	now := a.settings.Now()
-	if now.Before(a.delivery.expires) {
-		return "", errDenied
+	err := a.db.View(func(tx *bolt.Tx) error {
+		data := tx.Bucket([]byte("deliveries")).Get(digest(a.issuer))
+		if data == nil {
+			return nil
+		}
+
+		var d delivery
+		if json.Unmarshal(data, &d) != nil {
+			return errState
+		}
+		if now.Before(d.Expires) {
+			return errDenied
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
 	}
 
-	a.delivery = delivery{}
 	a.window = window{
 		expires:        now.Add(a.settings.PairingWindow),
 		handoffExpires: now.Add(a.settings.HandoffLifetime),
@@ -238,44 +255,72 @@ func (a *Authority) approve(id, comparison string) error {
 	}
 
 	r := a.window.review
-	code := secret()
 	now := a.settings.Now()
-	g := r.grant
-	g.Expires = now.Add(a.settings.CodeLifetime)
+	d := delivery{
+		grant: r.grant, State: r.state,
+		OwnerHash: digest(a.window.owner), BrowserHash: digest(r.browser),
+	}
+	d.Expires = now.Add(a.settings.CodeLifetime)
+
 	err := a.db.Update(func(tx *bolt.Tx) error {
 		if err := prune(tx, now); err != nil {
 			return err
 		}
-		return put(tx, "codes", code, g)
+		return put(tx, "deliveries", a.issuer, d)
 	})
 	if err != nil {
 		return errState
 	}
 
-	target, _ := url.Parse(g.Redirect)
-	query := url.Values{"code": {code}, "iss": {a.issuer}}
-	if r.state != "" {
-		query.Set("state", r.state)
-	}
-	if target.RawQuery != "" {
-		target.RawQuery += "&"
-	}
-	target.RawQuery += query.Encode()
-
-	a.delivery = delivery{a.window.owner, r.browser, target.String(), g.Expires}
 	a.window = window{}
 	return nil
 }
 
 func (a *Authority) finish(owner, browser string) (string, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	d := a.delivery
-	if !a.settings.Now().Before(d.expires) || !matches(d.owner, owner) || !matches(d.browser, browser) {
+	if owner == "" || browser == "" {
 		return "", errDenied
 	}
 
-	a.delivery = delivery{}
-	return d.location, nil
+	var d delivery
+	var code string
+	err := a.db.Update(func(tx *bolt.Tx) error {
+		pending := tx.Bucket([]byte("deliveries"))
+		key := digest(a.issuer)
+		data := pending.Get(key)
+		if data == nil {
+			return errDenied
+		}
+		if json.Unmarshal(data, &d) != nil {
+			return errState
+		}
+		if !a.settings.Now().Before(d.Expires) ||
+			subtle.ConstantTimeCompare(d.OwnerHash, digest(owner)) != 1 ||
+			subtle.ConstantTimeCompare(d.BrowserHash, digest(browser)) != 1 {
+			return errDenied
+		}
+
+		// The issued code inherits the deadline set by terminal approval.
+		code = secret()
+		if err := put(tx, "codes", code, d.grant); err != nil {
+			return err
+		}
+		return pending.Delete(key)
+	})
+	if errors.Is(err, errDenied) {
+		return "", errDenied
+	}
+	if err != nil {
+		return "", errState
+	}
+
+	target, _ := url.Parse(d.Redirect)
+	query := url.Values{"code": {code}, "iss": {a.issuer}}
+	if d.State != "" {
+		query.Set("state", d.State)
+	}
+	if target.RawQuery != "" {
+		target.RawQuery += "&"
+	}
+	target.RawQuery += query.Encode()
+	return target.String(), nil
 }
