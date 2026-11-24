@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,6 +30,7 @@ import (
 	"github.com/wevial/croton-mcp/bridge"
 	"github.com/wevial/croton-mcp/internal/forwardpolicy"
 	"github.com/wevial/croton-mcp/internal/stdioframe"
+	bolt "go.etcd.io/bbolt"
 )
 
 type smtpPeer struct {
@@ -41,13 +43,24 @@ type smtpDelivery struct {
 	from, to, message string
 }
 
-// Resolve the /var symlink that macOS may use for temporary directories.
+// Keep the private fixture under the sticky system temp root even when the
+// Go test runner uses a group-writable workspace or umask.
 func newQuotaTestDir(t *testing.T) string {
 	t.Helper()
-	parent, err := filepath.EvalSymlinks(t.TempDir())
+	root, err := filepath.EvalSymlinks("/tmp")
 	if err != nil {
 		t.Fatal(err)
 	}
+	parent, err := os.MkdirTemp(root, "croton-quota-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(parent); err != nil {
+			t.Error(err)
+		}
+	})
+
 	dir := filepath.Join(parent, "state")
 	if err := forwardpolicy.Initialize(dir); err != nil {
 		t.Fatal(err)
@@ -335,6 +348,9 @@ func TestForwardSend(t *testing.T) {
 		req.Params.Meta = nil
 		requirePreflightRefusal(t, f, p.config, req)
 
+		req.Params.Meta = mcp.Meta{mcp.MetaKeyClientCapabilities: map[string]any{"elicitation": map[string]any{"url": map[string]any{}}}}
+		requirePreflightRefusal(t, f, p.config, req)
+
 		for _, res := range []*mcp.ElicitResult{
 			{Action: "decline", Content: map[string]any{"confirm": true}},
 			{Action: "cancel", Content: map[string]any{"confirm": true}},
@@ -415,6 +431,86 @@ func TestForwardSend(t *testing.T) {
 				}
 			})
 		})
+		t.Run("latest metadata damaged", func(t *testing.T) {
+			p := newSMTPPeer(t, "", "")
+			for range 10 {
+				if err := forwardpolicy.Reserve(p.config.StateDir, forwardLogin); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			path := filepath.Join(p.config.StateDir, "quota.db")
+			db, err := bolt.Open(path, 0600, &bolt.Options{ReadOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var offset int64
+			pageSize := db.Info().PageSize
+			err = db.View(func(tx *bolt.Tx) error {
+				offset = int64((tx.ID() % 2) * pageSize)
+				return nil
+			})
+			if closeErr := db.Close(); err != nil || closeErr != nil {
+				t.Fatal("reading latest transaction", err, closeErr)
+			}
+
+			file, err := os.OpenFile(path, os.O_RDWR, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Flip a single checksum bit in the newest v2 metadata.
+			checksumOffset := offset + 72
+			var first [1]byte
+			if _, err = file.ReadAt(first[:], checksumOffset); err == nil {
+				first[0] ^= 1
+				_, err = file.WriteAt(first[:], checksumOffset)
+			}
+			if closeErr := file.Close(); err != nil || closeErr != nil {
+				t.Fatal("damaging latest metadata", err, closeErr)
+			}
+
+			req := confirmation(t, f, p.config, f.prepare(t, false))
+			requireToolError(t, f.store.send(t.Context(), p.config, req, nil), errUnavailable)
+			if p.connections.Load() != 0 {
+				t.Fatal("quota fallback opened SMTP")
+			}
+		})
+
+		if runtime.GOOS == "darwin" {
+			for _, target := range []string{"parent", "directory", "database"} {
+				t.Run("ACL/"+target, func(t *testing.T) {
+					dir := newQuotaTestDir(t)
+					path, grant := dir, "everyone allow add_file,file_inherit,directory_inherit"
+					if target == "parent" {
+						path = filepath.Dir(dir)
+					}
+					if err := exec.Command("/bin/chmod", "+a", grant, path).Run(); err != nil {
+						t.Fatal(err)
+					}
+					if target == "database" {
+						// Recreate the fixture under the inheritable grant, then
+						// remove the parent ACL so only the file retains it.
+						dbPath := filepath.Join(dir, "quota.db")
+						data, err := os.ReadFile(dbPath)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Remove(dbPath); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.WriteFile(dbPath, data, 0600); err != nil {
+							t.Fatal(err)
+						}
+						if err := exec.Command("/bin/chmod", "-N", path).Run(); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if forwardpolicy.Reserve(dir, forwardLogin) != forwardpolicy.ErrUnavailable {
+						t.Fatal("accepted quota path with an ACL grant")
+					}
+				})
+			}
+		}
 		for _, kind := range []string{"missing", "empty", "damaged", "loose permissions", "symlink"} {
 			t.Run(kind, func(t *testing.T) {
 				dir := newQuotaTestDir(t)
@@ -477,6 +573,7 @@ func TestForwardSend(t *testing.T) {
 		for _, tc := range []struct{ version, fault, want string }{
 			{"2026-07-28", "", "accepted"},
 			{"2025-11-25", "", "accepted"},
+			{"2025-06-18", "", "accepted"},
 			{"2026-07-28", "rcpt refused", "not_submitted"},
 			{"2026-07-28", "lost final reply", "unknown"},
 			{"2026-07-28", "final refusal", "unknown"},
@@ -508,7 +605,30 @@ func TestForwardSend(t *testing.T) {
 				t.Cleanup(func() { cs.Close() })
 
 				var r forwardResult
-				callJSON(t, cs, forwardTool, f.arguments(false), &r)
+				args := f.arguments(false)
+				if tc.version == "2026-07-28" && tc.want == "accepted" {
+					probe := &mcp.CallToolParams{Name: forwardTool, Arguments: args}
+					result, err := cs.CallTool(t.Context(), probe)
+					if err != nil {
+						t.Fatal(err)
+					}
+					decodeResult(t, result, &r)
+
+					// The initial SDK send fits with 20 bytes to spare, but
+					// its continuation would close the bounded transport.
+					initial, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+						"params": mcp.CallToolParams{Name: sendForwardTool, Meta: probe.Meta, Arguments: r},
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					padding := stdioframe.MaxFrameBytes - len(initial) - 1 - 20
+					note := args["text"].(string) + strings.Repeat("x", padding)
+					args["text"] = note
+					requireToolError(t, callTool(t, cs, forwardTool, args), errBoundsExceeded)
+					args["text"] = note[:len(note)-200]
+				}
+				callJSON(t, cs, forwardTool, args, &r)
 				stored, ok := store.lookup(r, time.Now())
 				if !ok {
 					t.Fatal("missing stored MIME")

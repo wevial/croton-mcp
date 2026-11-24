@@ -295,6 +295,8 @@ credential helper and login as IMAP.
 Before first use, run the following command once, then restart the stdio
 session. The parent directory must already exist. Initialization creates a
 new owner-only directory (0700) and quota database (0600) on Linux or macOS.
+On macOS, choose a path without ACL grants on the database, directory, or
+its ancestors. Deny-only ACLs are supported.
 
 ```sh
 ~/bin/croton-mcp init-forward-state --config /home/you/.config/croton/mail.json
@@ -305,7 +307,12 @@ Every reservation counts toward the limit of ten in a rolling 24 hours, even
 if SMTP fails or the outcome is uncertain. A full quota returns `quota_reached`
 before connecting to SMTP. Declining the form uses no slot.
 If existing state is missing or damaged, sending stops. Restore the current
-state before resuming.
+state before resuming. Both bbolt metadata pages must be intact so recovery
+cannot silently drop the most recent reservation.
+
+With sending enabled, `prepare_forward` budgets for the client metadata and
+approval response in the 64 KiB input frame. Shorten the forward if preparation
+returns `bounds_exceeded`.
 
 Pass the returned `handle` and complete, unchanged `preview` to
 `send_forward`. The client must display the full preview, including sender,

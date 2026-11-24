@@ -30,7 +30,7 @@ func checkDirectory(path string, private bool) error {
 	} else if (uid != 0 && uid != os.Geteuid()) || (info.Mode().Perm()&0022 != 0 && info.Mode()&os.ModeSticky == 0) {
 		return ErrUnavailable
 	}
-	return nil
+	return checkACL(path, info)
 }
 
 func openFile(path string, create bool) (*os.File, error) {
@@ -47,7 +47,7 @@ func openFile(path string, create bool) (*os.File, error) {
 	info, err := f.Stat()
 	if err == nil && info.Mode().IsRegular() && info.Mode().Perm() == 0600 && (create || info.Size() > 0) {
 		stat := info.Sys().(*syscall.Stat_t)
-		if int(stat.Uid) == os.Geteuid() && stat.Nlink == 1 {
+		if int(stat.Uid) == os.Geteuid() && stat.Nlink == 1 && checkACL(path, info) == nil {
 			return f, nil
 		}
 	}

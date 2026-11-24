@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"strings"
@@ -105,19 +106,53 @@ func update(dir string, create bool, write func(*bolt.Tx) error) error {
 		return err
 	}
 
+	var file *os.File
 	db, err := bolt.Open(filepath.Join(dir, "quota.db"), 0600, &bolt.Options{
 		Timeout: 5 * time.Second,
 		OpenFile: func(path string, flags int, mode os.FileMode) (*os.File, error) {
-			return openFile(path, create)
+			var err error
+			file, err = openFile(path, create)
+			return file, err
 		},
 	})
 	if err != nil {
 		return ErrUnavailable
 	}
 
-	err = db.Update(write)
+	// Open holds the exclusive file lock until Close. Inspect both on-disk
+	// snapshots before bbolt can overwrite evidence of a fallback.
+	if validMetaPages(file, db.Info().PageSize) {
+		err = db.Update(write)
+	} else {
+		err = ErrUnavailable
+	}
 	if closeErr := db.Close(); closeErr != nil || (err != nil && err != ErrLimit) {
 		return ErrUnavailable
 	}
 	return err
+}
+
+// bbolt's v2 file format has a 16-byte page header followed by 56 bytes
+// of metadata and their FNV-1a checksum. Ordinary Open only needs one
+// valid snapshot. Quota accounting needs both consecutive commits intact.
+func validMetaPages(file *os.File, pageSize int) bool {
+	var ids [2]uint64
+	for i := range ids {
+		var page [80]byte
+		if _, err := file.ReadAt(page[:], int64(i)*int64(pageSize)); err != nil {
+			return false
+		}
+
+		order := binary.NativeEndian
+		ids[i] = order.Uint64(page[64:72])
+		checksum := fnv.New64a()
+		_, _ = checksum.Write(page[16:72])
+		if order.Uint64(page[:8]) != uint64(i) || order.Uint16(page[8:10]) != 4 ||
+			order.Uint32(page[16:20]) != 0xed0cdaed || order.Uint32(page[20:24]) != 2 ||
+			order.Uint32(page[24:28]) != uint32(pageSize) || ids[i]%2 != uint64(i) ||
+			order.Uint64(page[72:]) != checksum.Sum64() {
+			return false
+		}
+	}
+	return max(ids[0], ids[1])-min(ids[0], ids[1]) == 1
 }
