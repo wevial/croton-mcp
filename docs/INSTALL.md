@@ -311,8 +311,9 @@ state before resuming. Both bbolt metadata pages must be intact so recovery
 cannot silently drop the most recent reservation.
 
 With sending enabled, `prepare_forward` budgets for the client metadata and
-approval response in the 64 KiB input frame. Shorten the forward if preparation
-returns `bounds_exceeded`.
+approval response in the 64 KiB input frame. Before showing the form,
+`send_forward` checks that budget again using the preview as encoded by the
+client. If either call returns `bounds_exceeded`, prepare a shorter forward.
 
 Pass the returned `handle` and complete, unchanged `preview` to
 `send_forward`. The client must display the full preview, including sender,

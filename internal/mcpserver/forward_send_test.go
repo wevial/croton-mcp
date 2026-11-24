@@ -629,6 +629,19 @@ func TestForwardSend(t *testing.T) {
 					args["text"] = note[:len(note)-200]
 				}
 				callJSON(t, cs, forwardTool, args, &r)
+				if tc.version == "2026-07-28" && tc.want == "accepted" {
+					// The same preview can take more bytes in the client's JSON.
+					// Spend the 200 bytes removed above on equivalent escapes.
+					encoded, err := json.Marshal(r)
+					if err != nil {
+						t.Fatal(err)
+					}
+					escaped := bytes.Replace(encoded, bytes.Repeat([]byte("x"), 40), bytes.Repeat([]byte(`\u0078`), 40), 1)
+					requireToolError(t, callTool(t, cs, sendForwardTool, json.RawMessage(escaped)), errBoundsExceeded)
+					if forms.Load() != 0 || p.connections.Load() != 0 {
+						t.Fatal("requested approval or opened SMTP for an oversized continuation")
+					}
+				}
 				stored, ok := store.lookup(r, time.Now())
 				if !ok {
 					t.Fatal("missing stored MIME")
