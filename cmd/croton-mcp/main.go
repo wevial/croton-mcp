@@ -41,6 +41,7 @@ func run(ctx context.Context, arguments []string, stderr io.Writer, settings own
 
 func runCLI(ctx context.Context, arguments []string, stderr io.Writer, settings owneroauth.Settings, confirm func(context.Context, string, string) error) error {
 	command := ""
+	forwardOwner := false
 	if len(arguments) > 0 && !strings.HasPrefix(arguments[0], "-") {
 		command, arguments = arguments[0], arguments[1:]
 		switch command {
@@ -52,6 +53,8 @@ func runCLI(ctx context.Context, arguments []string, stderr io.Writer, settings 
 			defer tty.Close()
 
 			return runOwnerCommand(ctx, command, arguments, tty)
+		case "limits", "allow", "forget":
+			forwardOwner = true
 		case "serve", "init-forward-state":
 		default:
 			return errors.New("invalid command")
@@ -80,7 +83,14 @@ func runCLI(ctx context.Context, arguments []string, stderr io.Writer, settings 
 		flags.DurationVar(&settings.CodeLifetime, "code-lifetime", settings.CodeLifetime, "authorization code lifetime")
 		flags.DurationVar(&settings.AccessLifetime, "access-lifetime", settings.AccessLifetime, "access token lifetime")
 	}
-	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 {
+	// Accept the owner operand on either side of --config.
+	if forwardOwner && len(arguments) > 1 {
+		name, _, _ := strings.Cut(arguments[0], "=")
+		if name != "--config" && name != "-config" && name != "--" {
+			arguments = append(arguments[1:], "--", arguments[0])
+		}
+	}
+	if err := flags.Parse(arguments); err != nil || (!forwardOwner && flags.NArg() != 0) {
 		return errors.New("invalid arguments")
 	}
 	if command == "serve" && dir == "" {
@@ -136,15 +146,20 @@ func runCLI(ctx context.Context, arguments []string, stderr io.Writer, settings 
 		return serveHTTP(ctx, loaded, address, dir, cert, key, publicOrigin, settings, auditor, funnel)
 	}
 
-	if command == "init-forward-state" {
-		if _, err := bridge.ValidateConfig(loaded); err != nil {
+	if command == "init-forward-state" || forwardOwner {
+		validated, err := bridge.ValidateConfig(loaded)
+		if err != nil {
 			return err
 		}
 		if !loaded.Forward.Enabled {
 			return errors.New("forward submission disabled")
 		}
 
-		return forwardpolicy.Initialize(loaded.Forward.StateDir)
+		if command == "init-forward-state" {
+			return forwardpolicy.Initialize(loaded.Forward.StateDir)
+		}
+
+		return runForwardOwner(ctx, loaded.Forward, validated.IMAP, command, flags.Args(), stderr)
 	}
 
 	adapter, err := bridge.NewAdapter(loaded)

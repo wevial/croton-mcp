@@ -51,8 +51,9 @@ type forwardResult struct {
 type forwardRequestKey struct{}
 
 type preparedForward struct {
-	session   *mcp.ServerSession
-	challenge string
+	session       *mcp.ServerSession
+	challenge     string
+	policyVersion uint64 // Policy transaction when this challenge was issued.
 	forwardResult
 	message          string
 	expires          time.Time
@@ -260,7 +261,7 @@ func (store *ForwardPreviews) lookup(approval forwardResult, now time.Time) (str
 }
 
 func (store *ForwardPreviews) send(ctx context.Context, cfg bridge.ForwardConfig, req *mcp.CallToolRequest, audit *Auditor) *mcp.CallToolResult {
-	pending, result := store.approval(cfg, req)
+	pending, confirmedVersion, result := store.approval(cfg, req)
 	if result != nil {
 		if result.IsError {
 			audit.ToolCall(sendForwardTool, "refused", "", false)
@@ -269,7 +270,7 @@ func (store *ForwardPreviews) send(ctx context.Context, cfg bridge.ForwardConfig
 	}
 
 	outcome, err := store.adapter.SubmitForward(ctx, cfg, pending.Preview.From, pending.Preview.To, pending.message, pending.connectionClosed, func() error {
-		return store.reserve(ctx, cfg.StateDir, pending)
+		return store.reserve(ctx, cfg, pending, confirmedVersion != nil)
 	})
 	if err != nil {
 		code := errUnavailable
@@ -281,56 +282,70 @@ func (store *ForwardPreviews) send(ctx context.Context, cfg bridge.ForwardConfig
 		return errorResult(code)
 	}
 
+	if outcome == "accepted" && confirmedVersion != nil {
+		// Delivery is final. A failed policy write must never cause a retry.
+		_ = forwardpolicy.Learn(cfg, pending.Preview.From, pending.Preview.To, *confirmedVersion)
+	}
+
 	audit.ToolCall(sendForwardTool, outcome, "", false)
 	encoded, _ := json.Marshal(map[string]string{"outcome": outcome})
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}}}
 }
 
 // The SDK handles legacy form round trips. Each challenge belongs to one preview, session and form.
-func (store *ForwardPreviews) approval(cfg bridge.ForwardConfig, request *mcp.CallToolRequest) (*preparedForward, *mcp.CallToolResult) {
+func (store *ForwardPreviews) approval(cfg bridge.ForwardConfig, request *mcp.CallToolRequest) (*preparedForward, *uint64, *mcp.CallToolResult) {
 	if !cfg.Enabled || request == nil || request.Session == nil || request.Params == nil {
-		return nil, errorResult(errUnavailable)
+		return nil, nil, errorResult(errUnavailable)
 	}
 	caps := request.ClientCapabilities()
 	if caps == nil || caps.Elicitation == nil {
-		return nil, errorResult(errUnsupported)
+		return nil, nil, errorResult(errUnsupported)
 	}
 	version := request.ProtocolVersion()
 	legacyForm := (version == "2025-06-18" || version == "2025-11-25") && caps.Elicitation.URL == nil
 	if caps.Elicitation.Form == nil && !legacyForm {
-		return nil, errorResult(errUnsupported)
+		return nil, nil, errorResult(errUnsupported)
 	}
 
 	params := request.Params
 	if len(params.Arguments) > stdioframe.MaxFrameBytes {
-		return nil, errorResult(errBoundsExceeded)
+		return nil, nil, errorResult(errBoundsExceeded)
 	}
 	args := jsontext.Value(params.Arguments).Clone()
 	if args.Format(jsontext.ReorderRawObjects(true)) != nil {
-		return nil, errorResult(errInvalidArgument)
+		return nil, nil, errorResult(errInvalidArgument)
 	}
 
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	pending := store.current
 	if !pending.valid(time.Now()) || pending.session != request.Session {
-		return nil, errorResult(errUnavailable)
+		return nil, nil, errorResult(errUnavailable)
 	}
 	// Ignore object order, whitespace and equivalent escapes. Require all fields and exact number syntax.
 	stored, err := json.Marshal(pending.forwardResult)
 	want := jsontext.Value(stored)
 	if err != nil || want.Format(jsontext.ReorderRawObjects(true)) != nil || !bytes.Equal(want, args) {
-		return nil, errorResult(errInvalidArgument)
+		return nil, nil, errorResult(errInvalidArgument)
 	}
 
 	if params.InputResponses == nil && params.RequestState == "" {
 		// Both metadata and the preview's JSON encoding can differ from preparation.
 		if !fitsForwardFrame(params.Arguments, pending.Handle, request, true) {
-			return nil, errorResult(errBoundsExceeded)
+			return nil, nil, errorResult(errBoundsExceeded)
 		}
+		policy, err := forwardpolicy.Inspect(cfg, pending.Preview.From)
+		if err != nil {
+			return nil, nil, errorResult(errUnavailable)
+		}
+		if policy.Remembers(pending.Preview.To) {
+			pending.challenge = ""
+			return pending, nil, nil
+		}
+		pending.policyVersion = policy.Version
 		pending.challenge = rand.Text()
 		preview, _ := json.Marshal(pending.Preview)
-		return nil, &mcp.CallToolResult{
+		return nil, nil, &mcp.CallToolResult{
 			InputRequests: mcp.InputRequestMap{forwardConfirmation: &mcp.ElicitParams{
 				Mode: "form", Message: "Approve this one forward? Review the complete preview.\n" + string(preview),
 				RequestedSchema: objectSchema(map[string]json.RawMessage{"confirm": booleanSchema()}, []string{"confirm"}),
@@ -340,7 +355,7 @@ func (store *ForwardPreviews) approval(cfg bridge.ForwardConfig, request *mcp.Ca
 	}
 
 	if pending.challenge == "" || pending.challenge != params.RequestState {
-		return nil, errorResult(errInvalidArgument)
+		return nil, nil, errorResult(errInvalidArgument)
 	}
 	pending.challenge = ""
 
@@ -348,20 +363,20 @@ func (store *ForwardPreviews) approval(cfg bridge.ForwardConfig, request *mcp.Ca
 	response, _ := params.InputResponses[forwardConfirmation].(*mcp.ElicitResult)
 	if response == nil || len(params.InputResponses) != 1 || response.Action != "accept" ||
 		len(response.Content) != 1 || response.Content["confirm"] != true {
-		return nil, errorResult(errInvalidArgument)
+		return nil, nil, errorResult(errInvalidArgument)
 	}
-	return pending, nil
+	return pending, new(pending.policyVersion), nil
 }
 
 // After the login recheck, the reservation survives every SMTP outcome.
-func (store *ForwardPreviews) reserve(ctx context.Context, dir string, pending *preparedForward) error {
+func (store *ForwardPreviews) reserve(ctx context.Context, cfg bridge.ForwardConfig, pending *preparedForward, confirmed bool) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	if ctx.Err() != nil || pending != store.current || !pending.valid(time.Now()) {
 		return forwardpolicy.ErrUnavailable
 	}
 
-	if err := forwardpolicy.Reserve(dir, pending.Preview.From); err != nil {
+	if err := forwardpolicy.Reserve(cfg, pending.Preview.From, pending.Preview.To, confirmed); err != nil {
 		return err
 	}
 	store.current = nil

@@ -99,7 +99,10 @@ JSON: unknown, null, duplicate and case-folded-alias fields fail.
 | `forward.smtpPort` | none | required Bridge SMTP port on `imap.host` |
 | `forward.smtpTLSMode` | `starttls` | verified STARTTLS or `implicit` TLS |
 | `forward.smtpSPKISHA256` | IMAP trust settings | optional lowercase hexadecimal SHA-256 pin for the SMTP public key |
-| `forward.stateDir` | none | required absolute path to the owner's private forward quota directory |
+| `forward.stateDir` | none | required absolute path to the owner's private forward policy and quota directory |
+| `forward.rememberedRecipients` | `[]` | initial list of up to 100 bare mailbox addresses per Bridge login |
+| `forward.autoRemember` | true | remember a form-confirmed recipient after final Bridge acceptance |
+| `forward.dailyLimit` | 10 | initial reservation limit per login, from 1 to 100 per rolling 24 hours |
 
 ## 5. Register with your MCP client
 
@@ -314,15 +317,35 @@ the command before starting any client.
 
 Once a client has used the directory for forwarding, keep the same state
 directory across restarts and clients for this account.
-Every reservation counts toward the limit of ten in a rolling 24 hours, even
+Croton seeds the remembered list and daily limit on the first policy lookup
+or owner command for each Bridge login. Existing reservations carry forward.
+Use the local commands below to change the seeded values. They take effect
+on the next admission and survive restarts. The credential helper selects
+the account. These commands use the private state without connecting to Bridge.
+
+```sh
+config=/home/you/.config/croton/mail.json
+~/bin/croton-mcp limits --config "$config"
+~/bin/croton-mcp limits 20 --config "$config"
+~/bin/croton-mcp allow reviewer@recipient.test --config "$config"
+~/bin/croton-mcp forget reviewer@recipient.test --config "$config"
+```
+
+`limits` shows the effective daily limit, automatic remembering setting and
+number of remembered addresses. Recipient matching preserves the local part
+exactly, including case, dots and plus tags. Domain names are case-insensitive.
+A forgotten seed stays forgotten across restarts. A new form confirmation
+after the forget can teach the address again.
+
+Every reservation counts toward the daily limit over a rolling 24 hours, even
 if SMTP fails or the outcome is uncertain. A full quota returns `quota_reached`
 before connecting to SMTP. Declining the form uses no slot.
 If existing state is missing or damaged, sending stops. Restore the current
 state before resuming. Before each reservation, Croton checks both bbolt
 metadata pages and runs a full read-only consistency check, including the
 freelist. It also verifies the checksum covering every stored account key
-and its reservation timestamps. Quota files from pre-release builds that lack
-this checksum also block sending.
+and its reservation timestamps, policy settings and forget records. Quota
+files from pre-release builds that lack this checksum also block sending.
 
 Use compact JSON for each `send_forward` request. Each JSON-RPC `id` may use
 up to 38 encoded bytes, including string quotes and escapes. A quoted UUID
@@ -340,8 +363,12 @@ Pass the returned `handle` and complete, unchanged `preview` to
 `send_forward`. The client must display the full preview, including sender,
 recipient, subject, body and omissions, and obtain explicit approval for
 this call in the same turn. Leave auto-approval off. The server checks
-preview equality and requires a form response of `accept` with
-`{"confirm": true}`. Only the trusted client can establish human consent.
+preview equality on every call. For an unremembered recipient, it also requires
+a form response of `accept` with `{"confirm": true}`. With `autoRemember`
+enabled, final Bridge acceptance remembers that recipient. Set
+`"autoRemember": false` in the configuration and restart the client to stop
+automatic learning. At 100 remembered addresses the send can still succeed
+and the list stays intact. Only the trusted client can establish human consent.
 Clients using MCP `2025-06-18` or `2025-11-25` can advertise form support
 with an empty `elicitation` capability.
 
@@ -354,9 +381,23 @@ session to return to preview-only forwarding.
 
 ## Updating and rolling back
 
-Close the client's Croton session, back up the binary and configuration, then
-`install -m 0700` the new binary over `~/bin/croton-mcp`; restore the
-backups to roll back. If Bridge's certificate changes, pin it again.
+Before upgrading, close all Croton sessions and owner commands. Back up the
+binary and configuration. If forwarding is configured, also back up the
+entire `forward.stateDir`, preserving its ownership and private permissions.
+Install the new binary over `~/bin/croton-mcp` with `install -m 0700`.
+If Bridge's certificate changes, pin it again.
+
+The first forward policy lookup, even `limits` on a database with no
+reservations, writes a checksum that the previous quota-only release rejects
+before SMTP. To roll back to that release, stop all Croton sessions and owner
+commands, set the upgraded state aside, and restore the pre-upgrade binary,
+configuration and matching state directory.
+
+The backup includes reservations made before the upgrade. If any account
+could have reserved a send since the backup, keep forwarding disabled for
+all accounts sharing that directory until 24 hours after the last possible
+reservation. If the time is uncertain, count from when you stopped all
+sessions. Then resume forwarding with the restored state.
 
 ## Troubleshooting
 
