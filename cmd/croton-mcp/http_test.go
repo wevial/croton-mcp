@@ -184,6 +184,11 @@ func startHTTPAt(t *testing.T, config, address, origin string, stderr *os.File, 
 		transport.TLSClientConfig = testTLS(t, dir)
 		args = append(args, "--tls-cert", filepath.Join(dir, "cert.pem"), "--tls-key", filepath.Join(dir, "key.pem"))
 	}
+	return launchHTTP(t, dir, origin, args, transport, stderr, env...)
+}
+
+func launchHTTP(t *testing.T, dir, origin string, args []string, transport *http.Transport, stderr *os.File, env ...string) *httpProcess {
+	t.Helper()
 	t.Cleanup(transport.CloseIdleConnections)
 	jar, _ := cookiejar.New(nil)
 	p := &httpProcess{dir: dir, origin: origin, done: make(chan struct{}), client: &http.Client{Transport: transport, Jar: jar, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
@@ -443,22 +448,30 @@ func waitForMarker(t *testing.T, marker string) {
 	t.Fatalf("timed out waiting for %s", filepath.Base(marker))
 }
 
+func stalledBridgeConfig(t *testing.T, budget time.Duration) (config, marker string) {
+	t.Helper()
+
+	config = writeServerConfig(t, fixtureBridge(t))
+	marker = filepath.Join(canonicalTempDir(t), "active")
+	editConfig(t, config, func(cfg map[string]any) {
+		imap := cfg["imap"].(map[string]any)
+		imap["commandTimeoutMs"] = budget.Milliseconds()
+		imap["credentialCommand"] = []string{"/bin/sh", "-c", `echo started >> "$1"; exec /bin/sleep 45`, "fixture.test", marker}
+	})
+
+	return config, marker
+}
+
 func TestHTTPTransportBridgeQueue(t *testing.T) {
 	for _, shutdown := range []bool{false, true} {
 		t.Run(fmt.Sprintf("shutdown=%t", shutdown), func(t *testing.T) {
-			config := writeServerConfig(t, fixtureBridge(t))
-			marker := filepath.Join(canonicalTempDir(t), "active")
 			budget := 2 * time.Second
 			version := "2025-11-25"
 			if shutdown {
 				budget = 30 * time.Second
 				version = "2026-07-28"
 			}
-			editConfig(t, config, func(cfg map[string]any) {
-				imap := cfg["imap"].(map[string]any)
-				imap["commandTimeoutMs"] = budget.Milliseconds()
-				imap["credentialCommand"] = []string{"/bin/sh", "-c", `echo started >> "$1"; exec /bin/sleep 45`, "fixture.test", marker}
-			})
+			config, marker := stalledBridgeConfig(t, budget)
 			p := startHTTP(t, config, nil, "CROTON_TEST_BRIDGE_GATE="+marker)
 			session := p.session(t, p.pair(t), version)
 			results := make(chan bool, 2)

@@ -264,7 +264,7 @@ func (a *Authority) route(w http.ResponseWriter, r *http.Request) error {
 			w.WriteHeader(http.StatusSeeOther)
 		}
 	case "POST /token":
-		if r.TLS == nil && strings.HasPrefix(a.issuer, "https://") {
+		if r.TLS == nil && !a.settings.BehindHTTPSProxy && strings.HasPrefix(a.issuer, "https://") {
 			return errDenied
 		}
 

@@ -4,7 +4,6 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"encoding/binary"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,6 +14,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -55,9 +55,14 @@ func run(ctx context.Context, arguments []string, stderr io.Writer, settings own
 
 	flags := flag.NewFlagSet("croton-mcp", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	var configPath, bind, authorizer, cert, key, dir string
+	var configPath, bind, authorizer, cert, key, dir, publicOrigin string
 	flags.StringVar(&configPath, "config", "", "absolute path to the Croton configuration file")
 	if command == "serve" {
+		flags.Func("public-url", "external HTTPS origin of the owner-managed proxy", func(raw string) error {
+			var err error
+			publicOrigin, err = parsePublicOrigin(raw)
+			return err
+		})
 		flags.StringVar(&dir, "state-dir", "", "private owner state directory")
 		flags.StringVar(&bind, "bind", "127.0.0.1:8787", "loopback IP and port")
 		flags.StringVar(&authorizer, "authorizer", "", "owner")
@@ -108,7 +113,7 @@ func run(ctx context.Context, arguments []string, stderr io.Writer, settings own
 		if err != nil || !address.Addr().IsLoopback() || address.Addr().Zone() != "" || address.Port() == 0 {
 			return errors.New("invalid loopback bind")
 		}
-		return serveHTTP(ctx, loaded, address, dir, cert, key, settings, auditor)
+		return serveHTTP(ctx, loaded, address, dir, cert, key, publicOrigin, settings, auditor)
 	}
 
 	adapter, err := bridge.NewAdapter(loaded)
@@ -161,14 +166,8 @@ func runOwnerCommand(ctx context.Context, command string, args []string, tty io.
 	return owneroauth.Terminal(ctx, *dir, command, tty)
 }
 
-func serveHTTP(ctx context.Context, cfg bridge.Config, address netip.AddrPort, dir, cert, key string, settings owneroauth.Settings, auditor *mcpserver.Auditor) error {
-	// Browsers serialize mapped IPv6 addresses as hexadecimal groups.
-	hostPort := address.String()
-	if address.Addr().Is4In6() {
-		ip := address.Addr().As4()
-		hostPort = fmt.Sprintf("[::ffff:%x:%x]:%d", binary.BigEndian.Uint16(ip[:2]), binary.BigEndian.Uint16(ip[2:]), address.Port())
-	}
-
+func serveHTTP(ctx context.Context, cfg bridge.Config, address netip.AddrPort, dir, cert, key, publicOrigin string, settings owneroauth.Settings, auditor *mcpserver.Auditor) error {
+	hostPort := net.JoinHostPort(httpHostname(address.Addr()), strconv.Itoa(int(address.Port())))
 	origin := "http://" + strings.TrimSuffix(hostPort, ":80")
 	var tlsConfig *tls.Config
 	if cert != "" || key != "" {
@@ -178,6 +177,11 @@ func serveHTTP(ctx context.Context, cfg bridge.Config, address netip.AddrPort, d
 		}
 		tlsConfig = &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}
 		origin = "https://" + strings.TrimSuffix(hostPort, ":443")
+	}
+
+	if publicOrigin != "" {
+		origin = publicOrigin
+		settings.BehindHTTPSProxy = true
 	}
 
 	validated, err := bridge.ValidateConfig(cfg)
@@ -202,7 +206,7 @@ func serveHTTP(ctx context.Context, cfg bridge.Config, address netip.AddrPort, d
 		_ = authority.Close()
 	})
 
-	handler, err := mcpserver.NewHTTP(origin, adapter, auditor, time.Duration(validated.IMAP.CommandTimeoutMs)*time.Millisecond, authority.ValidBearer, authority)
+	handler, err := mcpserver.NewHTTP(origin, publicOrigin != "", adapter, auditor, time.Duration(validated.IMAP.CommandTimeoutMs)*time.Millisecond, authority.BearerClient, authority)
 	if err != nil {
 		return err
 	}

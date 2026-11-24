@@ -15,9 +15,9 @@ func TestHTTPTransportAdmission(t *testing.T) {
 	now := time.Unix(100, 0)
 	tokens := map[string]time.Time{"valid": now.Add(time.Minute), "expired": now}
 	var checks int
-	handler, err := NewHTTP(origin, nil, nil, time.Second, func(token string) bool {
+	handler, err := NewHTTP(origin, false, nil, nil, time.Second, func(token string) (string, bool) {
 		checks++
-		return now.Before(tokens[token])
+		return "", now.Before(tokens[token])
 	}, http.NotFoundHandler())
 	if err != nil {
 		t.Fatal(err)

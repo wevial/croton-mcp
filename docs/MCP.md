@@ -338,3 +338,29 @@ only `event` (`tool_call`), `tool`, `outcome` (`ok` or `error`), `code` and
 `truncated`. Arguments, mailbox names, IDs, subjects, addresses and error text
 never appear. A triage call that returns per-UID rows logs `ok`; its UIDs and
 row outcomes are not logged.
+
+### Owner-managed HTTPS proxy
+
+Start the read-only backend with an
+explicit external origin. For example, run
+`croton-mcp serve --authorizer owner --public-url https://mail.example.test --config /absolute/path/to/croton.json`.
+Configure the proxy to terminate HTTPS on port 443 and forward all paths to
+the loopback listener with `Host: mail.example.test`. Preserve the browser's
+Origin header. The issuer and pairing links use the external origin, and the
+client endpoint is `https://mail.example.test/mcp`. Croton omits an explicit
+port 443 from these URLs and the expected Host. Croton decodes percent-encoded
+unreserved characters in the hostname, so `https://%6Dail.test` sets the issuer
+to `https://mail.test`. After IDNA mapping, Croton preserves a DNS root dot
+as an ASCII period. IPv4 addresses use dotted decimal with no padding or
+trailing dot. For example, `https://192.0.2.001:443` sets the issuer to
+`https://192.0.2.1` and the expected Host to `192.0.2.1`.
+
+Across public OAuth and MCP routes, requests without a verified client share
+30 requests per rolling minute. Each client identified by a valid bearer gets
+120 per rolling minute across token rotations. Public MCP access requires a
+bearer bound to a client. Forwarded headers and registration IDs grant no
+identity or quota. At most two MCP requests can be in flight, including work
+waiting for Bridge. Excess requests receive HTTP 429.
+
+Croton writes no HTTP access log. Configure proxy logging to exclude
+credentials, cookies, query strings and request and response bodies.

@@ -381,11 +381,11 @@ func TestOwnerOAuthCodeRedemption(t *testing.T) {
 		t.Fatal("replayed after restart")
 	}
 	now = now.Add(10*time.Minute - time.Second)
-	if !a.ValidBearer(token) {
-		t.Fatal("lost grant after restart")
+	if client, ok := a.BearerClient(token); !ok || client != req.Client {
+		t.Fatal("lost client grant after restart")
 	}
 	now = now.Add(time.Second)
-	if a.ValidBearer(token) {
+	if _, ok := a.BearerClient(token); ok {
 		t.Fatal("expired access")
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, "oauth.db"))
@@ -618,7 +618,7 @@ func TestOwnerOAuthCodeConfiguredLifetimes(t *testing.T) {
 		t.Fatal(err)
 	}
 	now = now.Add(4 * time.Second)
-	if a.ValidBearer(token.Access) {
+	if _, ok := a.BearerClient(token.Access); ok {
 		t.Fatal("configured access expiry")
 	}
 }

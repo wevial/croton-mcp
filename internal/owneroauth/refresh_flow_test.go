@@ -32,7 +32,7 @@ func TestOwnerOAuthRefreshFlow(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 	settings.Now = func() time.Time { return now }
 	a, client, pair := owneroauth.PairedRefreshFixture(t, settings)
-	handler, err := mcpserver.NewHTTP(origin, folders{}, nil, time.Second, a.ValidBearer, a)
+	handler, err := mcpserver.NewHTTP(origin, false, folders{}, nil, time.Second, a.BearerClient, a)
 	if err != nil {
 		t.Fatal(err)
 	}
