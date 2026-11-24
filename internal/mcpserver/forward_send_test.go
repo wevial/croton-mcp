@@ -448,16 +448,12 @@ func TestForwardSend(t *testing.T) {
 		if err := exec.CommandContext(t.Context(), exe, "-test.run=^TestForwardSend$", "--", "--check-forward-quota", p.config.StateDir).Run(); err != nil {
 			t.Fatal("failed quota restart check", err)
 		}
-		if err := reserveConfirmed(p.config.StateDir, "second@bridge.test"); err != nil {
-			t.Fatal(err)
-		}
+		requireForwardSetup(t, reserveConfirmed(p.config.StateDir, "second@bridge.test"))
 		t.Run("window", func(t *testing.T) {
 			dir := newQuotaTestDir(t)
 			synctest.Test(t, func(t *testing.T) {
 				for range 10 {
-					if err := reserveConfirmed(dir, forwardLogin); err != nil {
-						t.Fatal(err)
-					}
+					requireForwardSetup(t, reserveConfirmed(dir, forwardLogin))
 				}
 
 				time.Sleep(24*time.Hour - time.Nanosecond)

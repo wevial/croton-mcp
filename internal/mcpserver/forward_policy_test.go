@@ -93,16 +93,17 @@ func TestForwardRememberedPolicy(t *testing.T) {
 		for _, tc := range []struct {
 			name, fault, want string
 			learn             bool
+			connections       int32
 		}{
-			{"accepted", "", "accepted", true},
-			{"declined", "", "", false},
-			{"refused", "rcpt refused", "not_submitted", false},
-			{"unknown", "lost final reply", "unknown", false},
-			{"disabled", "", "accepted", false},
-			{"full", "", "accepted", false},
-			{"forget before confirmation", "", "accepted", false},
-			{"forget during SMTP", holdFinalReply, "accepted", false},
-			{"unrelated forget", holdFinalReply, "accepted", true},
+			{"accepted", "", "accepted", true, 2},
+			{"declined", "", "", false, 0},
+			{"refused", "rcpt refused", "not_submitted", false, 1},
+			{"unknown", "lost final reply", "unknown", false, 1},
+			{"disabled", "", "accepted", false, 1},
+			{"full", "", "accepted", false, 1},
+			{"forget before confirmation", "", "accepted", false, 1},
+			{"forget during SMTP", holdFinalReply, "accepted", false, 1},
+			{"unrelated forget", holdFinalReply, "accepted", true, 2},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				f := plainForwardFixture(t)
@@ -115,8 +116,7 @@ func TestForwardRememberedPolicy(t *testing.T) {
 						p.config.RememberedRecipients = append(p.config.RememberedRecipients, fmt.Sprintf("full%d@recipient.test", i))
 					}
 				}
-				r := f.prepare(t, false)
-				req := confirmation(t, f, p.config, r)
+				req := confirmation(t, f, p.config, f.prepare(t, false))
 				if tc.name == "forget before confirmation" {
 					requireForwardSetup(t, forwardpolicy.Forget(p.config, forwardLogin, forwardTo))
 				}
@@ -158,21 +158,12 @@ func TestForwardRememberedPolicy(t *testing.T) {
 				if policy.Remembers("trap@sender.test") || policy.Remembers("source@sender.test") {
 					t.Fatal("learned an address from message content")
 				}
-				if tc.name == "full" {
-					for _, address := range p.config.RememberedRecipients {
-						if !policy.Remembers(address) {
-							t.Fatal("evicted a remembered recipient")
-						}
+				for _, address := range p.config.RememberedRecipients {
+					if !policy.Remembers(address) {
+						t.Fatal("evicted a remembered recipient")
 					}
 				}
-				wantConnections := int32(1)
-				if tc.learn {
-					wantConnections++
-				}
-				if tc.name == "declined" {
-					wantConnections = 0
-				}
-				if p.connections.Load() != wantConnections {
+				if p.connections.Load() != tc.connections {
 					t.Fatal("unexpected SMTP retry or bypass")
 				}
 			})
