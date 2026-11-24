@@ -373,7 +373,9 @@ or choose a port on `127.0.0.1` or `[::1]`. Croton checks the bind before
 asking for approval. Tailscale must report a nonempty node ID and HTTPS and
 Funnel eligibility for port 443.
 Routes on other ports can coexist, including case-sensitive mounts such as
-`/api` and `/API`. Keep exclusive control of port 443 for the entire run.
+`/api` and `/API`. Before approval, Croton checks that each Serve Web mount
+on the node has exactly one nonempty `Path`, `Proxy`, `Text`, or `Redirect`
+target. Keep exclusive control of port 443 for the entire run.
 Checking the configuration and changing it are separate Tailscale CLI calls.
 
 Croton shows the node's HTTPS origin, loopback target and routes on the owner

@@ -110,8 +110,10 @@ func newFunnelFixture(t *testing.T, config string) funnelFixture {
 	f.write(t, "tailscale", funnelScript)
 	f.write(t, "version", "1.104.5\n  long version: 1.104.5-fixture\n")
 	f.write(t, "node", funnelNodeJSON)
-	// Both case-sensitive mounts on 8443 must survive publication and removal.
-	const otherWeb = `"croton.tail.test:8443":{"Handlers":{"/api":{"Text":"lower"},"/API":{"Text":"upper"}}}`
+	// Existing handlers and their case-sensitive mounts must survive publication and removal.
+	const otherWeb = `"croton.tail.test:8443":{"Handlers":{
+		"/api":{"Proxy":"http://127.0.0.1:3000","AcceptAppCaps":["example.test/cap/read"]},
+		"/API":{"Text":"upper"},"/files":{"Path":"/srv/files"},"/old":{"Redirect":"/api"}}}`
 	const before = `{"TCP":{"8443":{"HTTPS":true}},"AllowFunnel":null,"Web":{` + otherWeb + `}}`
 	f.write(t, "config", before)
 	f.write(t, "before", before)
@@ -127,6 +129,7 @@ var preflightCalls = []string{"version", "status --json", "serve status --json",
 
 func TestFunnelServePreflight(t *testing.T) {
 	const occupied = " configuration occupies port 443. Move it to another port or use a dedicated node"
+	const web8443 = `{"TCP":{"8443":{"HTTPS":true}},"Web":{"private.test:8443":{"Handlers":{"/":%s}}}}`
 	config := writeServerConfig(t, fixtureBridge(t))
 	for _, tc := range []struct{ name, file, data, diagnostic string }{
 		{"old CLI", "version", "1.104.4", "1.104.5"},
@@ -150,7 +153,10 @@ func TestFunnelServePreflight(t *testing.T) {
 		{"duplicate field", "config", `{"TCP":{"443":{}},"TCP":{}}`, "Run tailscale"},
 		{"ambiguous field", "config", `{"TCP":{"443":{}},"tcp":{}}`, "Run tailscale"},
 		{"ambiguous handler", "config", `{"Web":{"private.test:8443":{"Handlers":{"/api":{"Text":"x","text":"y"}}}}}`, "Run tailscale"},
-		{"duplicate mount", "config", `{"Web":{"private.test:8443":{"Handlers":{"/api":{},"/api":{}}}}}`, "Run tailscale"},
+		{"duplicate mount", "config", `{"Web":{"private.test:8443":{"Handlers":{"/api":{"Text":"x"},"/api":{"Text":"y"}}}}}`, "Run tailscale"},
+		{"targetless handler", "config", fmt.Sprintf(web8443, `{}`), "Run tailscale"},
+		{"multiple handler targets", "config", fmt.Sprintf(web8443, `{"Text":"x","Redirect":"/other"}`), "Run tailscale"},
+		{"invalid handler target", "config", fmt.Sprintf(web8443, `{"Proxy":true}`), "Run tailscale"},
 		{"invalid port", "config", `{"AllowFunnel":{"private.test":true}}`, "Run tailscale"},
 		{"inconsistent status", "inconsistent", "{}", "changed"},
 	} {

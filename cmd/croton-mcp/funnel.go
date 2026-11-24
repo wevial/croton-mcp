@@ -107,6 +107,48 @@ func checkServeHostPort(hp, kind string, hasHandler bool) error {
 	return checkServePort(port, kind, err == nil && host != "" && hasHandler)
 }
 
+func validServeWeb(web map[string]any) bool {
+	mounts, _ := web["Handlers"].(map[string]any)
+	if len(web) != 1 || len(mounts) == 0 {
+		return false
+	}
+
+	for mount, value := range mounts {
+		if !strings.HasPrefix(mount, "/") {
+			return false
+		}
+
+		handler, _ := value.(map[string]any)
+		targets := 0
+		for key, field := range handler {
+			switch key {
+			case "Path", "Proxy", "Text", "Redirect":
+				if target, ok := field.(string); !ok || target == "" {
+					return false
+				}
+				targets++
+			case "AcceptAppCaps":
+				caps, ok := field.([]any)
+				if !ok {
+					return false
+				}
+				for _, capability := range caps {
+					if _, ok := capability.(string); !ok {
+						return false
+					}
+				}
+			default:
+				return false
+			}
+		}
+		if targets != 1 {
+			return false
+		}
+	}
+
+	return true
+}
+
 func (sc serveConfig) checkFree() error {
 	for session, fg := range sc.Foreground {
 		if session == "" || fg == nil || len(fg.Foreground) != 0 {
@@ -123,8 +165,8 @@ func (sc serveConfig) checkFree() error {
 		}
 	}
 
-	for hp, handler := range sc.Web {
-		if err := checkServeHostPort(hp, "Serve Web", handler != nil); err != nil {
+	for hp, web := range sc.Web {
+		if err := checkServeHostPort(hp, "Serve Web", validServeWeb(web)); err != nil {
 			return err
 		}
 	}
