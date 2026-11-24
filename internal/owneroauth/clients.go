@@ -45,13 +45,12 @@ func listClients(db *bolt.DB, visit func(pairedClient) error) error {
 
 func unpair(db *bolt.DB, id string) error {
 	return db.Update(func(tx *bolt.Tx) error {
-		found := false
 		clients := tx.Bucket([]byte("clients"))
-		if clients != nil && clients.Get([]byte(id)) != nil {
+		found := clients != nil && clients.Get([]byte(id)) != nil
+		if found {
 			if err := clients.Delete([]byte(id)); err != nil {
 				return err
 			}
-			found = true
 		}
 
 		families := tx.Bucket([]byte("families"))

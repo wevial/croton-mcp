@@ -148,11 +148,11 @@ func runOwnerCommand(ctx context.Context, command string, args []string, tty io.
 	}
 
 	if *dir == "" {
-		path, err := owneroauth.DefaultDir()
+		var err error
+		*dir, err = owneroauth.DefaultDir()
 		if err != nil {
 			return err
 		}
-		*dir = path
 	}
 
 	if command == "clients" || command == "unpair" {

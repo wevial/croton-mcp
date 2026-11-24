@@ -182,8 +182,7 @@ func restartClientsServer(t *testing.T, p *httpProcess) {
 	})
 
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
-		resp, err := p.client.Get(p.origin + "/.well-known/oauth-authorization-server")
-		if err == nil {
+		if resp, err := p.client.Get(p.origin + "/.well-known/oauth-authorization-server"); err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == 200 {
 				return
