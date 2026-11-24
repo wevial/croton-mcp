@@ -23,8 +23,7 @@ const funnelNodeJSON = `{"BackendState":"Running","Self":{"ID":"node.test","DNSN
 	"https":null,"funnel":[],"https://tailscale.com/cap/funnel-ports?ports=440-445,8443":null}},
 	"CertDomains":["croton.tail.test"]}`
 
-// One executable handles both status commands from the same synthetic config,
-// just as the installed CLI does. Record even unexpected commands.
+// Both status commands read the same configuration, as they do on the node.
 const funnelScript = `#!/bin/sh
 set -eu
 cd "${0%/*}"

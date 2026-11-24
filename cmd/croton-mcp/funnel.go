@@ -132,8 +132,7 @@ func (sc serveConfig) checkFree() error {
 	return nil
 }
 
-// Bound CLI output and cancel a mutation immediately if it starts printing a
-// feature-enablement message (which can wait for approval outside the CLI).
+// Cancel on unexpected mutation output because an enablement prompt can wait for external approval.
 type cliOutput struct {
 	data          bytes.Buffer
 	cancel        context.CancelFunc
@@ -252,8 +251,7 @@ func allows443(caps map[string][]json.RawMessage) bool {
 
 var nodeDNSLabel = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 
-// Read only the exact status fields used for identity and eligibility. Peer and
-// user records are unrelated to the decision and never reach diagnostics.
+// Use exact identity and eligibility fields, keeping peer and user records out of diagnostics.
 func (f *tailscaleFunnel) currentNode(ctx context.Context, requireEligibility bool) (funnelNode, error) {
 	var status, self map[string]json.RawMessage
 	var state, dnsName string
