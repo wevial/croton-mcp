@@ -104,10 +104,8 @@ func (adapter *Adapter) ReadForwardSource(ctx context.Context, identifier string
 			From: h.From, Date: h.Date, Subject: h.Subject, Text: body, Omissions: plan.omissions}
 		return nil
 	})
-	if err != nil {
-		return ForwardSource{}, err
-	}
-	return source, nil
+
+	return source, err
 }
 
 type forwardSelection struct {
@@ -187,7 +185,7 @@ func (plan *forwardSelection) visit(structure bodyStructure, path []int, parent 
 		}
 		plan.omissions.HTMLAlternatives++
 	default:
-		if parent != "multipart/mixed" || nested || strings.HasPrefix(entity.mediaType, "multipart/") ||
+		if parent != "multipart/mixed" || strings.HasPrefix(entity.mediaType, "multipart/") ||
 			strings.HasPrefix(entity.mediaType, "text/") || strings.HasPrefix(entity.mediaType, "message/") {
 			return errorCode(CodeUnsupported)
 		}

@@ -74,7 +74,7 @@ func newForwardFixture(t *testing.T, bounds bridge.BoundsPatch) *forwardFixture 
 	t.Cleanup(func() { _ = listener.Close() })
 
 	file := filepath.Join(t.TempDir(), "synthetic.json")
-	f := &forwardFixture{generation: 42, header: forwardHeader, section: "1", body: "Hello", structure: plainStructure("Hello"), credentials: file}
+	f := &forwardFixture{generation: 42, header: forwardHeader, body: "Hello", credentials: file}
 	f.login(t, forwardLogin)
 	cat, err := exec.LookPath("cat")
 	if err != nil {
