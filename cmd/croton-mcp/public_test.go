@@ -164,6 +164,41 @@ func TestPublicServeProxy(t *testing.T) {
 	}
 }
 
+func TestPublicServeUnboundBearer(t *testing.T) {
+	const token = "legacy-bearer.test"
+	authorize := func(bearer string) (string, bool) { return "", bearer == token }
+	const initialize = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+		"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"client.test","version":"1"}
+	}}`
+
+	for _, tc := range []struct {
+		name, origin string
+		public       bool
+		want         int
+	}{
+		{"public", "https://proxy.test", true, http.StatusUnauthorized},
+		{"local", "http://127.0.0.1:8787", false, http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler, err := mcpserver.NewHTTP(tc.origin, tc.public, nil, nil, time.Second, authorize, http.NotFoundHandler())
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			req := httptest.NewRequest(http.MethodPost, tc.origin+"/mcp", strings.NewReader(initialize))
+			req.Header.Set("Authorization", "Bearer "+token)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+			w := httptest.NewRecorder()
+
+			handler.ServeHTTP(w, req)
+			if w.Code != tc.want {
+				t.Fatalf("MCP initialize returned HTTP %d, want %d", w.Code, tc.want)
+			}
+		})
+	}
+}
+
 func TestPublicServeRateLimits(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const origin = "https://proxy.test"
