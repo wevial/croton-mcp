@@ -342,6 +342,8 @@ func (store *ForwardPreviews) approval(cfg bridge.ForwardConfig, request *mcp.Ca
 		return nil, errorResult(errInvalidArgument)
 	}
 	pending.challenge = ""
+
+	// The stdio transport checked form field spelling before SDK decoding.
 	response, _ := params.InputResponses[forwardConfirmation].(*mcp.ElicitResult)
 	if response == nil || len(params.InputResponses) != 1 || response.Action != "accept" ||
 		len(response.Content) != 1 || response.Content["confirm"] != true {

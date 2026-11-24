@@ -24,6 +24,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -76,25 +77,68 @@ type stdioConnection struct{ mcp.Connection }
 
 func (c stdioConnection) Read(ctx context.Context) (jsonrpc.Message, error) {
 	msg, err := c.Connection.Read(ctx)
-	req, ok := msg.(*jsonrpc.Request)
-	if err != nil || !ok || req.Method != "tools/call" {
+	if err != nil {
 		return msg, err
+	}
+
+	// A legacy elicitation reply carries the form directly in result.
+	if reply, ok := msg.(*jsonrpc.Response); ok {
+		if !canonicalFormFields(jsontext.Value(reply.Result)) {
+			return nil, errStdioFrameInvalid
+		}
+		return msg, nil
+	}
+	req, ok := msg.(*jsonrpc.Request)
+	if !ok || req.Method != "tools/call" {
+		return msg, nil
 	}
 
 	// Params still contains the original JSON here. Tool handlers receive
 	// _meta as a map, which loses number spellings, whitespace and escapes.
 	var params struct {
-		Name string         `json:"name"`
-		Meta jsontext.Value `json:"_meta"`
+		Name           string                    `json:"name"`
+		Meta           jsontext.Value            `json:"_meta"`
+		InputResponses map[string]jsontext.Value `json:"inputResponses"`
 	}
-	if json.Unmarshal(req.Params, &params, jsontext.AllowInvalidUTF8(true)) == nil &&
-		(params.Name == "prepare_forward" || params.Name == "send_forward") {
-		req.Extra = &mcp.RequestExtra{Header: http.Header{
-			ForwardMetaBytesHeader: {strconv.Itoa(len(params.Meta))},
-		}}
+	if err := json.Unmarshal(req.Params, &params, jsontext.AllowInvalidUTF8(true)); err != nil {
+		return nil, errStdioFrameInvalid
+	}
+	if params.Name != "send_forward" && params.Name != "prepare_forward" {
+		return msg, nil
+	}
+	if params.Name == "send_forward" {
+		for _, form := range params.InputResponses {
+			if !canonicalFormFields(form) {
+				return nil, errStdioFrameInvalid
+			}
+		}
 	}
 
+	req.Extra = &mcp.RequestExtra{Header: http.Header{
+		ForwardMetaBytesHeader: {strconv.Itoa(len(params.Meta))},
+	}}
 	return msg, nil
+}
+
+// The SDK folds struct field names when decoding elicitation results.
+// Form content and protocol metadata remain case-sensitive open maps.
+func canonicalFormFields(raw jsontext.Value) bool {
+	if raw.Kind() != '{' {
+		return true
+	}
+
+	var fields map[string]jsontext.Value
+	if json.Unmarshal(raw, &fields, jsontext.AllowInvalidUTF8(true)) != nil {
+		return false
+	}
+	for key := range fields {
+		if (key != "action" && strings.EqualFold(key, "action")) ||
+			(key != "content" && strings.EqualFold(key, "content")) ||
+			(key != "_meta" && strings.EqualFold(key, "_meta")) {
+			return false
+		}
+	}
+	return true
 }
 
 type boundedReadCloser struct {

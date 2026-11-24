@@ -2,6 +2,7 @@
 package forwardpolicy
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -15,8 +16,9 @@ import (
 )
 
 const (
-	limit  = 10
-	bucket = "reservations-v1"
+	limit       = 10
+	bucket      = "reservations-v2"
+	checksumKey = "checksum"
 )
 
 var (
@@ -38,8 +40,13 @@ func Initialize(dir string) error {
 	}
 
 	err := update(dir, true, func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucket([]byte(bucket))
-		return err
+		b, err := tx.CreateBucket([]byte(bucket))
+		if err != nil {
+			return err
+		}
+
+		empty := sha256.Sum256(nil)
+		return b.Put([]byte(checksumKey), empty[:])
 	})
 	if err != nil {
 		return err
@@ -70,12 +77,13 @@ func Reserve(dir, login string) error {
 		if b == nil {
 			return ErrUnavailable
 		}
+		checksum, err := reservationChecksum(b)
+		if err != nil || !bytes.Equal(checksum, b.Get([]byte(checksumKey))) {
+			return ErrUnavailable
+		}
 
 		key := sha256.Sum256([]byte(strings.ToLower(login)))
 		record := b.Get(key[:])
-		if record != nil && (len(record) == 0 || len(record)%8 != 0 || len(record) > 8*limit) {
-			return ErrUnavailable
-		}
 
 		now := time.Now()
 		cutoff := now.Add(-24 * time.Hour).UnixNano()
@@ -94,8 +102,39 @@ func Reserve(dir, login string) error {
 			return ErrLimit
 		}
 
-		return b.Put(key[:], binary.BigEndian.AppendUint64(times, uint64(now.UnixNano())))
+		if err := b.Put(key[:], binary.BigEndian.AppendUint64(times, uint64(now.UnixNano()))); err != nil {
+			return err
+		}
+		checksum, err = reservationChecksum(b)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(checksumKey), checksum)
 	})
+}
+
+// Hash the complete, key-ordered set before trusting an absent login. Frame
+// each fixed-size key and variable-length timestamp list unambiguously.
+func reservationChecksum(b *bolt.Bucket) ([]byte, error) {
+	hash := sha256.New()
+	err := b.ForEach(func(key, stamps []byte) error {
+		if string(key) == checksumKey {
+			return nil
+		}
+		if len(key) != sha256.Size || len(stamps) == 0 || len(stamps)%8 != 0 || len(stamps) > 8*limit {
+			return ErrUnavailable
+		}
+		// A damaged branch key can hide an intact leaf from a login lookup.
+		if !bytes.Equal(b.Get(key), stamps) {
+			return ErrUnavailable
+		}
+
+		hash.Write(key)
+		hash.Write([]byte{byte(len(stamps))})
+		hash.Write(stamps)
+		return nil
+	})
+	return hash.Sum(nil), err
 }
 
 func update(dir string, create bool, write func(*bolt.Tx) error) error {

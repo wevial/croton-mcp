@@ -342,6 +342,27 @@ func TestForwardSend(t *testing.T) {
 	})
 
 	t.Run("Confirmation", func(t *testing.T) {
+		t.Run("conflicting wire fields", func(t *testing.T) {
+			for _, form := range []string{
+				`{"action":"decline","Action":"accept","content":{"confirm":true}}`,
+				`{"action":"cancel","\u0041ction":"accept","content":{"confirm":true}}`,
+				`{"action":"accept","content":{"confirm":false},"Content":{"confirm":true}}`,
+			} {
+				for _, frame := range []string{
+					`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send_forward","inputResponses":{"confirmation":` + form + `}}}`,
+					`{"jsonrpc":"2.0","id":1,"result":` + form + `}`,
+				} {
+					conn, err := stdioframe.NewTransport(io.NopCloser(strings.NewReader(frame+"\n")), io.Discard).Connect(t.Context())
+					requireForwardSetup(t, err)
+					msg, err := conn.Read(t.Context())
+					requireForwardSetup(t, conn.Close())
+					if err == nil || msg != nil {
+						t.Fatal("ambiguous form reached SDK dispatch")
+					}
+				}
+			}
+		})
+
 		f := plainFixture(t)
 		r := f.prepare(t, false)
 		p := newSMTPPeer(t, "", "")
@@ -430,46 +451,58 @@ func TestForwardSend(t *testing.T) {
 				}
 			})
 		})
-		t.Run("latest metadata damaged", func(t *testing.T) {
-			p := newSMTPPeer(t, "", "")
-			for range 10 {
-				if err := forwardpolicy.Reserve(p.config.StateDir, forwardLogin); err != nil {
-					t.Fatal(err)
+		for _, damage := range []string{"latest metadata", "login key", "timestamp"} {
+			t.Run(damage+" damaged", func(t *testing.T) {
+				p := newSMTPPeer(t, "", "")
+				for range 10 {
+					requireForwardSetup(t, forwardpolicy.Reserve(p.config.StateDir, forwardLogin))
 				}
-			}
 
-			path := filepath.Join(p.config.StateDir, "quota.db")
-			db, err := bolt.Open(path, 0600, &bolt.Options{ReadOnly: true})
-			requireForwardSetup(t, err)
-			var offset int64
-			pageSize := db.Info().PageSize
-			err = db.View(func(tx *bolt.Tx) error {
-				offset = int64((tx.ID() % 2) * pageSize)
-				return nil
+				path := filepath.Join(p.config.StateDir, "quota.db")
+				data, err := os.ReadFile(path)
+				requireForwardSetup(t, err)
+				db, err := bolt.Open(path, 0600, &bolt.Options{ReadOnly: true})
+				requireForwardSetup(t, err)
+				pageSize := db.Info().PageSize
+				var offset int
+				err = db.View(func(tx *bolt.Tx) error {
+					if damage == "latest metadata" {
+						offset = (tx.ID()%2)*pageSize + 72 // v2 metadata checksum
+						return nil
+					}
+
+					// Locate the live key/value pair beyond both metadata pages.
+					// Only the current snapshot contains the tenth timestamp.
+					name, _ := tx.Cursor().First()
+					key := sha256.Sum256([]byte(forwardLogin))
+					stamps := tx.Bucket(name).Get(key[:])
+					entry := append(key[:], stamps...)
+					pages := data[2*pageSize:]
+					if len(stamps) != 10*8 || bytes.Count(pages, entry) != 1 {
+						return fmt.Errorf("could not identify the full reservation record")
+					}
+					offset = 2*pageSize + bytes.Index(pages, entry)
+					if damage == "timestamp" {
+						offset += len(key)
+					}
+					return nil
+				})
+				requireForwardSetup(t, db.Close())
+				requireForwardSetup(t, err)
+
+				file, err := os.OpenFile(path, os.O_WRONLY, 0)
+				requireForwardSetup(t, err)
+				_, err = file.WriteAt([]byte{data[offset] ^ 1}, int64(offset))
+				requireForwardSetup(t, file.Close())
+				requireForwardSetup(t, err)
+
+				req := confirmation(t, f, p.config, f.prepare(t, false))
+				requireToolError(t, f.store.send(t.Context(), p.config, req, nil), errUnavailable)
+				if p.connections.Load() != 0 {
+					t.Fatal("damaged quota state opened SMTP")
+				}
 			})
-			if closeErr := db.Close(); err != nil || closeErr != nil {
-				t.Fatal("reading latest transaction", err, closeErr)
-			}
-
-			file, err := os.OpenFile(path, os.O_RDWR, 0)
-			requireForwardSetup(t, err)
-			// Flip a single checksum bit in the newest v2 metadata.
-			checksumOffset := offset + 72
-			var first [1]byte
-			if _, err = file.ReadAt(first[:], checksumOffset); err == nil {
-				first[0] ^= 1
-				_, err = file.WriteAt(first[:], checksumOffset)
-			}
-			if closeErr := file.Close(); err != nil || closeErr != nil {
-				t.Fatal("damaging latest metadata", err, closeErr)
-			}
-
-			req := confirmation(t, f, p.config, f.prepare(t, false))
-			requireToolError(t, f.store.send(t.Context(), p.config, req, nil), errUnavailable)
-			if p.connections.Load() != 0 {
-				t.Fatal("quota fallback opened SMTP")
-			}
-		})
+		}
 
 		if runtime.GOOS == "darwin" {
 			for _, target := range []string{"parent", "directory", "database"} {

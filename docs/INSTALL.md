@@ -318,8 +318,10 @@ Every reservation counts toward the limit of ten in a rolling 24 hours, even
 if SMTP fails or the outcome is uncertain. A full quota returns `quota_reached`
 before connecting to SMTP. Declining the form uses no slot.
 If existing state is missing or damaged, sending stops. Restore the current
-state before resuming. Both bbolt metadata pages must be intact so recovery
-cannot silently drop the most recent reservation.
+state before resuming. Croton checks both bbolt metadata pages and verifies
+a checksum covering every stored account key and its reservation timestamps
+before reserving another slot. Quota files from pre-release builds that lack
+this checksum also block sending.
 
 Use compact JSON for each `send_forward` request. Each JSON-RPC `id` may use
 up to 38 encoded bytes, including string quotes and escapes. A quoted UUID
