@@ -5,8 +5,7 @@ import (
 	"time"
 )
 
-// Only a verified bearer supplies a client key. The empty key is shared by
-// all requests without a verified client, across MCP and OAuth routes.
+// MCP and OAuth share the empty key for requests without a verified bearer client.
 type publicAdmission struct {
 	inFlight  chan struct{}
 	mu        sync.Mutex

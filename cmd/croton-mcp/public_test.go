@@ -193,8 +193,7 @@ func TestPublicServeRateLimits(t *testing.T) {
 		request("/register", "", 429)
 		request("/mcp", "", 429)
 
-		// The empty MCP frame is rejected only after admission. Rotation and
-		// OAuth routes share the same verified client's rolling budget.
+		// HTTP 400 for the empty MCP frame means the limiter admitted the request.
 		for range 60 {
 			request("/mcp", "bearer-one", 400)
 		}
