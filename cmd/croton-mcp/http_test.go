@@ -70,7 +70,7 @@ func editConfig(t *testing.T, path string, edit func(map[string]any)) {
 
 func TestHTTPTransportStartup(t *testing.T) {
 	config := writeServerConfig(t, fixtureBridge(t))
-	dir := filepath.Join(canonicalTempDir(t), "state")
+	dir := httpStateDir(t)
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -152,18 +152,32 @@ func startHTTP(t *testing.T, config string, stderr *os.File, env ...string) *htt
 	return startHTTPAt(t, config, address, "https://"+address, stderr, env...)
 }
 
+func httpStateDir(t *testing.T) string {
+	t.Helper()
+
+	// The state needs trusted ancestors and a short Unix socket path.
+	parent, err := filepath.EvalSymlinks("/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir, err := os.MkdirTemp(parent, "croton-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Error(err)
+		}
+	})
+
+	return dir
+}
+
 func startHTTPAt(t *testing.T, config, address, origin string, stderr *os.File, env ...string) *httpProcess {
 	t.Helper()
-	// Keep the Unix socket under Darwin's sockaddr_un path limit.
-	dir, err := os.MkdirTemp("/tmp", "croton-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	dir, err = filepath.EvalSymlinks(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+
+	dir := httpStateDir(t)
 	args := []string{"serve", "--config", config, "--authorizer", "owner", "--bind", address, "--state-dir", dir}
 	transport := &http.Transport{}
 	if strings.HasPrefix(origin, "https://") {

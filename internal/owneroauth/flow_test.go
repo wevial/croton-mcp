@@ -29,10 +29,23 @@ const verifier = "synthetic.test-verifier-0123456789abcdef0123456789abcdef"
 
 func privateDir(t *testing.T) string {
 	t.Helper()
-	parent, err := filepath.EvalSymlinks(t.TempDir())
+
+	// The state needs trusted ancestors and a short Unix socket path.
+	root, err := filepath.EvalSymlinks("/tmp")
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	parent, err := os.MkdirTemp(root, "croton-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(parent); err != nil {
+			t.Error(err)
+		}
+	})
+
 	return filepath.Join(parent, "state")
 }
 
@@ -360,8 +373,6 @@ func TestOwnerOAuthCodeRedemption(t *testing.T) {
 }
 
 func TestOwnerOAuthCodeBrowserBinding(t *testing.T) {
-	// Keep the actual owner IPC socket within the Unix path length limit.
-	t.Setenv("TMPDIR", "/tmp")
 	dir := privateDir(t)
 	a := openTest(t, dir, Defaults())
 	stopOwner, err := a.ListenOwner(t.Context())
