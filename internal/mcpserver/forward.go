@@ -20,6 +20,8 @@ import (
 	"github.com/wevial/croton-mcp/internal/stdioframe"
 )
 
+const maxForwardAddressBytes = 254
+
 type forwardInput struct {
 	MessageID string `json:"messageId"`
 	To        string `json:"to"`
@@ -65,7 +67,7 @@ func registerForward(server *mcp.Server, options Options) {
 		description: "Preview one complete inline plain-text forward to an explicit recipient. Set text_only to consent to omitting files and attached messages.",
 		schema: objectSchema(map[string]json.RawMessage{
 			"messageId": stringSchema(maxMessageIDArgumentBytes),
-			"to":        stringSchema(254),
+			"to":        stringSchema(maxForwardAddressBytes),
 			"text":      stringSchema(maxToolArgumentsBytes),
 			"text_only": booleanSchema(),
 		}, []string{"messageId", "to"}),
@@ -97,17 +99,16 @@ func runPrepareForward(ctx context.Context, options Options, args json.RawMessag
 	if !plainMailbox(source.Login) {
 		return nil, errUnsupported
 	}
-	var body strings.Builder
+
 	if authored != "" {
-		body.WriteString(authored)
-		body.WriteString("\n\n")
+		authored += "\n\n"
 	}
-	fmt.Fprintf(&body, "---------- Forwarded message ----------\nFrom: %s\nDate: %s\nSubject: %s\n\n%s",
-		source.From, source.Date, source.Subject, source.Text)
+	body := fmt.Sprintf("%s---------- Forwarded message ----------\nFrom: %s\nDate: %s\nSubject: %s\n\n%s",
+		authored, source.From, source.Date, source.Subject, source.Text)
 
 	result := forwardResult{Handle: rand.Text(), Preview: forwardPreview{
 		From: source.Login, To: in.To, Subject: strings.TrimSpace("Fwd: " + strings.Join(strings.Fields(source.Subject), " ")),
-		Body: strings.ReplaceAll(body.String(), "\n", "\r\n"), Omissions: source.Omissions,
+		Body: strings.ReplaceAll(body, "\n", "\r\n"), Omissions: source.Omissions,
 	}}
 	if !fitsForwardFrame(result) {
 		return nil, errBoundsExceeded
@@ -148,7 +149,7 @@ func runPrepareForward(ctx context.Context, options Options, args json.RawMessag
 var mailboxDomainLabel = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
 
 func plainMailbox(value string) bool {
-	if value == "" || len(value) > 254 || strings.ContainsFunc(value, func(r rune) bool { return r <= ' ' || r >= 127 }) {
+	if value == "" || len(value) > maxForwardAddressBytes || strings.ContainsFunc(value, func(r rune) bool { return r <= ' ' || r >= 127 }) {
 		return false
 	}
 	address, err := mail.ParseAddress(value)
@@ -212,9 +213,8 @@ func (store *ForwardPreviews) lookup(approval forwardResult, now time.Time) (str
 
 func serializeForward(preview forwardPreview, now time.Time) string {
 	var wire strings.Builder
-	fmt.Fprintf(&wire, "From: %s\r\nTo: %s\r\nDate: %s\r\nMessage-ID: <%s@croton.invalid>\r\n",
+	fmt.Fprintf(&wire, "From: %s\r\nTo: %s\r\nDate: %s\r\nMessage-ID: <%s@croton.invalid>\r\nSubject: ",
 		preview.From, preview.To, now.Format(time.RFC1123Z), rand.Text())
-	wire.WriteString("Subject: ")
 	// Fold between RFC 2047 words. Even an unbroken ASCII subject can be
 	// longer than the 998-octet line limit.
 	subject := preview.Subject

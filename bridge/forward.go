@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/hex"
@@ -115,6 +116,8 @@ type forwardSelection struct {
 }
 
 func (plan *forwardSelection) visit(structure bodyStructure, path []int, parent string) error {
+	const mixed, alternative = "multipart/mixed", "multipart/alternative"
+
 	if plan.remaining <= 0 || len(path) > defaultMaxMIMEDepth {
 		return errorCode(CodeBoundsExceeded)
 	}
@@ -140,7 +143,7 @@ func (plan *forwardSelection) visit(structure bodyStructure, path []int, parent 
 		attached = attached || forwardFileParam(disp.Params, "filename")
 	}
 	nested := entity.mediaType == "message/rfc822" || entity.mediaType == "message/global"
-	if nested && (attached || (parent == "multipart/mixed" && plan.section != nil)) {
+	if nested && (attached || (parent == mixed && plan.section != nil)) {
 		plan.omissions.AttachedMessages++
 		return nil
 	}
@@ -153,7 +156,7 @@ func (plan *forwardSelection) visit(structure bodyStructure, path []int, parent 
 	}
 
 	switch entity.mediaType {
-	case "multipart/mixed", "multipart/alternative":
+	case mixed, alternative:
 		if plan.section != nil {
 			return errorCode(CodeUnsupported)
 		}
@@ -180,12 +183,12 @@ func (plan *forwardSelection) visit(structure bodyStructure, path []int, parent 
 		}
 		plan.section = &textSection{part: path, encoding: part.Encoding, charset: entity.parameters["charset"], size: part.Size}
 	case "text/html":
-		if parent != "multipart/alternative" {
+		if parent != alternative {
 			return errorCode(CodeUnsupported)
 		}
 		plan.omissions.HTMLAlternatives++
 	default:
-		if parent != "multipart/mixed" || strings.HasPrefix(entity.mediaType, "multipart/") ||
+		if parent != mixed || strings.HasPrefix(entity.mediaType, "multipart/") ||
 			strings.HasPrefix(entity.mediaType, "text/") || strings.HasPrefix(entity.mediaType, "message/") {
 			return errorCode(CodeUnsupported)
 		}
@@ -228,7 +231,7 @@ func decodeForwardText(raw []byte, part *textSection) (string, error) {
 	var err error
 	switch strings.ToLower(part.encoding) {
 	case "", "7bit":
-		if !asciiBytes(raw) {
+		if hasNonASCII(raw) {
 			return "", errorCode(CodeUnsupported)
 		}
 	case "8bit", "binary":
@@ -245,7 +248,7 @@ func decodeForwardText(raw []byte, part *textSection) (string, error) {
 
 	switch strings.ToLower(part.charset) {
 	case "", "us-ascii":
-		if !asciiBytes(raw) {
+		if hasNonASCII(raw) {
 			return "", errorCode(CodeUnsupported)
 		}
 	case "utf-8":
@@ -267,13 +270,8 @@ func decodeForwardText(raw []byte, part *textSection) (string, error) {
 	return body, nil
 }
 
-func asciiBytes(raw []byte) bool {
-	for _, b := range raw {
-		if b >= utf8.RuneSelf {
-			return false
-		}
-	}
-	return true
+func hasNonASCII(raw []byte) bool {
+	return bytes.ContainsFunc(raw, func(r rune) bool { return r >= utf8.RuneSelf })
 }
 
 // Decode in place. The standard reader repairs malformed escapes and strips

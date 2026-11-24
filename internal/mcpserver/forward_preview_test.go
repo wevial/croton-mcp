@@ -28,6 +28,8 @@ import (
 )
 
 const (
+	forwardTool   = "prepare_forward"
+	utf8Params    = `("charset" "utf-8")`
 	forwardLogin  = "owner@bridge.test"
 	forwardTo     = "reviewer@recipient.test"
 	forwardFrom   = "Sender, Original <source@sender.test>"
@@ -40,7 +42,7 @@ func textStructure(subtype, encoding, parameters string, size int) string {
 }
 
 func plainStructure(body string) string {
-	return textStructure("plain", "8bit", `("charset" "utf-8")`, len(body))
+	return textStructure("plain", "8bit", utf8Params, len(body))
 }
 
 func multiStructure(kind string, children ...string) string {
@@ -124,6 +126,12 @@ func (f *forwardFixture) login(t *testing.T, address string) {
 	}
 }
 
+func (f *forwardFixture) setHeader(header string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.header = header
+}
+
 func (f *forwardFixture) set(structure, section, body string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -205,7 +213,7 @@ func (f *forwardFixture) arguments(consent bool) map[string]any {
 func (f *forwardFixture) prepare(t *testing.T, consent bool) forwardResult {
 	t.Helper()
 	var result forwardResult
-	callJSON(t, f.client, "prepare_forward", f.arguments(consent), &result)
+	callJSON(t, f.client, forwardTool, f.arguments(consent), &result)
 	if result.Handle == "" {
 		t.Fatal("missing handle")
 	}
@@ -214,7 +222,7 @@ func (f *forwardFixture) prepare(t *testing.T, consent bool) forwardResult {
 
 func (f *forwardFixture) refuse(t *testing.T, args map[string]any) {
 	t.Helper()
-	result := callTool(t, f.client, "prepare_forward", args)
+	result := callTool(t, f.client, forwardTool, args)
 	if !result.IsError || strings.Contains(resultText(t, result), "handle") {
 		t.Fatal("expected a tool error without a handle")
 	}
@@ -223,16 +231,13 @@ func (f *forwardFixture) refuse(t *testing.T, args map[string]any) {
 func TestForwardPreview(t *testing.T) {
 	const file = `("application" "pdf" NIL NIL NIL "base64" 7000 NIL ("attachment" ("filename" "file.pdf")) NIL NIL)`
 	const nested = `("message" "rfc822" NIL NIL NIL "7bit" 423 (NIL NIL NIL NIL NIL NIL NIL NIL NIL NIL) ("text" "plain" NIL NIL NIL "7bit" 10 1) 5 NIL NIL NIL NIL)`
-	const utf8Params = `("charset" "utf-8")`
 
 	t.Run("Wire", func(t *testing.T) {
 		f := newForwardFixture(t, bridge.BoundsPatch{})
 		// Search metadata caps From at 512 bytes. The bounded header
 		// projection keeps this entire display name, including its comma.
 		namePrefix := strings.Repeat("Archive contact ", 33)
-		f.mu.Lock()
-		f.header = strings.Replace(forwardHeader, "From: ", "From: "+namePrefix, 1)
-		f.mu.Unlock()
+		f.setHeader(strings.Replace(forwardHeader, "From: ", "From: "+namePrefix, 1))
 
 		const raw = "one=0A=c3=a9\r\nlast\r\n\r\n"
 		plain := textStructure("plain", "quoted-printable", utf8Params, len(raw))
@@ -301,9 +306,7 @@ func TestForwardPreview(t *testing.T) {
 			strings.Replace(forwardHeader, "Date: ", "Date: invalid\r\nDate: ", 1),
 			strings.Replace(forwardHeader, declaredDate, declaredDate+" (bad \xff)", 1),
 		} {
-			f.mu.Lock()
-			f.header = header
-			f.mu.Unlock()
+			f.setHeader(header)
 			f.refuse(t, f.arguments(false))
 		}
 		f.mu.Lock()
@@ -323,7 +326,7 @@ func TestForwardPreview(t *testing.T) {
 		}
 		f.generation++
 		f.mu.Unlock()
-		requireToolError(t, callTool(t, f.client, "prepare_forward", f.arguments(false)), errStaleID)
+		requireToolError(t, callTool(t, f.client, forwardTool, f.arguments(false)), errStaleID)
 
 		t.Run("underdeclared at section limit", func(t *testing.T) {
 			f := newForwardFixture(t, bridge.BoundsPatch{MaxBodyBytes: bridge.Int(4)})
@@ -349,9 +352,7 @@ func TestForwardPreview(t *testing.T) {
 
 		// Force subject folding and QP soft breaks while preserving every
 		// decoded rune, hard break and trailing blank line.
-		f.mu.Lock()
-		f.header = strings.Replace(forwardHeader, "Original  subject", strings.Repeat("Résumé", 180), 1)
-		f.mu.Unlock()
+		f.setHeader(strings.Replace(forwardHeader, "Original  subject", strings.Repeat("Résumé", 180), 1))
 		sourceText := strings.Repeat("é=", 600) + "\r\n\r\n"
 		f.set(plainStructure(sourceText), "1", sourceText)
 		first := f.prepare(t, false)
@@ -440,7 +441,7 @@ func TestForwardPreview(t *testing.T) {
 			}
 			content += "x"
 			f.set(plainStructure(content), "1", content)
-			requireToolError(t, callTool(t, f.client, "prepare_forward", f.arguments(false)), errBoundsExceeded)
+			requireToolError(t, callTool(t, f.client, forwardTool, f.arguments(false)), errBoundsExceeded)
 			if _, ok := f.store.lookup(exact, time.Now()); !ok {
 				t.Fatal("failed preview displaced prior approval")
 			}
