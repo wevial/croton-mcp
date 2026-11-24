@@ -8,7 +8,7 @@ read-only by default; the triage writes in `docs/MCP.md` exist only behind
 
 - Never expose credentials, account identifiers, live mailbox content, or unredacted diagnostics to agents. Use synthetic `.test` fixtures.
 - Keep Bridge connections loopback-only with TLS pinned to an explicit anchor or SPKI hash.
-- Writes stay off by default and limited to Seen-only `UID STORE` and native `UID MOVE`. Never add send, delete, EXPUNGE, COPY or label changes.
+- Writes stay off by default and limited to Seen-only `UID STORE`, native `UID MOVE` and the opt-in stdio `send_forward`, which submits one user-approved forward per call through local Bridge. Never add any other send, nor delete, EXPUNGE, COPY or label changes.
 - Never return attachment bytes. Keep results metadata first, with hard caps on body and output.
 - Keep message IDs opaque and bound to UIDVALIDITY.
 - Keep the 64 KiB frame bound, the no-symlink `--config` open, and timeouts and byte budgets on Bridge reads.

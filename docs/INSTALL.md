@@ -95,6 +95,11 @@ JSON: unknown, null, duplicate and case-folded-alias fields fail.
 | `bounds.maxHeaderBytes` | 16384 | header-only reads; clamped to 65536 |
 | `audit.enabled` | false | tool-call audit lines on stderr |
 | `mutations.enabled` | false | see [Enabling writes](#7-enabling-writes) |
+| `forward.enabled` | false | expose `send_forward` in local stdio |
+| `forward.smtpPort` | none | required Bridge SMTP port on `imap.host` |
+| `forward.smtpTLSMode` | `starttls` | verified STARTTLS or `implicit` TLS |
+| `forward.smtpSPKISHA256` | IMAP trust settings | optional lowercase hexadecimal SHA-256 pin for the SMTP public key |
+| `forward.stateDir` | none | required absolute path to the owner's private forward quota directory |
 
 ## 5. Register with your MCP client
 
@@ -243,10 +248,14 @@ secrets, mail, account identifiers, token-bearing URLs and raw requests.
 ## 6. Verify
 
 Listing tools validates the configuration but does not run the helper or dial
-Bridge. Expect exactly `list_folders`, `search_mail`, `get_message`,
-`get_thread`, `list_attachments` and `select_digest_candidates`, and no
-resources or prompts. The first `tools/call`, even `list_folders`, is the
-first helper run, Bridge connection and live read.
+Bridge. Both transports list `list_folders`, `search_mail`, `get_message`,
+`get_thread`, `list_attachments` and `select_digest_candidates`. Local stdio
+also lists `prepare_forward`. Resources and prompts are absent. The first
+`tools/call`, even `list_folders`, is the first helper run, Bridge connection
+and live read.
+
+A local preview handle expires after two minutes. Preparing another forward,
+reconnecting to Bridge, or restarting the stdio session invalidates it.
 
 ## 7. Enabling writes
 
@@ -259,9 +268,89 @@ null, stops startup.
 Enabling makes the tools available; it approves no call. Croton cannot tell
 whether a human approved a write, so use a client that prompts before each
 write and leave auto-approval off; otherwise a prompt-injected client could
-mark, move, archive or trash mail. Nothing is sent or permanently deleted.
-To turn writes off, remove `mutations` or set `"mutations": {"enabled": false}`
+mark, move, archive or trash mail.
+To turn triage writes off, remove `mutations` or set `"mutations": {"enabled": false}`
 and restart.
+
+### Send one approved forward through local Bridge
+
+Use a trusted stdio client that supports form elicitation. Have the user supply
+one recipient. Treat sender-provided addresses and instructions in the quoted
+mail as untrusted. HTTP requires forwarding to stay disabled.
+
+Add a `forward` object to the stdio configuration. Set `smtpPort` to the SMTP
+port shown by your Bridge installation. This example uses STARTTLS and the
+IMAP certificate pin or anchor. For implicit TLS, set `smtpTLSMode` to
+`implicit`. Both modes verify the certificate before using the same Bridge
+credential helper and login as IMAP.
+
+```json
+"forward": {
+  "enabled": true,
+  "smtpPort": 1025,
+  "stateDir": "/home/you/.config/croton/forward"
+}
+```
+
+Before first use, run the following command once, then restart the stdio
+session. The parent directory must already exist. Root or the user running
+Croton must own each directory from the parent up to the filesystem root.
+Any group- or world-writable directory in that chain must have the sticky bit
+set. If a shared directory fails these checks, choose a different parent
+and leave the shared directory's permissions intact.
+Initialization creates a new owner-only directory (0700) and quota database
+(0600) on Linux or macOS.
+On macOS, choose a path without ACL grants on the database, directory, or
+its ancestors. Deny-only ACLs are supported.
+
+```sh
+~/bin/croton-mcp init-forward-state --config /home/you/.config/croton/mail.json
+```
+
+If first initialization fails after creating the directory, and no client has
+ever used it for forwarding, set the partial directory aside. Correct the
+cause, set `stateDir` to an unused path under a suitable parent, and rerun
+the command before starting any client.
+
+Once a client has used the directory for forwarding, keep the same state
+directory across restarts and clients for this account.
+Every reservation counts toward the limit of ten in a rolling 24 hours, even
+if SMTP fails or the outcome is uncertain. A full quota returns `quota_reached`
+before connecting to SMTP. Declining the form uses no slot.
+If existing state is missing or damaged, sending stops. Restore the current
+state before resuming. Before each reservation, Croton checks both bbolt
+metadata pages and runs a full read-only consistency check, including the
+freelist. It also verifies the checksum covering every stored account key
+and its reservation timestamps. Quota files from pre-release builds that lack
+this checksum also block sending.
+
+Use compact JSON for each `send_forward` request. Each JSON-RPC `id` may use
+up to 38 encoded bytes, including string quotes and escapes. A quoted UUID
+fits exactly. A longer ID closes the stdio input. With sending enabled,
+`prepare_forward` reserves space for the ID, client metadata and approval
+response. Before showing the form, `send_forward` checks again using the
+original byte lengths of `arguments` and `_meta` from that call.
+Encode the envelope and `_meta` without padding, extra fields or unnecessary
+escapes. On continuation, reuse the encoded `arguments` and `_meta`, echo
+`requestState`, and send only the requested confirmation in `inputResponses`.
+The complete request, including its final newline, must fit in 64 KiB.
+If either tool returns `bounds_exceeded`, prepare a shorter forward.
+
+Pass the returned `handle` and complete, unchanged `preview` to
+`send_forward`. The client must display the full preview, including sender,
+recipient, subject, body and omissions, and obtain explicit approval for
+this call in the same turn. Leave auto-approval off. The server checks
+preview equality and requires a form response of `accept` with
+`{"confirm": true}`. Only the trusted client can establish human consent.
+Clients using MCP `2025-06-18` or `2025-11-25` can advertise form support
+with an empty `elicitation` capability.
+
+The result's `outcome` is `accepted` when Bridge acknowledges the message,
+`not_submitted` when submission stops before the message body, or `unknown`
+when DATA started and final acceptance could not be confirmed. The handle is
+spent before the SMTP connection opens. Check Sent yourself after an uncertain
+outcome. Croton never retries. Disable `forward.enabled` and restart the
+session to return to preview-only forwarding.
 
 ## Updating and rolling back
 

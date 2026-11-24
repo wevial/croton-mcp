@@ -1,6 +1,9 @@
 package bridge
 
-import "time"
+import (
+	"path/filepath"
+	"time"
+)
 
 const (
 	TLSModeStartTLS = "starttls"
@@ -21,6 +24,7 @@ type Config struct {
 	Bounds    BoundsPatch     `json:"bounds"`
 	Audit     AuditConfig     `json:"audit"`
 	Mutations MutationsConfig `json:"mutations"`
+	Forward   ForwardConfig   `json:"forward"`
 }
 
 // IMAPConfig configures the local Proton Mail Bridge endpoint.
@@ -57,6 +61,19 @@ type AuditConfig struct {
 // Enabling it registers tools; it never approves an individual call.
 type MutationsConfig struct {
 	Enabled bool `json:"enabled"`
+}
+
+// ForwardConfig describes the operator's settings for a local SMTP session.
+type ForwardConfig struct {
+	Enabled        bool   `json:"enabled"`
+	SMTPPort       int    `json:"smtpPort"`
+	SMTPTLSMode    string `json:"smtpTLSMode"`
+	SMTPSPKISHA256 string `json:"smtpSPKISHA256"`
+	StateDir       string `json:"stateDir"`
+}
+
+func (cfg ForwardConfig) validTLSMode() bool {
+	return cfg.SMTPTLSMode == "" || cfg.SMTPTLSMode == TLSModeStartTLS || cfg.SMTPTLSMode == TLSModeImplicit
 }
 
 // ValidatedConfig has defaults and hard ceilings applied and is safe to use for connections.
@@ -106,6 +123,21 @@ func ValidateConfig(input Config) (ValidatedConfig, error) {
 	bounds, err := mergeBounds(input.Bounds)
 	if err != nil {
 		return ValidatedConfig{}, err
+	}
+
+	if forward := input.Forward; forward.Enabled {
+		if _, err := ParseLoopbackEndpoint(imap.Host, forward.SMTPPort); err != nil {
+			return ValidatedConfig{}, err
+		}
+		if !forward.validTLSMode() {
+			return ValidatedConfig{}, errorCode(CodeInvalidConfig)
+		}
+		if !filepath.IsAbs(forward.StateDir) || filepath.Clean(forward.StateDir) != forward.StateDir || forward.StateDir == "/" {
+			return ValidatedConfig{}, errorCode(CodeInvalidConfig)
+		}
+		if _, err := (TLSConfig{SPKISHA256: forward.SMTPSPKISHA256}).spkiPin(); err != nil {
+			return ValidatedConfig{}, err
+		}
 	}
 
 	return ValidatedConfig{IMAP: imap, Bounds: bounds, Audit: input.Audit}, nil

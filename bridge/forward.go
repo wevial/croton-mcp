@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"mime"
 	"net/mail"
+	"net/netip"
 	"regexp"
 	"slices"
 	"strings"
@@ -685,4 +686,38 @@ func decodeForwardQP(raw []byte) ([]byte, error) {
 		out = append(out, b)
 	}
 	return out, nil
+}
+
+// MaxForwardAddressBytes bounds a single SMTP envelope mailbox.
+const MaxForwardAddressBytes = 254
+
+var mailboxDomainLabel = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
+
+// ValidForwardMailbox reports whether a single bare ASCII mailbox is safe for the SMTP envelope.
+func ValidForwardMailbox(value string) bool {
+	if value == "" || len(value) > MaxForwardAddressBytes || strings.ContainsFunc(value, func(r rune) bool { return r <= ' ' || r >= 127 }) {
+		return false
+	}
+	address, err := mail.ParseAddress(value)
+	if err != nil || address.Name != "" || address.Address != value {
+		return false
+	}
+	local, domain, ok := strings.Cut(value, "@")
+	if !ok || len(local) > 64 {
+		return false
+	}
+
+	if strings.HasPrefix(domain, "[") {
+		literal := domain[1 : len(domain)-1]
+		ip, ipv6 := strings.CutPrefix(literal, "IPv6:")
+		addr, err := netip.ParseAddr(ip)
+		return err == nil && addr.Zone() == "" && addr.Is6() == ipv6
+	}
+	for label := range strings.SplitSeq(domain, ".") {
+		if !mailboxDomainLabel.MatchString(label) {
+			return false
+		}
+	}
+
+	return true
 }

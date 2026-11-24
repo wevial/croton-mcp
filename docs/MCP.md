@@ -14,8 +14,9 @@ registration steps are in [INSTALL.md](INSTALL.md).
 - No resources, prompts, Roots, Sampling or MCP Logging.
 - Each inbound frame must be one strictly decoded JSON object of at most
   64 KiB before the SDK sees it.
-- Tool arguments are capped at 24 KiB except for `prepare_forward`, whose
-  arguments may use the space available in the 64 KiB stdio request frame.
+- Tool arguments are capped at 24 KiB except for `prepare_forward` and the
+  opt-in `send_forward`, which may use the space available in the 64 KiB
+  stdio request frame.
   Every tool requires one strictly decoded arguments object with no unknown,
   null, duplicate or case-folded-alias fields and no trailing values.
   Schemas are closed (`additionalProperties: false`) and publish `maxLength`
@@ -263,12 +264,26 @@ ceiling.
 Each successful preview replaces the previous handle in that stdio session.
 The handle binds the envelope, preview and serialized message for two minutes
 on the same authenticated Bridge connection. Reconnecting or restarting
-invalidates it. Authored and quoted text share the same size limit. The complete
-JSON-escaped approval must fit the 64 KiB stdio frame. Sizing uses a compact
-JSON-RPC 2.0 `tools/call` with numeric ID 1, name `send_forward`, the returned
-object as `arguments`, and a final newline.
-Oversize previews fail with `bounds_exceeded`. Previewing writes no mail.
-The catalog has no send tool.
+invalidates it. Authored and quoted text share the same size limit. In the
+default preview-only configuration, the catalog omits `send_forward`.
+Croton sizes the preview using a compact JSON-RPC 2.0 `tools/call` with
+numeric ID 1, name `send_forward`, the returned object as `arguments` and
+a final newline. Oversize previews fail with `bounds_exceeded`.
+
+### `send_forward` (opt-in, local stdio)
+
+With `forward.enabled` set to true, pass the handle and complete, unchanged
+preview to `send_forward`. A trusted client must show the full preview and
+obtain explicit approval for that call in the same turn. Keep auto-approval
+off. The form requires `accept` with one boolean `confirm` set to `true`.
+
+Each compact request, including its final newline, must fit in 64 KiB. Each
+request ID may use up to 38 encoded bytes, including quotes and escapes.
+Preparation reserves room for the ID, client metadata and approval. Before
+showing the form, Croton checks the budget again. On a continuation, reuse
+the encoded `arguments` and `_meta`, echo `requestState` and include the
+requested confirmation in `inputResponses`. For configuration and submission
+outcomes, see [Send one approved forward through local Bridge](INSTALL.md#send-one-approved-forward-through-local-bridge).
 
 ### `list_attachments`
 

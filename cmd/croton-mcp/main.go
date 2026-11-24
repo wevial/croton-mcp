@@ -22,6 +22,7 @@ import (
 
 	"github.com/wevial/croton-mcp/bridge"
 	"github.com/wevial/croton-mcp/internal/config"
+	"github.com/wevial/croton-mcp/internal/forwardpolicy"
 	"github.com/wevial/croton-mcp/internal/mcpserver"
 	"github.com/wevial/croton-mcp/internal/owneroauth"
 	"github.com/wevial/croton-mcp/internal/stdioframe"
@@ -51,7 +52,7 @@ func runCLI(ctx context.Context, arguments []string, stderr io.Writer, settings 
 			defer tty.Close()
 
 			return runOwnerCommand(ctx, command, arguments, tty)
-		case "serve":
+		case "serve", "init-forward-state":
 		default:
 			return errors.New("invalid command")
 		}
@@ -82,7 +83,7 @@ func runCLI(ctx context.Context, arguments []string, stderr io.Writer, settings 
 	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 {
 		return errors.New("invalid arguments")
 	}
-	if command != "" && dir == "" {
+	if command == "serve" && dir == "" {
 		var err error
 		dir, err = owneroauth.DefaultDir()
 		if err != nil {
@@ -111,7 +112,7 @@ func runCLI(ctx context.Context, arguments []string, stderr io.Writer, settings 
 		if authorizer != "owner" {
 			return errors.New("HTTP authorizer unavailable")
 		}
-		if loaded.Mutations.Enabled {
+		if loaded.Mutations.Enabled || loaded.Forward.Enabled {
 			return errors.New("HTTP requires read-only configuration")
 		}
 		address, err := netip.ParseAddrPort(bind)
@@ -135,6 +136,17 @@ func runCLI(ctx context.Context, arguments []string, stderr io.Writer, settings 
 		return serveHTTP(ctx, loaded, address, dir, cert, key, publicOrigin, settings, auditor, funnel)
 	}
 
+	if command == "init-forward-state" {
+		if _, err := bridge.ValidateConfig(loaded); err != nil {
+			return err
+		}
+		if !loaded.Forward.Enabled {
+			return errors.New("forward submission disabled")
+		}
+
+		return forwardpolicy.Initialize(loaded.Forward.StateDir)
+	}
+
 	adapter, err := bridge.NewAdapter(loaded)
 	if err != nil {
 		return err
@@ -142,6 +154,7 @@ func runCLI(ctx context.Context, arguments []string, stderr io.Writer, settings 
 	defer func() { _ = adapter.Close() }()
 
 	options := mcpserver.Options{Mail: adapter, Forward: mcpserver.NewForwardPreviews(adapter), Audit: auditor}
+	options.Forward.Submission = loaded.Forward
 	if loaded.Mutations.Enabled {
 		options.Triage = adapter
 	}
