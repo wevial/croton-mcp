@@ -114,7 +114,6 @@ func TestAttachmentStructureAdapter(t *testing.T) {
 			return adapter.openSession(ctx)
 		}
 
-		// The current ID returns exactly its own tuple and the projection.
 		identifier := headerTestID(t, adapter, 9001, 102)
 		result, err := adapter.GetMessageAttachmentStructure(ctx, identifier)
 		if err != nil {

@@ -76,7 +76,6 @@ func runProjectionCases(t *testing.T, cases []projectionCase) {
 	}
 }
 
-// attachmentEntry is an expected entry without a declared size.
 func attachmentEntry(filename, contentType, disposition string) AttachmentStructureEntry {
 	return AttachmentStructureEntry{AttachmentMetadata: AttachmentMetadata{Filename: filename, ContentType: contentType, Disposition: disposition}}
 }
@@ -144,8 +143,6 @@ func TestAttachmentProjection(t *testing.T) {
 				want:      []AttachmentStructureEntry{attachmentEntry("résumé.pdf", "application/pdf", "attachment")},
 			},
 			{
-				// Quotes, backslashes and separators survive the rebuilt
-				// header exactly.
 				name:      "quoted_specials",
 				structure: projectionLeaf("application", "pdf", 49, nil, attachment(map[string]string{"filename": `a "b"; c\d=e.pdf`})),
 				want:      []AttachmentStructureEntry{attachmentEntry(`a "b"; c\d=e.pdf`, "application/pdf", "attachment")},
@@ -224,7 +221,6 @@ func TestAttachmentProjection(t *testing.T) {
 				truncation: Truncation{MIMEDepth: true},
 			},
 			{
-				// An unqualified message/global is omitted visibly, as rfc822 is.
 				name:       "unqualified_global",
 				structure:  projectionMultipart("mixed", nil, projectionText(), projectionMessage("global", 80, nil, hidden)),
 				truncation: Truncation{MIMEDepth: true},
@@ -287,7 +283,6 @@ func TestAttachmentProjection(t *testing.T) {
 				truncation: Truncation{MIMEParts: true},
 			},
 			{
-				// Containers count as visited parts.
 				name:       "parts_containers_counted",
 				structure:  projectionMultipart("mixed", nil, projectionMultipart("mixed", nil, named("a")), named("b")),
 				bounds:     Bounds{MaxMimeParts: 3},
@@ -301,7 +296,6 @@ func TestAttachmentProjection(t *testing.T) {
 				truncation: Truncation{MIMEParts: true},
 			},
 			{
-				// Children hidden inside one attached message are not counted.
 				name:      "hidden_children_not_counted",
 				structure: projectionMultipart("mixed", nil, projectionMessage("rfc822", 300, projectionDisposition("attachment", nil), hiddenWide)),
 				bounds:    Bounds{MaxMimeParts: 2},

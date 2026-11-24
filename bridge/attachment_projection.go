@@ -24,10 +24,7 @@ type projectedEntity struct {
 	children              []bodyStructure
 }
 
-// projectAttachmentStructure projects the attachment metadata of structure
-// under the adapter's MIME part and attachment count bounds and the default
-// depth and field limits. A list that is empty without any truncation flag is
-// complete.
+// An empty attachment list is complete only when no truncation flag is set.
 func projectAttachmentStructure(structure bodyStructure, bounds Bounds) ([]AttachmentStructureEntry, Truncation, error) {
 	projector := attachmentProjector{
 		limits:      normalizedLimits(NormalizeLimits{MaxMIMEParts: bounds.MaxMimeParts, MaxAttachmentCount: bounds.MaxAttachmentCount}),
