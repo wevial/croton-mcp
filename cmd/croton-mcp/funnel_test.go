@@ -81,6 +81,10 @@ func (f funnelFixture) calls(t *testing.T) []string {
 	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
 }
 
+func acceptFunnel(ctx context.Context, host, target string) error {
+	return readFunnelApproval(ctx, strings.NewReader("yes\n"), io.Discard, host, target)
+}
+
 func newFunnelFixture(t *testing.T, config string) funnelFixture {
 	t.Helper()
 	probe, err := net.Listen("tcp", "127.0.0.1:0")
@@ -230,11 +234,8 @@ func TestFunnelServeLifecycle(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 			defer cancel()
 
-			confirmed := func(ctx context.Context, host, target string) error {
-				return readFunnelApproval(ctx, strings.NewReader("yes\n"), io.Discard, host, target)
-			}
 			done := make(chan error, 1)
-			go func() { done <- runCLI(ctx, f.args, io.Discard, owneroauth.Defaults(), confirmed) }()
+			go func() { done <- runCLI(ctx, f.args, io.Discard, owneroauth.Defaults(), acceptFunnel) }()
 
 			if tc.name != "prompt" {
 				waitForMarker(t, filepath.Join(f.dir, "publishing"))
@@ -320,9 +321,7 @@ func TestFunnelServeBackendUnavailable(t *testing.T) {
 	}
 	defer other.Close()
 
-	err = runCLI(t.Context(), f.args, io.Discard, owneroauth.Defaults(), func(ctx context.Context, host, target string) error {
-		return readFunnelApproval(ctx, strings.NewReader("yes\n"), io.Discard, host, target)
-	})
+	err = runCLI(t.Context(), f.args, io.Discard, owneroauth.Defaults(), acceptFunnel)
 	if err == nil || err.Error() != "HTTP listener unavailable" {
 		t.Fatalf("unexpected startup result: %v", err)
 	}

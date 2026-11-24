@@ -26,6 +26,7 @@ import (
 )
 
 const maxStatusBytes = 4 << 20
+const funnelPortFlag = "--https=443"
 
 var (
 	errStatus     = errors.New("cannot verify Tailscale status. Run tailscale status, tailscale serve status and tailscale funnel status before retrying")
@@ -84,8 +85,21 @@ func portNumber(s string) (uint16, bool) {
 	return uint16(n), err == nil && n != 0 && strconv.FormatUint(n, 10) == s
 }
 
-func occupied(kind string) error {
-	return fmt.Errorf("%s configuration occupies port 443. Move it to another port or use a dedicated node", kind)
+func checkServePort(port, kind string, valid bool) error {
+	n, ok := portNumber(port)
+	if !valid || !ok {
+		return errStatus
+	}
+	if n == 443 {
+		return fmt.Errorf("%s configuration occupies port 443. Move it to another port or use a dedicated node", kind)
+	}
+
+	return nil
+}
+
+func checkServeHostPort(hp, kind string, hasHandler bool) error {
+	host, port, err := net.SplitHostPort(hp)
+	return checkServePort(port, kind, err == nil && host != "" && hasHandler)
 }
 
 func (sc serveConfig) checkFree() error {
@@ -99,33 +113,19 @@ func (sc serveConfig) checkFree() error {
 	}
 
 	for port, handler := range sc.TCP {
-		n, ok := portNumber(port)
-		if !ok || handler == nil {
-			return errStatus
-		}
-		if n == 443 {
-			return occupied("Serve TCP")
+		if err := checkServePort(port, "Serve TCP", handler != nil); err != nil {
+			return err
 		}
 	}
 
 	for hp, handler := range sc.Web {
-		host, port, err := net.SplitHostPort(hp)
-		n, ok := portNumber(port)
-		if err != nil || host == "" || !ok || handler == nil {
-			return errStatus
-		}
-		if n == 443 {
-			return occupied("Serve Web")
+		if err := checkServeHostPort(hp, "Serve Web", handler != nil); err != nil {
+			return err
 		}
 	}
 	for hp, allowed := range sc.AllowFunnel {
-		host, port, err := net.SplitHostPort(hp)
-		n, ok := portNumber(port)
-		if err != nil || host == "" || !ok || allowed == nil {
-			return errStatus
-		}
-		if n == 443 {
-			return occupied("AllowFunnel")
+		if err := checkServeHostPort(hp, "AllowFunnel", allowed != nil); err != nil {
+			return err
 		}
 	}
 
@@ -398,7 +398,7 @@ func (f *tailscaleFunnel) remove() error {
 		return errOwnership
 	}
 
-	_, offErr := f.command(ctx, new(""), "funnel", "--https=443", "off")
+	_, offErr := f.command(ctx, new(""), "funnel", funnelPortFlag, "off")
 	sc, err = f.config(ctx)
 	if offErr != nil || err != nil || sc.snapshot() != f.before {
 		return errors.New("warning: could not verify Funnel removal. Inspect port 443 manually")
@@ -443,7 +443,7 @@ func (f *tailscaleFunnel) serve(ctx context.Context, listener net.Listener, hand
 
 	// A CLI error can arrive after tailscaled persisted the background route.
 	defer func() { err = errors.Join(err, f.remove()) }()
-	_, err = f.command(active, new("Available on the internet:\n"), "funnel", "--bg", "--https=443", f.target)
+	_, err = f.command(active, new("Available on the internet:\n"), "funnel", "--bg", funnelPortFlag, f.target)
 	if err != nil {
 		return err
 	}
