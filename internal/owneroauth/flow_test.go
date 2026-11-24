@@ -61,6 +61,15 @@ func openTest(t *testing.T, dir string, settings Settings) *Authority {
 	return a
 }
 
+func reopenTest(t *testing.T, a *Authority, dir string, settings Settings) *Authority {
+	t.Helper()
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	return openTest(t, dir, settings)
+}
+
 func startWindow(t *testing.T, a *Authority) *url.URL {
 	t.Helper()
 
@@ -89,6 +98,17 @@ func registerClient(t *testing.T, a *Authority, c registration) string {
 
 func authorizationQuery(client, redirect string) url.Values {
 	return url.Values{"client_id": {client}, "redirect_uri": {redirect}, "response_type": {"code"}, "resource": {issuer + "/mcp"}, "code_challenge": {oauth2.S256ChallengeFromVerifier(verifier)}, "code_challenge_method": {"S256"}, "state": {"state.test"}}
+}
+
+func codeForm(code string, req *authorization) url.Values {
+	return url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"client_id":     {req.Client},
+		"redirect_uri":  {req.Redirect},
+		"resource":      {req.Resource},
+		"code_verifier": {verifier},
+	}
 }
 
 func TestOwnerOAuthCodeWindow(t *testing.T) {
@@ -218,7 +238,7 @@ func TestOwnerOAuthCodeRedirectAndPKCE(t *testing.T) {
 	}
 }
 
-func approveRequest(t *testing.T, a *Authority) (string, *authorization) {
+func approveRequest(t *testing.T, a *Authority, grants ...string) (string, *authorization) {
 	t.Helper()
 	link := startWindow(t, a)
 	owner, err := a.claim(link.Fragment)
@@ -228,7 +248,7 @@ func approveRequest(t *testing.T, a *Authority) (string, *authorization) {
 	if _, err := a.claim(link.Fragment); err == nil {
 		t.Fatal("replayed handoff")
 	}
-	id := registerClient(t, a, registration{Name: "App\x1b[2J\n.test", Redirects: []string{nativeRedirect}})
+	id := registerClient(t, a, registration{Name: "App\x1b[2J\n.test", Redirects: []string{nativeRedirect}, Grants: grants})
 	q := authorizationQuery(id, "http://127.0.0.1:9876/callback?source=test")
 	req, err := a.authorize(q)
 	if err != nil {
@@ -279,10 +299,10 @@ func approveRequest(t *testing.T, a *Authority) (string, *authorization) {
 	return owner, req
 }
 
-func approvedGrant(t *testing.T, a *Authority) (string, *authorization) {
+func approvedGrant(t *testing.T, a *Authority, grants ...string) (string, *authorization) {
 	t.Helper()
 
-	owner, req := approveRequest(t, a)
+	owner, req := approveRequest(t, a, grants...)
 	return collectGrant(t, a, owner, req), req
 }
 
@@ -346,7 +366,7 @@ func TestOwnerOAuthCodeRedemption(t *testing.T) {
 	for range cap(results) {
 		wg.Go(func() {
 			if token, err := a.redeem(code, req.Client, req.Redirect, req.Resource, verifier); err == nil {
-				results <- token
+				results <- token.Access
 			}
 		})
 	}
@@ -522,27 +542,13 @@ func TestOwnerOAuthCodeLateApprovalCookie(t *testing.T) {
 func TestOwnerOAuthCodeTokenStorageFailure(t *testing.T) {
 	a := openTest(t, privateDir(t), Defaults())
 	code, req := approvedGrant(t, a)
-	form := url.Values{
-		"grant_type":    {"authorization_code"},
-		"code":          {code},
-		"client_id":     {req.Client},
-		"redirect_uri":  {req.Redirect},
-		"resource":      {req.Resource},
-		"code_verifier": {verifier},
-	}
-	exchange := func() *httptest.ResponseRecorder {
-		r := httptest.NewRequest(http.MethodPost, issuer+"/token", strings.NewReader(form.Encode()))
-		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		w := httptest.NewRecorder()
-		a.ServeHTTP(w, r)
-		return w
-	}
+	form := codeForm(code, req)
 
 	// Make the access write fail after redeem has deleted the code in the transaction.
 	if err := a.db.Update(func(tx *bolt.Tx) error { return tx.DeleteBucket([]byte("access")) }); err != nil {
 		t.Fatal(err)
 	}
-	if w := exchange(); w.Code != http.StatusInternalServerError || strings.TrimSpace(w.Body.String()) != `{"error":"server_error"}` {
+	if w := PostToken(a, form); w.Code != http.StatusInternalServerError || strings.TrimSpace(w.Body.String()) != `{"error":"server_error"}` {
 		t.Fatal("token storage failure did not return a sanitized server error")
 	}
 
@@ -552,10 +558,10 @@ func TestOwnerOAuthCodeTokenStorageFailure(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if w := exchange(); w.Code != http.StatusOK {
+	if w := PostToken(a, form); w.Code != http.StatusOK {
 		t.Fatal("could not retry rolled-back exchange")
 	}
-	if w := exchange(); w.Code != http.StatusBadRequest || strings.TrimSpace(w.Body.String()) != `{"error":"invalid_grant"}` {
+	if w := PostToken(a, form); w.Code != http.StatusBadRequest || strings.TrimSpace(w.Body.String()) != `{"error":"invalid_grant"}` {
 		t.Fatal("used code did not return invalid_grant")
 	}
 }
@@ -612,7 +618,7 @@ func TestOwnerOAuthCodeConfiguredLifetimes(t *testing.T) {
 		t.Fatal(err)
 	}
 	now = now.Add(4 * time.Second)
-	if a.ValidBearer(token) {
+	if a.ValidBearer(token.Access) {
 		t.Fatal("configured access expiry")
 	}
 }

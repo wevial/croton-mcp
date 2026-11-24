@@ -25,6 +25,22 @@ type registration struct {
 	Responses   []string
 }
 
+func (a *Authority) supportedGrantTypes() oauth2.Arguments {
+	if strings.HasPrefix(a.issuer, "https://") {
+		return oauth2.Arguments{"authorization_code", "refresh_token"}
+	}
+
+	return oauth2.Arguments{"authorization_code"}
+}
+
+func (c registration) grantTypes() oauth2.Arguments {
+	if c.Grants == nil {
+		return oauth2.Arguments{"authorization_code"}
+	}
+
+	return c.Grants
+}
+
 type authorization struct {
 	grant
 	state, requestID, browser, comparison string
@@ -135,8 +151,11 @@ func (a *Authority) register(c registration) (string, error) {
 	if len(c.Redirects) == 0 || len(c.Redirects) > 8 || len(c.Name) > 256 || (c.Auth != "" && c.Auth != "none") || (c.Application != "" && c.Application != "native" && c.Application != "web") {
 		return "", errInvalid
 	}
-	if (c.Grants != nil && !slices.Equal(c.Grants, []string{"authorization_code"})) ||
-		(c.Responses != nil && !slices.Equal(c.Responses, []string{"code"})) {
+	grants := c.grantTypes()
+	if !grants.ExactOne("authorization_code") && !grants.Matches(a.supportedGrantTypes()...) {
+		return "", errInvalid
+	}
+	if c.Responses != nil && !slices.Equal(c.Responses, []string{"code"}) {
 		return "", errInvalid
 	}
 	for _, raw := range c.Redirects {
@@ -198,7 +217,10 @@ func (a *Authority) authorize(q url.Values) (*authorization, error) {
 	}
 
 	request := &authorization{
-		grant:      grant{Client: clientID, Redirect: raw, Challenge: challenge, Resource: q.Get("resource")},
+		grant: grant{
+			Client: clientID, Redirect: raw, Challenge: challenge, Resource: q.Get("resource"),
+			Refresh: client.grantTypes().Has("refresh_token"),
+		},
 		state:      q.Get("state"),
 		requestID:  secret(),
 		browser:    secret(),

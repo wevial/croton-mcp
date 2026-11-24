@@ -59,7 +59,23 @@ IP. The Bridge connection uses the TLS pin or anchor in the Croton configuration
    from terminal approval to collect and exchange the code with the original redirect,
    resource and PKCE verifier. If the exchange returns `500 server_error`, the
    client can retry the same code before it expires. The bearer grants ten
-   minutes of access to the six read tools. Pair again for a new grant.
+   minutes of access to the six read tools. Omitting `grant_types` registers
+   the client for `authorization_code` only. To receive an opaque refresh
+   token, use the HTTPS listener and explicitly register for both
+   `authorization_code` and `refresh_token`.
+
+After bearer expiry, the client can POST a URL-encoded form to the same HTTPS
+`/token` endpoint with the pairing window closed. Send `grant_type=refresh_token`,
+the original `client_id` and the latest `refresh_token`. Omit `resource` or send
+the exact approved `/mcp` URL. Read permissions stay the same. Send one request
+at a time and replace both tokens on success. Reusing a consumed refresh token
+revokes the family, including its current bearer and refresh token. Pair again
+after revocation or idle expiry. Clients previously issued a refresh token over
+HTTP must pair again over HTTPS to renew access.
+
+Each rotation restarts the 30-day idle timeout. To change it, set
+`CROTON_REFRESH_IDLE_TIMEOUT` to a positive Go duration when starting the
+listener. An actively refreshed grant has no absolute lifetime.
 
 Opening a pairing window replaces any pending window. Each window admits
 eight registrations and closes on its first approval. After approval, `pair`
@@ -76,8 +92,11 @@ absolute and falls back to `~/.local/state/croton-mcp` otherwise. macOS uses
 over a Unix socket that checks the peer UID at both ends. Unapproved requests
 expire on restart. After approval, the same browser can select **Continue**
 even if the listener restarts at the same origin. Collection succeeds once,
-within the original expiry. Issued codes and access tokens are stored by hash
-and survive restart at the same resource URL.
+within the original expiry. Codes, access tokens and refresh tokens are stored by
+hash and survive restart at the same resource URL. The database retains one
+hash per consumed refresh token, so history grows with each rotation.
+Revocation clears it immediately. After idle expiry, the family's next refresh
+attempt or the next approval clears it.
 
 A request without a valid bearer receives a `401` with the resource metadata
 URL at `/.well-known/oauth-protected-resource/mcp`. The issuer is the listener
