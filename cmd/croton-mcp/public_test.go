@@ -109,6 +109,7 @@ func TestPublicServeProxy(t *testing.T) {
 	}
 
 	token := p.pair(t)
+	secondToken := p.pair(t)
 	session := p.session(t, token, "2026-07-28")
 	callCtx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -121,24 +122,36 @@ func TestPublicServeProxy(t *testing.T) {
 		waitForMarker(t, path)
 	}
 
-	r, err := http.NewRequestWithContext(t.Context(), "POST", origin+"/mcp?tag=query.test", strings.NewReader(`{"tag":"body.test"}`))
+	const call = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+		"name":"list_folders","arguments":{},"_meta":{
+			"io.modelcontextprotocol/protocolVersion":"2026-07-28",
+			"io.modelcontextprotocol/clientInfo":{"name":"body.test","version":"1"},
+			"io.modelcontextprotocol/clientCapabilities":{}
+		}}}`
+	r, err := http.NewRequestWithContext(t.Context(), "POST", origin+"/mcp?tag=query.test", strings.NewReader(call))
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.Header.Set("Authorization", "Bearer "+token)
+	r.Header.Set("Authorization", "Bearer "+secondToken)
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Accept", "application/json, text/event-stream")
+	r.Header.Set("MCP-Protocol-Version", "2026-07-28")
+	r.Header.Set("Mcp-Method", "tools/call")
+	r.Header.Set("Mcp-Name", "list_folders")
+
 	resp, err := p.client.Do(r)
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusTooManyRequests {
-		t.Fatalf("third MCP request returned %d", resp.StatusCode)
+		t.Fatalf("second client's MCP call returned HTTP %d, want 429", resp.StatusCode)
 	}
 
 	cancel()
 	calls.Wait()
 	p.stop(t)
-	for _, sensitive := range []string{token, "query.test", "body.test"} {
+	for _, sensitive := range []string{token, secondToken, "query.test", "body.test"} {
 		if strings.Contains(p.stderr.String(), sensitive) {
 			t.Fatal("request content in diagnostics")
 		}
@@ -165,6 +178,7 @@ func TestPublicServeRateLimits(t *testing.T) {
 			sequence++
 			peer := fmt.Sprintf("192.0.2.%d", sequence)
 			r := httptest.NewRequest("POST", origin+path, nil)
+			r.RemoteAddr = fmt.Sprintf("127.0.0.%d:%d", sequence, 10000+sequence)
 			r.Header.Set("Forwarded", "for="+peer+";proto=https")
 			r.Header.Set("X-Forwarded-For", peer)
 			r.Header.Set("X-Forwarded-User", peer)

@@ -29,11 +29,6 @@ const issuer = "https://127.0.0.1:8787"
 const nativeRedirect = "http://127.0.0.1/callback?source=test"
 const verifier = "synthetic.test-verifier-0123456789abcdef0123456789abcdef"
 
-func (a *Authority) ValidBearer(token string) bool {
-	_, ok := a.BearerClient(token)
-	return ok
-}
-
 func privateDir(t *testing.T) string {
 	t.Helper()
 
@@ -390,7 +385,7 @@ func TestOwnerOAuthCodeRedemption(t *testing.T) {
 		t.Fatal("lost client grant after restart")
 	}
 	now = now.Add(time.Second)
-	if a.ValidBearer(token) {
+	if _, ok := a.BearerClient(token); ok {
 		t.Fatal("expired access")
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, "oauth.db"))
@@ -623,7 +618,7 @@ func TestOwnerOAuthCodeConfiguredLifetimes(t *testing.T) {
 		t.Fatal(err)
 	}
 	now = now.Add(4 * time.Second)
-	if a.ValidBearer(token.Access) {
+	if _, ok := a.BearerClient(token.Access); ok {
 		t.Fatal("configured access expiry")
 	}
 }

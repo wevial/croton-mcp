@@ -168,8 +168,11 @@ func TestOwnerOAuthRefreshHTTP(t *testing.T) {
 	}
 	w := post(codeForm(code, &authorization{grant: g}))
 	var issued tokenPair
-	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &issued) != nil || !a.ValidBearer(issued.Access) || issued.Refresh != "" {
-		t.Fatal("HTTP code exchange must issue only a usable bearer")
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &issued) != nil || issued.Refresh != "" {
+		t.Fatal("HTTP code exchange must issue only an access token")
+	}
+	if id, ok := a.BearerClient(issued.Access); !ok || id != client {
+		t.Fatal("issued bearer did not verify for the client")
 	}
 
 	form := refreshForm("previous.test", token)
@@ -213,7 +216,7 @@ func TestOwnerOAuthRefreshReuse(t *testing.T) {
 				now = now.Add(2 * 24 * time.Hour)
 				current = IssuedPair(t, PostToken(a, refreshForm(client, second.Refresh)))
 				a = reopenTest(t, a, dir, settings)
-				if !a.ValidBearer(current.Access) {
+				if id, ok := a.BearerClient(current.Access); !ok || id != client {
 					t.Fatal("lost current access before replay")
 				}
 			}
@@ -241,11 +244,13 @@ func TestOwnerOAuthRefreshReuse(t *testing.T) {
 			}
 
 			a = reopenTest(t, a, dir, settings)
-			if a.ValidBearer(first.Access) || a.ValidBearer(current.Access) {
+			_, firstValid := a.BearerClient(first.Access)
+			_, currentValid := a.BearerClient(current.Access)
+			if firstValid || currentValid {
 				t.Fatal("access survived family revocation")
 			}
 			requireGrantDenial(t, PostToken(a, refreshForm(client, current.Refresh)))
-			if !a.ValidBearer(other.Access) {
+			if id, ok := a.BearerClient(other.Access); !ok || id != otherClient {
 				t.Fatal("replay revoked a different grant")
 			}
 			IssuedPair(t, PostToken(a, refreshForm(otherClient, other.Refresh)))
@@ -289,7 +294,7 @@ func TestOwnerOAuthRefreshTransaction(t *testing.T) {
 		t.Fatalf("failed commit response (HTTP %d)", w.Code)
 	}
 	a = reopenTest(t, a, dir, Defaults())
-	if !a.ValidBearer(current.Access) {
+	if id, ok := a.BearerClient(current.Access); !ok || id != client {
 		t.Fatal("failed exchange consumed original access")
 	}
 	if err := a.db.View(func(tx *bolt.Tx) error {
@@ -302,7 +307,7 @@ func TestOwnerOAuthRefreshTransaction(t *testing.T) {
 	}
 
 	replacement := IssuedPair(t, PostToken(a, refreshForm(client, current.Refresh)))
-	if !a.ValidBearer(replacement.Access) {
+	if id, ok := a.BearerClient(replacement.Access); !ok || id != client {
 		t.Fatal("retried exchange issued unusable access")
 	}
 
@@ -317,7 +322,7 @@ func TestOwnerOAuthRefreshTransaction(t *testing.T) {
 	}
 
 	requireGrantDenial(t, PostToken(a, refreshForm(client, first.Refresh)))
-	if a.ValidBearer(replacement.Access) {
+	if _, ok := a.BearerClient(replacement.Access); ok {
 		t.Fatal("reuse marker failed to revoke retried exchange")
 	}
 	requireGrantDenial(t, PostToken(a, refreshForm(client, replacement.Refresh)))
