@@ -103,6 +103,7 @@ func (adapter *Adapter) ReadForwardSource(ctx context.Context, identifier string
 type inlineEntity struct {
 	part      []int
 	mediaType string
+	rootID    string // Related container's start parameter or its HTML root's Content-ID.
 }
 
 type forwardSelection struct {
@@ -139,6 +140,9 @@ func (plan *forwardSelection) visit(structure bodyStructure, path []int, parent 
 	if disp := structure.Disposition(); disp != nil {
 		attached = attached || forwardFileParam(disp.Params, "filename")
 	}
+	if parent == "multipart/related" && attached {
+		return errorCode(CodeUnsupported)
+	}
 	nested := entity.mediaType == "message/rfc822" || entity.mediaType == "message/global"
 	if nested && (attached || (parent == mixed && plan.section != nil)) {
 		plan.omissions.AttachedMessages++
@@ -155,10 +159,21 @@ func (plan *forwardSelection) visit(structure bodyStructure, path []int, parent 
 	// Only inline entities need original declaration checks. File and nested
 	// message contents stay opaque, even with text-only consent.
 	if entity.mediaType == mixed || entity.mediaType == alternative || strings.HasPrefix(entity.mediaType, "text/") {
-		plan.inline = append(plan.inline, inlineEntity{part: path, mediaType: entity.mediaType})
+		inline := inlineEntity{part: path, mediaType: entity.mediaType}
+		if parent == "multipart/related" {
+			inline.rootID = structure.(*singlePartStructure).ID
+		}
+		plan.inline = append(plan.inline, inline)
 	}
 
 	switch entity.mediaType {
+	case "multipart/related":
+		if parent != alternative || !forwardParameter(params, entity.parameters, "type") ||
+			!forwardParameter(params, entity.parameters, "start") {
+			return errorCode(CodeUnsupported)
+		}
+
+		return plan.visitRelatedHTML(entity, path)
 	case mixed, alternative:
 		if plan.section != nil {
 			return errorCode(CodeUnsupported)
@@ -186,7 +201,7 @@ func (plan *forwardSelection) visit(structure bodyStructure, path []int, parent 
 		}
 		plan.section = &textSection{part: path, encoding: part.Encoding, charset: entity.parameters["charset"], size: part.Size}
 	case "text/html":
-		if parent != alternative {
+		if parent != alternative && parent != "multipart/related" {
 			return errorCode(CodeUnsupported)
 		}
 		plan.omissions.HTMLAlternatives++
@@ -199,6 +214,45 @@ func (plan *forwardSelection) visit(structure bodyStructure, path []int, parent 
 	}
 
 	return nil
+}
+
+// The related root defaults to the first child. A start parameter identifies
+// it by Content-ID instead. Only its HTML declaration needs a header PEEK.
+func (plan *forwardSelection) visitRelatedHTML(entity projectedEntity, path []int) error {
+	if len(entity.children) > plan.remaining {
+		return errorCode(CodeBoundsExceeded)
+	}
+	if !strings.EqualFold(cmp.Or(entity.parameters["type"], "text/html"), "text/html") {
+		return errorCode(CodeUnsupported)
+	}
+
+	start := entity.parameters["start"]
+	root := -1
+	for i, child := range entity.children {
+		part, ok := child.(*singlePartStructure)
+		if !ok {
+			return errorCode(CodeUnsupported)
+		}
+		kind := part.MediaType()
+		if (start == "" && i == 0) || (start != "" && start == part.ID) {
+			if kind != "text/html" || root >= 0 {
+				return errorCode(CodeUnsupported)
+			}
+			root = i
+		} else if kind == "message/rfc822" || kind == "message/global" {
+			plan.omissions.AttachedMessages++
+		} else {
+			plan.omissions.Files++
+		}
+	}
+	if root < 0 {
+		return errorCode(CodeUnsupported)
+	}
+
+	plan.inline = append(plan.inline, inlineEntity{part: path, mediaType: entity.mediaType, rootID: start})
+	plan.remaining -= len(entity.children) - 1
+
+	return plan.visit(entity.children[root], append(slices.Clone(path), root+1), entity.mediaType)
 }
 
 // BODYSTRUCTURE can normalize conflicting parameters or omit a malformed
@@ -260,10 +314,13 @@ func validForwardHeader(value, projected string) bool {
 	for {
 		prefix := forwardWordPrefix.FindStringSubmatchIndex(value)
 		if prefix == nil {
-			return replacements == strings.Count(projected, "\uFFFD")
+			break
 		}
 		payload, rest, ok := strings.Cut(value[prefix[1]:], "?=")
-		if !ok || payload == "" || strings.ContainsFunc(payload, unicode.IsSpace) {
+		if !ok {
+			break // An unterminated prefix is literal header text.
+		}
+		if payload == "" || strings.ContainsFunc(payload, unicode.IsSpace) {
 			return false
 		}
 		word := value[prefix[0] : len(value)-len(rest)]
@@ -287,6 +344,8 @@ func validForwardHeader(value, projected string) bool {
 		replacements += strings.Count(decoded, "\uFFFD")
 		value = rest
 	}
+
+	return replacements == strings.Count(projected, "\uFFFD")
 }
 
 func (entity inlineEntity) validHeader(header mail.Header, plain *textSection) bool {
@@ -309,6 +368,13 @@ func (entity inlineEntity) validHeader(header mail.Header, plain *textSection) b
 
 	kind, params, ok := inlineMediaType(cmp.Or(header.Get("Content-Type"), "text/plain"), "name")
 	if !ok || kind != entity.mediaType {
+		return false
+	}
+	if kind == "multipart/related" && (!strings.EqualFold(cmp.Or(params["type"], "text/html"), "text/html") ||
+		params["start"] != entity.rootID) {
+		return false
+	}
+	if kind == "text/html" && entity.rootID != "" && (len(header["Content-Id"]) != 1 || header.Get("Content-ID") != entity.rootID) {
 		return false
 	}
 	transfer := cmp.Or(header.Get("Content-Transfer-Encoding"), "7bit")
@@ -349,6 +415,9 @@ func inlineMediaType(value, fileParam string) (string, map[string]string, bool) 
 	}
 
 	if strings.HasPrefix(kind, "multipart/") && (params["boundary"] == "" || !forwardParameter(names, params, "boundary")) {
+		return "", nil, false
+	}
+	if kind == "multipart/related" && (!forwardParameter(names, params, "type") || !forwardParameter(names, params, "start")) {
 		return "", nil, false
 	}
 

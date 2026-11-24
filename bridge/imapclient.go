@@ -563,7 +563,9 @@ func headerDate(header mail.Header) (string, DateSource) {
 		return "", DateSourceUnknown
 	}
 
-	parsed, err := mail.ParseDate(value)
+	// net/mail expects spaces at some RFC 5322 folding whitespace positions.
+	// Normalize tabs for timestamp parsing and retain the declared header.
+	parsed, err := mail.ParseDate(strings.ReplaceAll(value, "\t", " "))
 	if err != nil || parsed.UTC().Year() < 1 || parsed.UTC().Year() > 9999 {
 		return "", DateSourceUnknown
 	}

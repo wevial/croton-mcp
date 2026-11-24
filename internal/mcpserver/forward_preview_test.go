@@ -282,6 +282,7 @@ func (f *forwardFixture) refuse(t *testing.T, args map[string]any) {
 func TestForwardPreview(t *testing.T) {
 	const file = `("application" "pdf" NIL NIL NIL "base64" 7000 NIL ("attachment" ("filename" "file.pdf")) NIL NIL)`
 	const nested = `("message" "rfc822" NIL NIL NIL "7bit" 423 (NIL NIL NIL NIL NIL NIL NIL NIL NIL NIL) ("text" "plain" NIL NIL NIL "7bit" 10 1) 5 NIL NIL NIL NIL)`
+	const imagePart = `("image" "png" NIL "<logo@sender.test>" NIL "base64" 420 NIL ("inline" NIL) NIL NIL)`
 
 	t.Run("Wire", func(t *testing.T) {
 		f := newForwardFixture(t, bridge.BoundsPatch{})
@@ -293,27 +294,50 @@ func TestForwardPreview(t *testing.T) {
 		const raw = "one=0A=C3=A9\r\nlast\r\n\r\n"
 		const altMIME = "Content-Type: multipart/alternative; boundary=alt\r\n"
 		const htmlMIME = "Content-Type: text/html\r\n"
+		const tabDate = "Thu, 01 Jan 2026 03:04:05\t+0530"
+		const literalSubject = "Is =?UTF-8?Q? an encoded-word prefix?"
 		plain := textStructure("plain", "quoted-printable", utf8Params, len(raw))
-		alt := multiStructure("alternative", plain, textStructure("html", "7bit", "NIL", 91))
+		html := textStructure("html", "7bit", "NIL", 91)
+		alt := multiStructure("alternative", plain, html)
+		related := fmt.Sprintf(`(%s %s "related" ("type" "text/html" "boundary" "rel") NIL NIL NIL)`, html, imagePart)
+		const namedHTML = `("text" "html" NIL "<html@sender.test>" NIL "7bit" 91 1 NIL NIL NIL NIL)`
+		namedRelated := fmt.Sprintf(`(%s %s "related" ("type" "text/html" "boundary" "rel" "start" "<html@sender.test>") NIL NIL NIL)`, imagePart, namedHTML)
 		for _, tc := range []struct {
-			name, structure, section string
-			rawSubject, subject      string
-			omissions                bridge.ForwardOmissions
-			fields                   map[string]string
-			sections                 []string
+			name, structure, section  string
+			rawSubject, subject, date string
+			omissions                 bridge.ForwardOmissions
+			fields                    map[string]string
+			sections                  []string
 		}{
 			{
-				"plain", plain, "1", "What does x=? mean", "What does x=? mean", bridge.ForwardOmissions{},
+				"plain", plain, "1", "What does x=? mean", "What does x=? mean", tabDate, bridge.ForwardOmissions{},
 				map[string]string{"HEADER": qpMIME}, []string{"HEADER"},
 			},
 			{
-				"alternative", alt, "1", "=?UTF-8?Q?What_does_x=3D=3F__mean?=", "What does x=?  mean", bridge.ForwardOmissions{HTMLAlternatives: 1},
+				"literal Subject prefix", plain, "1", literalSubject, literalSubject, declaredDate, bridge.ForwardOmissions{},
+				map[string]string{"HEADER": qpMIME}, []string{"HEADER"},
+			},
+			{
+				"alternative", alt, "1", "=?UTF-8?Q?What_does_x=3D=3F__mean?=", "What does x=?  mean", declaredDate, bridge.ForwardOmissions{HTMLAlternatives: 1},
 				map[string]string{"HEADER": altMIME, "1.MIME": qpMIME, "2.MIME": htmlMIME},
 				[]string{"HEADER", "1.MIME", "2.MIME"},
 			},
 			{
+				"related HTML alternative", multiStructure("alternative", plain, related), "1",
+				"Original  subject", "Original  subject", declaredDate, bridge.ForwardOmissions{HTMLAlternatives: 1, Files: 1},
+				map[string]string{"HEADER": altMIME, "1.MIME": qpMIME, "2.MIME": "Content-Type: multipart/related; boundary=rel; type=\"text/html\"\r\n", "2.1.MIME": htmlMIME},
+				[]string{"HEADER", "1.MIME", "2.MIME", "2.1.MIME"},
+			},
+			{
+				"related HTML by Content-ID", multiStructure("alternative", plain, namedRelated), "1",
+				"Original  subject", "Original  subject", declaredDate, bridge.ForwardOmissions{HTMLAlternatives: 1, Files: 1},
+				map[string]string{"HEADER": altMIME, "1.MIME": qpMIME, "2.MIME": "Content-Type: multipart/related; boundary=rel; type=\"text/html\"; start=\"<html@sender.test>\"\r\n",
+					"2.2.MIME": htmlMIME + "Content-ID: <html@sender.test>\r\n"},
+				[]string{"HEADER", "1.MIME", "2.MIME", "2.2.MIME"},
+			},
+			{
 				"attached message", multiStructure("mixed", alt, file, nested), "1.1",
-				"=?UTF-8?B?77+9?=", "�",
+				"=?UTF-8?B?77+9?=", "�", declaredDate,
 				bridge.ForwardOmissions{HTMLAlternatives: 1, Files: 1, AttachedMessages: 1},
 				map[string]string{"HEADER": "Content-Type: multipart/mixed; boundary=mixed\r\n",
 					"1.MIME": altMIME, "1.1.MIME": qpMIME, "1.2.MIME": htmlMIME},
@@ -321,12 +345,12 @@ func TestForwardPreview(t *testing.T) {
 			},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				f.setHeader(strings.Replace(header, "Original  subject", tc.rawSubject, 1))
+				f.setHeader(strings.NewReplacer("Original  subject", tc.rawSubject, declaredDate, tc.date).Replace(header))
 				f.set(tc.structure, tc.section, raw)
 				f.setMIME(tc.fields)
 				result := f.prepare(t, tc.omissions.Files != 0)
 				want := forwardPreview{From: forwardLogin, To: forwardTo, Subject: "Fwd: " + strings.ReplaceAll(tc.subject, "  ", " "), Omissions: tc.omissions,
-					Body: "My note\r\n\r\n---------- Forwarded message ----------\r\nFrom: " + namePrefix + forwardFrom + "\r\nDate: " + declaredDate + "\r\nSubject: " + tc.subject + "\r\n\r\none\r\né\r\nlast\r\n\r\n"}
+					Body: "My note\r\n\r\n---------- Forwarded message ----------\r\nFrom: " + namePrefix + forwardFrom + "\r\nDate: " + tc.date + "\r\nSubject: " + tc.subject + "\r\n\r\none\r\né\r\nlast\r\n\r\n"}
 				if result.Preview != want {
 					t.Fatalf("preview = %+v", result.Preview)
 				}
@@ -369,9 +393,7 @@ func TestForwardPreview(t *testing.T) {
 			name, structure, raw string
 			consent              bool
 		}{
-			{"HTML only", textStructure("html", "8bit", utf8Params, 2), "ok", true},
 			{"short", plain, "o", false}, {"underdeclared", plain, "okay", false},
-			{"oversize", textStructure("plain", "8bit", utf8Params, 262145), "ok", false},
 			{"damaged name parameter", textStructure("plain", "7bit", `("name*" "unknown''file.txt")`, 2), "ok", true},
 			{"damaged charset parameter", textStructure("plain", "8bit", `("charset*" "unknown''utf-8")`, 2), "ok", false},
 			{"ambiguous format", textStructure("plain", "8bit", `("format" "flowed" "format*" "us-ascii''fixed")`, 2), "ok", false},
@@ -387,6 +409,11 @@ func TestForwardPreview(t *testing.T) {
 			fields          map[string]string
 			otherSections   []string
 		}{
+			{"HTML only", textStructure("html", "8bit", utf8Params, 2),
+				map[string]string{"HEADER": "Content-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n"}, nil},
+			{"related root is an image", multiStructure("alternative", plain, fmt.Sprintf(`(%s %s "related" ("type" "image/png" "boundary" "r") NIL NIL NIL)`, imagePart, textStructure("html", "7bit", "NIL", 2))),
+				map[string]string{"HEADER": "Content-Type: multipart/alternative; boundary=a\r\n", "1.MIME": plainMIME,
+					"2.MIME": "Content-Type: multipart/related; boundary=r; type=\"image/png\"\r\n", "2.2.MIME": "Content-Type: text/html\r\n"}, nil},
 			{"ambiguous", fmt.Sprintf(`(%s %s "mixed" ("boundary" "m") NIL NIL NIL)`, plain, plain),
 				map[string]string{"HEADER": "Content-Type: multipart/mixed; boundary=m\r\n", "1.MIME": plainMIME, "2.MIME": plainMIME}, []string{"2"}},
 			{"signed", fmt.Sprintf(`(%s %s "signed" ("boundary" "s" "protocol" "application/pgp-signature" "micalg" "pgp-sha256") NIL NIL NIL)`, plain, signature),
@@ -549,6 +576,18 @@ func TestForwardPreview(t *testing.T) {
 		t.Run("configured section limit", func(t *testing.T) {
 			f := newForwardFixture(t, bridge.BoundsPatch{MaxBodyBytes: bridge.Int(4)})
 			f.set(plainStructure("four"), "1", "four")
+			requireToolError(t, callTool(t, f.client, forwardTool, f.arguments(false)), errBoundsExceeded)
+			f.requireTranscript(t)
+		})
+
+		t.Run("source MIME ceiling", func(t *testing.T) {
+			// Soft line breaks keep the complete section one byte above 256 KiB
+			// while its decoded body ("ok") fits easily in the preview.
+			raw := strings.Repeat("=\r\n", (256<<10)/3) + "ok"
+			f := newForwardFixture(t, bridge.BoundsPatch{MaxBodyBytes: bridge.Int(512 << 10)})
+			f.set(textStructure("plain", "quoted-printable", utf8Params, len(raw)), "1", raw)
+			f.setMIME(map[string]string{"HEADER": qpMIME})
+
 			requireToolError(t, callTool(t, f.client, forwardTool, f.arguments(false)), errBoundsExceeded)
 			f.requireTranscript(t)
 		})

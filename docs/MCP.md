@@ -229,8 +229,10 @@ The result contains a `handle` and a complete `preview` with `from`, `to`,
 first Subject from the bounded Bridge header projection, followed by the
 complete plain text. The omissions object counts
 `htmlAlternatives`, `files` and `attachedMessages` separately. HTML alternatives
-are skipped automatically. Files and attached messages require explicit
-`text_only: true` consent. Their content is never fetched.
+are skipped automatically. A `multipart/related` HTML alternative counts once,
+and each inline resource counts as a file or an attached message.
+Files and attached messages require explicit `text_only: true` consent.
+Their content is never fetched.
 
 The tool uses one read-only Bridge operation to check the mailbox generation,
 UID and extended BODYSTRUCTURE. Before fetching the selected plain section,
