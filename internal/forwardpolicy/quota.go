@@ -38,17 +38,12 @@ func Initialize(dir string) error {
 		return ErrUnavailable
 	}
 
-	db, err := open(dir, true)
-	if err != nil {
-		return err
-	}
-	err = db.Update(func(tx *bolt.Tx) error {
+	err := update(dir, true, func(tx *bolt.Tx) error {
 		_, err := tx.CreateBucket([]byte(bucket))
 		return err
 	})
-	closeErr := db.Close()
-	if err != nil || closeErr != nil {
-		return ErrUnavailable
+	if err != nil {
+		return err
 	}
 	// Persist both new directory entries before a reservation can succeed.
 	for _, path := range []string{dir, filepath.Dir(dir)} {
@@ -71,18 +66,14 @@ func Reserve(dir, login string) error {
 	if login == "" {
 		return ErrUnavailable
 	}
-	db, err := open(dir, false)
-	if err != nil {
-		return err
-	}
 
-	key := sha256.Sum256([]byte(strings.ToLower(login)))
-	err = db.Update(func(tx *bolt.Tx) error {
+	return update(dir, false, func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(bucket))
 		if b == nil {
 			return ErrUnavailable
 		}
 
+		key := sha256.Sum256([]byte(strings.ToLower(login)))
 		record := b.Get(key[:])
 		if record != nil && (len(record) == 0 || len(record)%8 != 0 || len(record) > 8*limit) {
 			return ErrUnavailable
@@ -107,19 +98,14 @@ func Reserve(dir, login string) error {
 
 		return b.Put(key[:], binary.BigEndian.AppendUint64(times, uint64(now.UnixNano())))
 	})
-	closeErr := db.Close()
-	if closeErr != nil || (err != nil && err != ErrLimit) {
-		return ErrUnavailable
-	}
-	return err
 }
 
-func open(dir string, create bool) (*bolt.DB, error) {
+func update(dir string, create bool, write func(*bolt.Tx) error) error {
 	if !filepath.IsAbs(dir) || filepath.Clean(dir) != dir || dir == "/" {
-		return nil, ErrUnavailable
+		return ErrUnavailable
 	}
 	if err := checkDirectory(dir, true); err != nil {
-		return nil, err
+		return err
 	}
 
 	db, err := bolt.Open(filepath.Join(dir, database), 0600, &bolt.Options{
@@ -129,7 +115,12 @@ func open(dir string, create bool) (*bolt.DB, error) {
 		},
 	})
 	if err != nil {
-		return nil, ErrUnavailable
+		return ErrUnavailable
 	}
-	return db, nil
+
+	err = db.Update(write)
+	if closeErr := db.Close(); closeErr != nil || (err != nil && err != ErrLimit) {
+		return ErrUnavailable
+	}
+	return err
 }

@@ -43,13 +43,17 @@ type smtpDelivery struct {
 
 // macOS can put temporary directories under the /var symlink. Give quota
 // setup the physical path, as an operator must.
-func quotaTestDir(t *testing.T) string {
+func newQuotaTestDir(t *testing.T) string {
 	t.Helper()
 	parent, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	return filepath.Join(parent, "state")
+	dir := filepath.Join(parent, "state")
+	if err := forwardpolicy.Initialize(dir); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 func newSMTPPeer(t *testing.T, mode, fault string) *smtpPeer {
@@ -63,10 +67,7 @@ func newSMTPPeer(t *testing.T, mode, fault string) *smtpPeer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := quotaTestDir(t)
-	if err := forwardpolicy.Initialize(dir); err != nil {
-		t.Fatal(err)
-	}
+	dir := newQuotaTestDir(t)
 	peer := &smtpPeer{deliveries: make(chan smtpDelivery, 10), config: bridge.ForwardConfig{
 		Enabled: true, SMTPPort: listener.Addr().(*net.TCPAddr).Port, SMTPTLSMode: mode,
 		SMTPSPKISHA256: pin, StateDir: dir,
@@ -239,9 +240,15 @@ func TestForwardSend(t *testing.T) {
 		}
 		return
 	}
-	t.Run("Binding", func(t *testing.T) {
+	plainFixture := func(t *testing.T) *forwardFixture {
+		t.Helper()
 		f := newForwardFixture(t, bridge.BoundsPatch{})
 		f.set(plainStructure("Hello"), "1", "Hello")
+		return f
+	}
+
+	t.Run("Binding", func(t *testing.T) {
+		f := plainFixture(t)
 		r := f.prepare(t, false)
 		p := newSMTPPeer(t, "", "")
 		off := p.config
@@ -325,8 +332,7 @@ func TestForwardSend(t *testing.T) {
 	})
 
 	t.Run("Confirmation", func(t *testing.T) {
-		f := newForwardFixture(t, bridge.BoundsPatch{})
-		f.set(plainStructure("Hello"), "1", "Hello")
+		f := plainFixture(t)
 		r := f.prepare(t, false)
 		p := newSMTPPeer(t, "", "")
 		req := forwardRequest(t, f, r)
@@ -358,8 +364,7 @@ func TestForwardSend(t *testing.T) {
 	})
 
 	t.Run("Policy", func(t *testing.T) {
-		f := newForwardFixture(t, bridge.BoundsPatch{})
-		f.set(plainStructure("Hello"), "1", "Hello")
+		f := plainFixture(t)
 		p := newSMTPPeer(t, "", "lost final reply")
 		// Even an uncertain post-DATA result consumes one durable slot.
 		r := f.prepare(t, false)
@@ -396,10 +401,7 @@ func TestForwardSend(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Run("window", func(t *testing.T) {
-			dir := quotaTestDir(t)
-			if err := forwardpolicy.Initialize(dir); err != nil {
-				t.Fatal(err)
-			}
+			dir := newQuotaTestDir(t)
 			synctest.Test(t, func(t *testing.T) {
 				for range 10 {
 					if err := forwardpolicy.Reserve(dir, forwardLogin); err != nil {
@@ -419,10 +421,7 @@ func TestForwardSend(t *testing.T) {
 		})
 		for _, kind := range []string{"missing", "empty", "damaged", "loose permissions", "symlink"} {
 			t.Run(kind, func(t *testing.T) {
-				dir := quotaTestDir(t)
-				if err := forwardpolicy.Initialize(dir); err != nil {
-					t.Fatal(err)
-				}
+				dir := newQuotaTestDir(t)
 				path := filepath.Join(dir, "quota.db")
 				var err error
 				switch kind {
@@ -450,8 +449,7 @@ func TestForwardSend(t *testing.T) {
 	})
 
 	t.Run("TLS", func(t *testing.T) {
-		f := newForwardFixture(t, bridge.BoundsPatch{})
-		f.set(plainStructure("Hello"), "1", "Hello")
+		f := plainFixture(t)
 		for _, tc := range []struct{ mode, fault string }{
 			{"", ""}, {"implicit", ""}, {"", "no upgrade"}, {"", "upgrade refused"}, {"", "handshake"}, {"", "pin"}, {"implicit", "pin"},
 		} {
