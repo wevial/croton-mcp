@@ -168,14 +168,12 @@ func checkClients(t *testing.T, dir string, clients ...approvedClient) {
 	}
 }
 
-func restartClientsServer(t *testing.T, p *httpProcess, config string) {
+func restartClientsServer(t *testing.T, p *httpProcess) {
 	t.Helper()
 
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
-	args := []string{"serve", "--config", config, "--authorizer", "owner", "--bind", strings.TrimPrefix(p.origin, "https://"),
-		"--state-dir", p.dir, "--tls-cert", filepath.Join(p.dir, "cert.pem"), "--tls-key", filepath.Join(p.dir, "key.pem")}
-	go func() { done <- run(ctx, args, io.Discard, owneroauth.Defaults()) }()
+	go func() { done <- run(ctx, p.cmd.Args[1:], io.Discard, owneroauth.Defaults()) }()
 	t.Cleanup(func() {
 		cancel()
 		if err := <-done; err != nil {
@@ -199,8 +197,7 @@ func restartClientsServer(t *testing.T, p *httpProcess, config string) {
 func TestOwnerOAuthClients(t *testing.T) {
 	for _, mode := range []string{"online", "offline"} {
 		t.Run(mode, func(t *testing.T) {
-			config := writeServerConfig(t, fixtureBridge(t))
-			p := startHTTP(t, config, nil)
+			p := startHTTP(t, writeServerConfig(t, fixtureBridge(t)), nil)
 			first := approveClient(t, p)
 			first.tokens(t, p, first.exchangeForm(t, p))
 			second := approveClient(t, p)
@@ -220,7 +217,7 @@ func TestOwnerOAuthClients(t *testing.T) {
 
 			t.Run("unknown ID preserves both grants", func(t *testing.T) {
 				if mode == "offline" {
-					restartClientsServer(t, p, config)
+					restartClientsServer(t, p)
 				}
 
 				for _, client := range []*approvedClient{&first, &second} {
@@ -239,7 +236,7 @@ func TestOwnerOAuthClients(t *testing.T) {
 				p.stop(t)
 			}
 
-			restartClientsServer(t, p, config)
+			restartClientsServer(t, p)
 			checkClients(t, p.dir, second)
 			first.denied(t, p)
 			second.read(t, p)
