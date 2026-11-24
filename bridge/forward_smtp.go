@@ -99,10 +99,7 @@ func (adapter *Adapter) SubmitForward(ctx context.Context, cfg ForwardConfig, lo
 	if _, err := io.WriteString(data, message); err != nil {
 		return OutcomeUnknown, nil
 	}
-	if err := data.Close(); err != nil {
-		return OutcomeUnknown, nil
-	}
-	if smtp.reply(250) == nil {
+	if err := data.Close(); err != nil || smtp.reply(250) == nil {
 		return OutcomeUnknown, nil
 	}
 
@@ -172,10 +169,8 @@ func (smtp *smtpSession) authenticate(ctx context.Context, policy *tls.Config, m
 	}
 	smtp.conn = secure
 	smtp.reader.Reset(secure)
-	if mode == TLSModeImplicit {
-		if smtp.reply(220) == nil {
-			return false
-		}
+	if mode == TLSModeImplicit && smtp.reply(220) == nil {
+		return false
 	}
 
 	plain := smtp.hasExtension(func(ext string) bool {

@@ -109,7 +109,7 @@ func update(dir string, create bool, write func(*bolt.Tx) error) error {
 	var file *os.File
 	db, err := bolt.Open(filepath.Join(dir, "quota.db"), 0600, &bolt.Options{
 		Timeout: 5 * time.Second,
-		OpenFile: func(path string, flags int, mode os.FileMode) (*os.File, error) {
+		OpenFile: func(path string, _ int, _ os.FileMode) (*os.File, error) {
 			var err error
 			file, err = openFile(path, create)
 			return file, err
@@ -121,10 +121,9 @@ func update(dir string, create bool, write func(*bolt.Tx) error) error {
 
 	// Open holds the exclusive file lock until Close. Inspect both on-disk
 	// snapshots before bbolt can overwrite evidence of a fallback.
+	err = ErrUnavailable
 	if validMetaPages(file, db.Info().PageSize) {
 		err = db.Update(write)
-	} else {
-		err = ErrUnavailable
 	}
 	if closeErr := db.Close(); closeErr != nil || (err != nil && err != ErrLimit) {
 		return ErrUnavailable
