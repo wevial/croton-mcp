@@ -1,4 +1,4 @@
-// Package forwardpolicy keeps durable forward reservations for each Bridge login.
+// Package forwardpolicy keeps durable forward reservations and owner policy for each Bridge login.
 package forwardpolicy
 
 import (
@@ -12,18 +12,20 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wevial/croton-mcp/bridge"
 	bolt "go.etcd.io/bbolt"
 )
 
 const (
-	limit       = 10
-	bucket      = "reservations-v2"
-	checksumKey = "checksum"
+	policyBucket = "forward-policy"
+	bucket       = "reservations-v2"
+	checksumKey  = "checksum"
 )
 
 var (
-	ErrUnavailable = errors.New("forward policy unavailable")
-	ErrLimit       = errors.New("forward quota reached")
+	ErrUnavailable    = errors.New("forward policy unavailable")
+	ErrLimit          = errors.New("forward quota reached")
+	ErrRecipientsFull = errors.New("remembered recipient list full")
 )
 
 // Initialize creates owner-private quota state and refuses to reuse an existing directory.
@@ -67,27 +69,23 @@ func Initialize(dir string) error {
 
 // Reserve commits a slot before any SMTP connection. There is no release on
 // uncertain delivery. The bbolt file lock also serializes independent processes.
-func Reserve(dir, login string) error {
-	if login == "" {
+func Reserve(cfg bridge.ForwardConfig, login, recipient string, confirmed bool) error {
+	if !bridge.ValidForwardMailbox(recipient) {
 		return ErrUnavailable
 	}
 
-	return update(dir, false, func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(bucket))
-		if b == nil {
-			return ErrUnavailable
-		}
-		checksum, err := reservationChecksum(b)
-		if err != nil || !bytes.Equal(checksum, b.Get([]byte(checksumKey))) {
+	return withPolicy(cfg, login, func(policy *Policy, policies *bolt.Bucket) error {
+		if !confirmed && !policy.Remembers(recipient) {
 			return ErrUnavailable
 		}
 
-		key := sha256.Sum256([]byte(strings.ToLower(login)))
+		b := policies.Tx().Bucket([]byte(bucket))
+		key := accountKey(login)
 		record := b.Get(key[:])
 
 		now := time.Now()
 		cutoff := now.Add(-24 * time.Hour).UnixNano()
-		times := make([]byte, 0, 8*limit)
+		times := make([]byte, 0, len(record)+8)
 		for len(record) != 0 {
 			stamp := int64(binary.BigEndian.Uint64(record))
 			if stamp <= 0 {
@@ -98,30 +96,28 @@ func Reserve(dir, login string) error {
 			}
 			record = record[8:]
 		}
-		if len(times) == 8*limit {
+		if len(times)/8 >= policy.DailyLimit {
 			return ErrLimit
 		}
 
-		if err := b.Put(key[:], binary.BigEndian.AppendUint64(times, uint64(now.UnixNano()))); err != nil {
-			return err
-		}
-		checksum, err = reservationChecksum(b)
-		if err != nil {
-			return err
-		}
-		return b.Put([]byte(checksumKey), checksum)
+		return b.Put(key[:], binary.BigEndian.AppendUint64(times, uint64(now.UnixNano())))
 	})
+}
+
+func accountKey(login string) [sha256.Size]byte {
+	return sha256.Sum256([]byte(strings.ToLower(login)))
 }
 
 // Hash the complete, key-ordered set before trusting an absent login. Frame
 // each fixed-size key and variable-length timestamp list unambiguously.
-func reservationChecksum(b *bolt.Bucket) ([]byte, error) {
+func stateChecksum(b *bolt.Bucket) ([]byte, error) {
+	policies := b.Tx().Bucket([]byte(policyBucket))
 	hash := sha256.New()
 	err := b.ForEach(func(key, stamps []byte) error {
 		if string(key) == checksumKey {
 			return nil
 		}
-		if len(key) != sha256.Size || len(stamps) == 0 || len(stamps)%8 != 0 || len(stamps) > 8*limit {
+		if len(key) != sha256.Size || len(stamps) == 0 || len(stamps)%8 != 0 || len(stamps) > 8*bridge.MaxForwardDailyLimit {
 			return ErrUnavailable
 		}
 		// A damaged branch key can hide an intact leaf from a login lookup.
@@ -130,8 +126,29 @@ func reservationChecksum(b *bolt.Bucket) ([]byte, error) {
 		}
 
 		hash.Write(key)
-		hash.Write([]byte{byte(len(stamps))})
+		size := len(stamps)
+		if policies != nil {
+			size /= 8 // Up to 100 timestamps. The original format counted bytes.
+		}
+		hash.Write([]byte{byte(size)})
 		hash.Write(stamps)
+		return nil
+	})
+	reservations := hash.Sum(nil)
+	if err != nil || policies == nil {
+		return reservations, err // Existing quota-only databases retain their checksum.
+	}
+
+	hash.Reset()
+	hash.Write(reservations)
+	err = policies.ForEach(func(key, value []byte) error {
+		if len(key) != sha256.Size || len(value) == 0 || !bytes.Equal(policies.Get(key), value) {
+			return ErrUnavailable
+		}
+
+		hash.Write(key)
+		hash.Write(binary.BigEndian.AppendUint64(nil, uint64(len(value))))
+		hash.Write(value)
 		return nil
 	})
 	return hash.Sum(nil), err
@@ -209,7 +226,7 @@ func quotaTransaction(path string, flags int, run func(*bolt.Tx) error) (err err
 	} else {
 		err = db.Update(run)
 	}
-	if err != nil && err != ErrLimit {
+	if err != nil && err != ErrLimit && err != ErrRecipientsFull {
 		return ErrUnavailable
 	}
 	return err

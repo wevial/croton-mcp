@@ -1,7 +1,9 @@
 package bridge
 
 import (
+	"net/netip"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -63,13 +65,53 @@ type MutationsConfig struct {
 	Enabled bool `json:"enabled"`
 }
 
+const (
+	DefaultForwardDailyLimit = 10
+	MaxForwardDailyLimit     = 100
+	MaxRememberedRecipients  = 100
+)
+
 // ForwardConfig describes the operator's settings for a local SMTP session.
 type ForwardConfig struct {
-	Enabled        bool   `json:"enabled"`
-	SMTPPort       int    `json:"smtpPort"`
-	SMTPTLSMode    string `json:"smtpTLSMode"`
-	SMTPSPKISHA256 string `json:"smtpSPKISHA256"`
-	StateDir       string `json:"stateDir"`
+	Enabled              bool     `json:"enabled"`
+	SMTPPort             int      `json:"smtpPort"`
+	SMTPTLSMode          string   `json:"smtpTLSMode"`
+	SMTPSPKISHA256       string   `json:"smtpSPKISHA256"`
+	StateDir             string   `json:"stateDir"`
+	RememberedRecipients []string `json:"rememberedRecipients,omitempty"`
+	AutoRemember         *bool    `json:"autoRemember,omitempty"`
+	DailyLimit           *int     `json:"dailyLimit,omitempty"`
+}
+
+// CanonicalForwardMailbox preserves the local part, including case and tags.
+func CanonicalForwardMailbox(address string) (string, bool) {
+	if !ValidForwardMailbox(address) {
+		return "", false
+	}
+
+	local, domain, _ := strings.Cut(address, "@")
+	if ip, ok := strings.CutPrefix(domain, "[IPv6:"); ok {
+		addr, _ := netip.ParseAddr(strings.TrimSuffix(ip, "]"))
+		return local + "@[IPv6:" + addr.String() + "]", true
+	}
+	return local + "@" + strings.ToLower(domain), true
+}
+
+func (cfg ForwardConfig) AutoRememberEnabled() bool {
+	return cfg.AutoRemember == nil || *cfg.AutoRemember
+}
+
+func (cfg ForwardConfig) validPolicy() bool {
+	if cfg.DailyLimit != nil && (*cfg.DailyLimit < 1 || *cfg.DailyLimit > MaxForwardDailyLimit) ||
+		len(cfg.RememberedRecipients) > MaxRememberedRecipients {
+		return false
+	}
+	for _, address := range cfg.RememberedRecipients {
+		if !ValidForwardMailbox(address) {
+			return false
+		}
+	}
+	return true
 }
 
 func (cfg ForwardConfig) validTLSMode() bool {
@@ -123,6 +165,10 @@ func ValidateConfig(input Config) (ValidatedConfig, error) {
 	bounds, err := mergeBounds(input.Bounds)
 	if err != nil {
 		return ValidatedConfig{}, err
+	}
+
+	if !input.Forward.validPolicy() {
+		return ValidatedConfig{}, errorCode(CodeInvalidConfig)
 	}
 
 	if forward := input.Forward; forward.Enabled {

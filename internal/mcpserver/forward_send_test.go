@@ -39,6 +39,7 @@ type smtpPeer struct {
 	config                                   bridge.ForwardConfig
 	connections, auth, clearAuth, rcpt, data atomic.Int32
 	deliveries                               chan smtpDelivery
+	finalReply                               chan struct{}
 }
 
 type smtpDelivery struct {
@@ -83,6 +84,9 @@ func newSMTPPeer(t *testing.T, mode, fault string) *smtpPeer {
 		Enabled: true, SMTPPort: listener.Addr().(*net.TCPAddr).Port, SMTPTLSMode: mode,
 		SMTPSPKISHA256: pin, StateDir: newQuotaTestDir(t),
 	}}
+	if fault == "hold final reply" {
+		peer.finalReply = make(chan struct{})
+	}
 	if fault == "pin" {
 		peer.config.SMTPSPKISHA256 = strings.Repeat("0", 64)
 	}
@@ -185,6 +189,13 @@ func (p *smtpPeer) serve(conn net.Conn, policy *tls.Config, mode, fault string) 
 			}
 			envelope.message = body.String()
 			p.deliveries <- envelope
+			if p.finalReply != nil {
+				select {
+				case <-p.finalReply:
+				case <-time.After(3 * time.Second):
+					return
+				}
+			}
 			switch fault {
 			case "lost final reply":
 				return
@@ -247,9 +258,13 @@ func requirePreflightRefusal(t *testing.T, f *forwardFixture, cfg bridge.Forward
 	}
 }
 
+func reserveConfirmed(dir, login string) error {
+	return forwardpolicy.Reserve(bridge.ForwardConfig{StateDir: dir}, login, forwardTo, true)
+}
+
 func TestForwardSend(t *testing.T) {
 	if len(os.Args) > 2 && os.Args[len(os.Args)-2] == "--check-forward-quota" {
-		if err := forwardpolicy.Reserve(os.Args[len(os.Args)-1], forwardLogin); err != forwardpolicy.ErrLimit {
+		if err := reserveConfirmed(os.Args[len(os.Args)-1], forwardLogin); err != forwardpolicy.ErrLimit {
 			t.Fatal("fresh process lost reservations")
 		}
 		return
@@ -392,7 +407,7 @@ func TestForwardSend(t *testing.T) {
 			t.Fatal("unconfirmed request opened SMTP")
 		}
 		for range 10 {
-			if err := forwardpolicy.Reserve(p.config.StateDir, forwardLogin); err != nil {
+			if err := reserveConfirmed(p.config.StateDir, forwardLogin); err != nil {
 				t.Fatal("declined form consumed quota", err)
 			}
 		}
@@ -408,7 +423,7 @@ func TestForwardSend(t *testing.T) {
 		var reserved atomic.Int32
 		for range 12 {
 			group.Go(func() {
-				err := forwardpolicy.Reserve(p.config.StateDir, forwardLogin)
+				err := reserveConfirmed(p.config.StateDir, forwardLogin)
 				if err == nil {
 					reserved.Add(1)
 				} else if err != forwardpolicy.ErrLimit {
@@ -430,24 +445,24 @@ func TestForwardSend(t *testing.T) {
 		if err := exec.CommandContext(t.Context(), exe, "-test.run=^TestForwardSend$", "--", "--check-forward-quota", p.config.StateDir).Run(); err != nil {
 			t.Fatal("failed quota restart check", err)
 		}
-		if err := forwardpolicy.Reserve(p.config.StateDir, "second@bridge.test"); err != nil {
+		if err := reserveConfirmed(p.config.StateDir, "second@bridge.test"); err != nil {
 			t.Fatal(err)
 		}
 		t.Run("window", func(t *testing.T) {
 			dir := newQuotaTestDir(t)
 			synctest.Test(t, func(t *testing.T) {
 				for range 10 {
-					if err := forwardpolicy.Reserve(dir, forwardLogin); err != nil {
+					if err := reserveConfirmed(dir, forwardLogin); err != nil {
 						t.Fatal(err)
 					}
 				}
 
 				time.Sleep(24*time.Hour - time.Nanosecond)
-				if err := forwardpolicy.Reserve(dir, forwardLogin); err != forwardpolicy.ErrLimit {
+				if err := reserveConfirmed(dir, forwardLogin); err != forwardpolicy.ErrLimit {
 					t.Fatal("released a slot early", err)
 				}
 				time.Sleep(time.Nanosecond)
-				if err := forwardpolicy.Reserve(dir, forwardLogin); err != nil {
+				if err := reserveConfirmed(dir, forwardLogin); err != nil {
 					t.Fatal("expired slot unavailable", err)
 				}
 			})
@@ -456,7 +471,7 @@ func TestForwardSend(t *testing.T) {
 			t.Run(damage+" damaged", func(t *testing.T) {
 				p := newSMTPPeer(t, "", "")
 				for range 10 {
-					requireForwardSetup(t, forwardpolicy.Reserve(p.config.StateDir, forwardLogin))
+					requireForwardSetup(t, reserveConfirmed(p.config.StateDir, forwardLogin))
 				}
 
 				path := filepath.Join(p.config.StateDir, "quota.db")
@@ -489,7 +504,7 @@ func TestForwardSend(t *testing.T) {
 
 					// Locate the live key/value pair beyond both metadata pages.
 					// Only the current snapshot contains the tenth timestamp.
-					name, _ := tx.Cursor().First()
+					name := []byte("reservations-v2")
 					key := sha256.Sum256([]byte(forwardLogin))
 					stamps := tx.Bucket(name).Get(key[:])
 					entry := append(key[:], stamps...)
@@ -509,7 +524,7 @@ func TestForwardSend(t *testing.T) {
 
 				requireForwardSetup(t, os.WriteFile(path, data, 0600))
 
-				req := confirmation(t, f, p.config, f.prepare(t, false))
+				req := forwardRequest(t, f, f.prepare(t, false))
 				requireToolError(t, f.store.send(t.Context(), p.config, req, nil), errUnavailable)
 				if p.connections.Load() != 0 {
 					t.Fatal("damaged quota state opened SMTP")
@@ -541,7 +556,7 @@ func TestForwardSend(t *testing.T) {
 						requireForwardSetup(t, os.WriteFile(dbPath, data, 0600))
 						requireForwardSetup(t, exec.Command("/bin/chmod", "-N", path).Run())
 					}
-					if forwardpolicy.Reserve(dir, forwardLogin) != forwardpolicy.ErrUnavailable {
+					if reserveConfirmed(dir, forwardLogin) != forwardpolicy.ErrUnavailable {
 						t.Fatal("accepted quota path with an ACL grant")
 					}
 				})
@@ -567,7 +582,7 @@ func TestForwardSend(t *testing.T) {
 					}
 				}
 				requireForwardSetup(t, err)
-				if forwardpolicy.Reserve(dir, forwardLogin) != forwardpolicy.ErrUnavailable || forwardpolicy.Initialize(dir) != forwardpolicy.ErrUnavailable {
+				if reserveConfirmed(dir, forwardLogin) != forwardpolicy.ErrUnavailable || forwardpolicy.Initialize(dir) != forwardpolicy.ErrUnavailable {
 					t.Fatal("unsafe state accepted or reinitialized")
 				}
 			})
