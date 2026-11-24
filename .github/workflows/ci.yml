@@ -44,6 +44,8 @@ jobs:
           "$GOBIN/staticcheck" ./...
       - name: Race-enabled tests
         run: go test -race ./...
+      - name: Verify owner socket rejection across UIDs
+        run: go test -race -count=1 -timeout=180s -v -exec 'sudo -n' ./cmd/croton-mcp -run '^TestOwnerOAuthClientsWrongUID$'
       - name: Verify module metadata
         run: |
           go mod tidy -diff

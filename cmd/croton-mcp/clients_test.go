@@ -376,8 +376,8 @@ func TestOwnerOAuthClientsWrongUID(t *testing.T) {
 	requireOK(os.Rename(filepath.Join(staging, foreignSocket), filepath.Join(dir, "owner.sock")))
 
 	// The database is unlocked. A rejected peer must never trigger an offline retry.
-	if got, err := adminCommand(t, dir, "clients"); err == nil || got != "" {
-		t.Fatal("wrong-UID peer accepted or bypassed")
+	if got, err := adminCommand(t, dir, "clients"); err == nil || err.Error() != "pairing request denied" || got != "" {
+		t.Fatal("clients did not return a redacted denial for the wrong-UID peer")
 	}
 	if err := cmd.Wait(); err != nil {
 		t.Fatal("foreign listener received command data")
