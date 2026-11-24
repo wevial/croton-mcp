@@ -35,6 +35,10 @@ func main() {
 }
 
 func run(ctx context.Context, arguments []string, stderr io.Writer, settings owneroauth.Settings) error {
+	return runCLI(ctx, arguments, stderr, settings, confirmFunnel)
+}
+
+func runCLI(ctx context.Context, arguments []string, stderr io.Writer, settings owneroauth.Settings, confirm func(context.Context, string, string) error) error {
 	command := ""
 	if len(arguments) > 0 && !strings.HasPrefix(arguments[0], "-") {
 		command, arguments = arguments[0], arguments[1:]
@@ -55,9 +59,10 @@ func run(ctx context.Context, arguments []string, stderr io.Writer, settings own
 
 	flags := flag.NewFlagSet("croton-mcp", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	var configPath, bind, authorizer, cert, key, dir, publicOrigin string
+	var configPath, bind, authorizer, cert, key, dir, publicOrigin, publicMode string
 	flags.StringVar(&configPath, "config", "", "absolute path to the Croton configuration file")
 	if command == "serve" {
+		flags.StringVar(&publicMode, "public", "", "publish with tailscale")
 		flags.Func("public-url", "external HTTPS origin of the owner-managed proxy", func(raw string) error {
 			var err error
 			publicOrigin, err = parsePublicOrigin(raw)
@@ -113,7 +118,21 @@ func run(ctx context.Context, arguments []string, stderr io.Writer, settings own
 		if err != nil || !address.Addr().IsLoopback() || address.Addr().Zone() != "" || address.Port() == 0 {
 			return errors.New("invalid loopback bind")
 		}
-		return serveHTTP(ctx, loaded, address, dir, cert, key, publicOrigin, settings, auditor)
+
+		var funnel *tailscaleFunnel
+		if publicMode != "" {
+			if publicMode != "tailscale" || publicOrigin != "" || cert != "" || key != "" {
+				return errors.New("use --public=tailscale with a plain loopback backend and no --public-url")
+			}
+
+			funnel, err = approveFunnel(ctx, address, confirm)
+			if err != nil {
+				return err
+			}
+			publicOrigin = "https://" + funnel.node.host
+		}
+
+		return serveHTTP(ctx, loaded, address, dir, cert, key, publicOrigin, settings, auditor, funnel)
 	}
 
 	adapter, err := bridge.NewAdapter(loaded)
@@ -166,7 +185,7 @@ func runOwnerCommand(ctx context.Context, command string, args []string, tty io.
 	return owneroauth.Terminal(ctx, *dir, command, tty)
 }
 
-func serveHTTP(ctx context.Context, cfg bridge.Config, address netip.AddrPort, dir, cert, key, publicOrigin string, settings owneroauth.Settings, auditor *mcpserver.Auditor) error {
+func serveHTTP(ctx context.Context, cfg bridge.Config, address netip.AddrPort, dir, cert, key, publicOrigin string, settings owneroauth.Settings, auditor *mcpserver.Auditor, funnel *tailscaleFunnel) error {
 	hostPort := net.JoinHostPort(httpHostname(address.Addr()), strconv.Itoa(int(address.Port())))
 	origin := "http://" + strings.TrimSuffix(hostPort, ":80")
 	var tlsConfig *tls.Config
@@ -224,6 +243,9 @@ func serveHTTP(ctx context.Context, cfg bridge.Config, address netip.AddrPort, d
 		listener = tls.NewListener(listener, tlsConfig)
 	}
 
+	if funnel != nil {
+		return funnel.serve(ctx, listener, handler)
+	}
 	return runHTTP(ctx, listener, handler)
 }
 
