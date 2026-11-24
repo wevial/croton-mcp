@@ -43,17 +43,20 @@ type smtpDelivery struct {
 	from, to, message string
 }
 
+func requireForwardSetup(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 // The sticky system temp root keeps group-writable workspaces out of the quota path.
 func newQuotaTestDir(t *testing.T) string {
 	t.Helper()
 	root, err := filepath.EvalSymlinks("/tmp")
-	if err != nil {
-		t.Fatal(err)
-	}
+	requireForwardSetup(t, err)
 	parent, err := os.MkdirTemp(root, "croton-quota-*")
-	if err != nil {
-		t.Fatal(err)
-	}
+	requireForwardSetup(t, err)
 	t.Cleanup(func() {
 		if err := os.RemoveAll(parent); err != nil {
 			t.Error(err)
@@ -61,9 +64,7 @@ func newQuotaTestDir(t *testing.T) string {
 	})
 
 	dir := filepath.Join(parent, "state")
-	if err := forwardpolicy.Initialize(dir); err != nil {
-		t.Fatal(err)
-	}
+	requireForwardSetup(t, forwardpolicy.Initialize(dir))
 	return dir
 }
 
@@ -75,9 +76,7 @@ func newSMTPPeer(t *testing.T, mode, fault string) *smtpPeer {
 	cert.Close()
 
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
+	requireForwardSetup(t, err)
 	peer := &smtpPeer{deliveries: make(chan smtpDelivery, 10), config: bridge.ForwardConfig{
 		Enabled: true, SMTPPort: listener.Addr().(*net.TCPAddr).Port, SMTPTLSMode: mode,
 		SMTPSPKISHA256: pin, StateDir: newQuotaTestDir(t),
@@ -202,9 +201,7 @@ func (p *smtpPeer) serve(conn net.Conn, policy *tls.Config, mode, fault string) 
 func forwardRequest(t *testing.T, f *forwardFixture, r forwardResult) *mcp.CallToolRequest {
 	t.Helper()
 	args, err := json.Marshal(r)
-	if err != nil {
-		t.Fatal(err)
-	}
+	requireForwardSetup(t, err)
 	f.store.mu.Lock()
 	defer f.store.mu.Unlock()
 	return &mcp.CallToolRequest{Session: f.store.current.session, Params: &mcp.CallToolParamsRaw{
@@ -322,9 +319,7 @@ func TestForwardSend(t *testing.T) {
 		}
 		const origin = "http://127.0.0.1:8787"
 		handler, err := NewHTTP(origin, false, f.store.adapter, nil, time.Second, func(string) (string, bool) { return "synthetic", true }, http.NotFoundHandler())
-		if err != nil {
-			t.Fatal(err)
-		}
+		requireForwardSetup(t, err)
 		httpReq := httptest.NewRequest(http.MethodPost, origin+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send_forward","arguments":`+string(original)+`}}`))
 		httpReq.Header.Set("Authorization", "Bearer synthetic")
 		httpReq.Header.Set("Content-Type", "application/json")
@@ -401,9 +396,7 @@ func TestForwardSend(t *testing.T) {
 			t.Fatal("quota refusal opened SMTP")
 		}
 		exe, err := os.Executable()
-		if err != nil {
-			t.Fatal(err)
-		}
+		requireForwardSetup(t, err)
 		if err := exec.CommandContext(t.Context(), exe, "-test.run=^TestForwardSend$", "--", "--check-forward-quota", p.config.StateDir).Run(); err != nil {
 			t.Fatal("failed quota restart check", err)
 		}
@@ -439,9 +432,7 @@ func TestForwardSend(t *testing.T) {
 
 			path := filepath.Join(p.config.StateDir, "quota.db")
 			db, err := bolt.Open(path, 0600, &bolt.Options{ReadOnly: true})
-			if err != nil {
-				t.Fatal(err)
-			}
+			requireForwardSetup(t, err)
 			var offset int64
 			pageSize := db.Info().PageSize
 			err = db.View(func(tx *bolt.Tx) error {
@@ -453,9 +444,7 @@ func TestForwardSend(t *testing.T) {
 			}
 
 			file, err := os.OpenFile(path, os.O_RDWR, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
+			requireForwardSetup(t, err)
 			// Flip a single checksum bit in the newest v2 metadata.
 			checksumOffset := offset + 72
 			var first [1]byte
@@ -482,26 +471,16 @@ func TestForwardSend(t *testing.T) {
 					if target == "parent" {
 						path = filepath.Dir(dir)
 					}
-					if err := exec.Command("/bin/chmod", "+a", grant, path).Run(); err != nil {
-						t.Fatal(err)
-					}
+					requireForwardSetup(t, exec.Command("/bin/chmod", "+a", grant, path).Run())
 					if target == "database" {
 						// Recreate the fixture under the inheritable grant, then
 						// remove the parent ACL so only the file retains it.
 						dbPath := filepath.Join(dir, "quota.db")
 						data, err := os.ReadFile(dbPath)
-						if err != nil {
-							t.Fatal(err)
-						}
-						if err := os.Remove(dbPath); err != nil {
-							t.Fatal(err)
-						}
-						if err := os.WriteFile(dbPath, data, 0600); err != nil {
-							t.Fatal(err)
-						}
-						if err := exec.Command("/bin/chmod", "-N", path).Run(); err != nil {
-							t.Fatal(err)
-						}
+						requireForwardSetup(t, err)
+						requireForwardSetup(t, os.Remove(dbPath))
+						requireForwardSetup(t, os.WriteFile(dbPath, data, 0600))
+						requireForwardSetup(t, exec.Command("/bin/chmod", "-N", path).Run())
 					}
 					if forwardpolicy.Reserve(dir, forwardLogin) != forwardpolicy.ErrUnavailable {
 						t.Fatal("accepted quota path with an ACL grant")
@@ -528,9 +507,7 @@ func TestForwardSend(t *testing.T) {
 						err = os.Symlink(path+".old", path)
 					}
 				}
-				if err != nil {
-					t.Fatal(err)
-				}
+				requireForwardSetup(t, err)
 				if forwardpolicy.Reserve(dir, forwardLogin) != forwardpolicy.ErrUnavailable || forwardpolicy.Initialize(dir) != forwardpolicy.ErrUnavailable {
 					t.Fatal("unsafe state accepted or reinitialized")
 				}
@@ -584,9 +561,7 @@ func TestForwardSend(t *testing.T) {
 				server := New(Options{Mail: store.adapter, Forward: store, Audit: NewAuditor(&audit)})
 				local, remote := net.Pipe()
 				ss, err := server.sdk.Connect(t.Context(), stdioframe.NewTransport(local, local), nil)
-				if err != nil {
-					t.Fatal(err)
-				}
+				requireForwardSetup(t, err)
 				t.Cleanup(func() { ss.Close() })
 
 				var forms atomic.Int32
@@ -597,9 +572,7 @@ func TestForwardSend(t *testing.T) {
 					},
 				})
 				cs, err := client.Connect(t.Context(), &mcp.IOTransport{Reader: remote, Writer: remote}, &mcp.ClientSessionOptions{ProtocolVersion: tc.version})
-				if err != nil {
-					t.Fatal(err)
-				}
+				requireForwardSetup(t, err)
 				t.Cleanup(func() { cs.Close() })
 
 				var r forwardResult
@@ -617,9 +590,7 @@ func TestForwardSend(t *testing.T) {
 					initial, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
 						"params": mcp.CallToolParams{Name: sendForwardTool, Meta: probe.Meta, Arguments: r},
 					})
-					if err != nil {
-						t.Fatal(err)
-					}
+					requireForwardSetup(t, err)
 					padding := stdioframe.MaxFrameBytes - len(initial) - 1 - 20
 					note := args["text"].(string) + strings.Repeat("x", padding)
 					args["text"] = note
@@ -631,9 +602,7 @@ func TestForwardSend(t *testing.T) {
 					// The same preview can take more bytes in the client's JSON.
 					// Spend the 200 bytes removed above on equivalent escapes.
 					encoded, err := json.Marshal(r)
-					if err != nil {
-						t.Fatal(err)
-					}
+					requireForwardSetup(t, err)
 					escaped := bytes.Replace(encoded, bytes.Repeat([]byte("x"), 40), bytes.Repeat([]byte(`\u0078`), 40), 1)
 					requireToolError(t, callTool(t, cs, sendForwardTool, json.RawMessage(escaped)), errBoundsExceeded)
 					if forms.Load() != 0 || p.connections.Load() != 0 {
