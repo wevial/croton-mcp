@@ -31,13 +31,9 @@ func parsePublicOrigin(raw string) (string, error) {
 		return "", invalid
 	}
 
-	host := u.Host
-	if port := u.Port(); port != "" {
-		if strings.TrimLeft(port, "0") != "443" {
-			return "", invalid
-		}
-		host = strings.TrimSuffix(host, ":"+port)
-	} else if strings.HasSuffix(host, ":") {
+	port := u.Port()
+	host, hasPort := strings.CutSuffix(u.Host, ":"+port)
+	if hasPort && strings.TrimLeft(port, "0") != "443" {
 		return "", invalid
 	}
 
