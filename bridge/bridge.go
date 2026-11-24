@@ -86,9 +86,9 @@ func (adapter *Adapter) execute(ctx context.Context, operation func(context.Cont
 			err = mapIMAPError(operationContext, err)
 		} else {
 			err = operation(operationContext, session)
-			if err == nil {
-				return nil
-			}
+		}
+		if err == nil {
+			return nil
 		}
 
 		retry := attempt == 0 && adapter.canReplay(operationContext, err)

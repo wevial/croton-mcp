@@ -108,7 +108,6 @@ func newIMAPSessionOver(ctx context.Context, transport net.Conn, startTLS bool) 
 	wrapped := &deadlineConn{Conn: transport}
 	guard := &dispatchGuardConn{Conn: wrapped}
 	budget := newReadBudgetConn(guard, maxControlResponseBytes)
-	session := &imapSession{conn: wrapped, budget: budget, guard: guard}
 
 	// After STARTTLS, only the synthetic greeting bypasses the read budget.
 	var clientTransport net.Conn = budget
@@ -117,7 +116,7 @@ func newIMAPSessionOver(ctx context.Context, transport net.Conn, startTLS bool) 
 	}
 
 	client := imapclient.New(clientTransport, nil)
-	session.client = client
+	session := &imapSession{client: client, conn: wrapped, budget: budget, guard: guard}
 	if err := session.withBoundedInput(ctx, maxControlResponseBytes, func() error {
 		if err := client.WaitGreeting(); err != nil {
 			return err
@@ -870,8 +869,9 @@ func closeFetchWithError(command *imapclient.FetchCommand, responseErr error) er
 // A flags-only reply has already been drained. Retry it once with a fresh
 // budget. For other errors close the transport before draining unread literals.
 func (session *imapSession) fetch(ctx context.Context, uids imap.UIDSet, options *imap.FetchOptions, limit int, read func(*imapclient.FetchCommand) error) error {
-	attempt := func() error {
-		return session.withBoundedInput(ctx, limit, func() error {
+	var err error
+	for range 2 {
+		err = session.withBoundedInput(ctx, limit, func() error {
 			command := session.client.Fetch(uids, options)
 			err := read(command)
 			if err != nil && err != errFlagsOnly {
@@ -881,12 +881,12 @@ func (session *imapSession) fetch(ctx context.Context, uids imap.UIDSet, options
 
 			return err
 		})
-	}
-	if err := attempt(); err != errFlagsOnly {
-		return err
+		if err != errFlagsOnly {
+			break
+		}
 	}
 
-	return attempt()
+	return err
 }
 
 // bodyStructure is go-imap's decoded BODYSTRUCTURE, named here so the

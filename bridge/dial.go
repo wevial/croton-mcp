@@ -229,7 +229,7 @@ func validStartTLSGreeting(line string) bool {
 		return false
 	}
 	responseText := line[len(prefix):]
-	if responseText == "" || responseText[0] != '[' {
+	if !strings.HasPrefix(responseText, "[") {
 		return true
 	}
 	closing := strings.IndexByte(responseText, ']')
