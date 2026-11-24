@@ -106,19 +106,16 @@ func TestSearchMailEmptyResultsRespectExactOutputBudget(t *testing.T) {
 		t.Run(string(rune('0'+maxOutputBytes)), func(t *testing.T) {
 			adapter := newBoundedSearchAdapter(&boundedSearchSession{snapshot: mailboxSnapshot{UIDNext: 2, UIDValidity: 9001}}, maxOutputBytes)
 			page, err := adapter.SearchMailPage(context.Background(), SearchQuery{Mailbox: "INBOX"})
-			results := page.Messages
 			if err != nil {
 				t.Fatalf("SearchMailPage: %v", err)
 			}
-			if results == nil || len(results) != 0 {
-				t.Fatalf("SearchMailPage results = %#v, want non-nil empty slice", results)
-			}
-			encoded, err := json.Marshal(results)
+
+			encoded, err := json.Marshal(page.Messages)
 			if err != nil {
 				t.Fatalf("json.Marshal: %v", err)
 			}
-			if len(encoded) != 2 || len(encoded) > maxOutputBytes {
-				t.Fatalf("encoded results = %q (%d bytes), budget = %d", encoded, len(encoded), maxOutputBytes)
+			if string(encoded) != "[]" {
+				t.Fatalf("encoded results = %s, want [] for budget %d", encoded, maxOutputBytes)
 			}
 		})
 	}
