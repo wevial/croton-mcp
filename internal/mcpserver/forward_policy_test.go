@@ -14,7 +14,7 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-// Write the nonempty quota-only layout shipped in CROTON-72.
+// The quota-only checksum prefixes timestamps with their byte length.
 func seedPreviousReservation(t *testing.T, dir string) {
 	t.Helper()
 	db, err := bolt.Open(filepath.Join(dir, "quota.db"), 0600, nil)
@@ -74,8 +74,7 @@ func TestForwardRememberedPolicy(t *testing.T) {
 		}
 
 		requireForwardSetup(t, forwardpolicy.SetLimit(p.config, forwardLogin, 4))
-		// Separate the initial decision from the reservation to reproduce a local
-		// owner editing the policy while SubmitForward rechecks the login.
+		// The owner can forget the recipient while SubmitForward rechecks the login.
 		pending, confirmed, result := f.store.approval(p.config, forwardRequest(t, f, r))
 		if result != nil || confirmed != nil || pending == nil {
 			t.Fatal("remembered recipient did not pass the form gate")

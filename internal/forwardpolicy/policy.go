@@ -97,8 +97,7 @@ func withPolicy(cfg bridge.ForwardConfig, login string, change func(*Policy, *bo
 	})
 }
 
-// Only an owner forget writes this marker. Compare it to the transaction that
-// issued the form so unrelated policy changes do not suppress learning.
+// An owner forget suppresses learning from earlier forms for this recipient alone.
 func forgetKey(login, address string) [sha256.Size]byte {
 	return sha256.Sum256([]byte(strings.ToLower(login) + "\x00" + address))
 }

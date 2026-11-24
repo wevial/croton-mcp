@@ -95,7 +95,6 @@ func TestForwardOwnerCommands(t *testing.T) {
 	}
 	limits(1, 1)
 
-	// Start a fresh executable against the same private state and modified seeds.
 	forward["dailyLimit"] = 9
 	forward["rememberedRecipients"] = []string{"seed@recipient.test", "another@recipient.test"}
 	writeConfig()
