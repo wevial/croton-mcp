@@ -11,12 +11,10 @@ var threadFieldNames = [...][]byte{
 	[]byte("References"),
 }
 
-// threadFieldBlock copies the first occurrence of each threading field, with
-// its folded continuation lines, from a complete header block into a new
-// header block ended by the input's own blank line. The scan is a single pass
-// over the already byte-bounded header and keeps at most one field per fixed
-// slot, so the result is never larger than the input. Other fields are
-// skipped without being decoded.
+// threadFieldBlock scans a bounded, complete header once, keeping the first
+// copy of each threading field with its continuations and skipping other fields
+// without decoding. Each line, including the terminator, appears at most once
+// in the result, so the output fits within the input size.
 func threadFieldBlock(header []byte) []byte {
 	var slots [len(threadFieldNames)][]byte
 	terminator := []byte("\r\n")
@@ -42,10 +40,6 @@ func threadFieldBlock(header []byte) []byte {
 	return append(bytes.Join(slots[:], nil), terminator...)
 }
 
-// threadFieldSlot returns the slot of a field line whose name matches a
-// threading field under ASCII case folding, as net/mail's key
-// canonicalization does, or -1. Unicode folding would let a non-ASCII name
-// such as "ſubject" take the Subject slot that mail.Header.Get never maps.
 func threadFieldSlot(line []byte) int {
 	name, _, found := bytes.Cut(line, []byte{':'})
 	if !found {
@@ -53,7 +47,8 @@ func threadFieldSlot(line []byte) int {
 	}
 
 	for slot, candidate := range threadFieldNames {
-		// Equal byte lengths rule out multibyte folds onto an ASCII name.
+		// net/mail folds only ASCII names. Equal byte lengths keep a
+		// multibyte fold such as "ſubject" from claiming the Subject slot.
 		if len(name) == len(candidate) && bytes.EqualFold(name, candidate) {
 			return slot
 		}
