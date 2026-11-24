@@ -121,11 +121,10 @@ step 2 and leave `mutations.enabled` false. Claude reads from the account
 selected by that helper. Give Croton a dedicated HTTPS origin with TLS
 termination on the operator's host and no CDN TLS termination.
 
-**Publish the endpoint.** On a dedicated Tailscale node, use CLI 1.104.5 or
-later with HTTPS and Funnel already enabled for port 443. Check
-`tailscale serve status` and `tailscale funnel status` locally. Port 443 must
-be free, and you need exclusive control of it until Croton stops. In the
-owner terminal, run the following with paths for your synthetic setup.
+**Publish the endpoint.** Use Tailscale CLI 1.104.5 or later on a dedicated
+node with HTTPS and Funnel enabled for port 443. In the owner terminal, check
+`tailscale serve status` and `tailscale funnel status`. Port 443 must be free
+and under your exclusive control until Croton stops. Use your synthetic paths.
 
 ```sh
 ~/bin/croton-mcp serve --public=tailscale --authorizer owner \
@@ -135,11 +134,10 @@ owner terminal, run the following with paths for your synthetic setup.
 
 Check the displayed node hostname and loopback target (default
 `http://127.0.0.1:8787`). Type `yes` only if you approve publishing **every
-path on that host's port 443**. Leave Croton running. Use the displayed
-HTTPS origin followed by `/mcp` as the connector URL, for example
-`https://croton.tail.test/mcp`. If you already operate a dedicated HTTPS
-reverse proxy on the host, the same pairing steps apply with the
-[owner-managed proxy setup](MCP.md#owner-managed-https-proxy).
+path on that host's port 443**. Leave Croton running. Append `/mcp` to the
+displayed HTTPS origin, e.g. `https://croton.tail.test/mcp`. For a dedicated
+HTTPS reverse proxy on the host, follow the [owner-managed proxy setup](MCP.md#owner-managed-https-proxy)
+before pairing.
 
 **Pair the browser and sign in.**
 
@@ -200,8 +198,8 @@ cleanup warning, inspect the current target before reusing the port. If
 you verify the remaining route is yours, run `tailscale funnel --https=443 off`
 and recheck both statuses. Leave unrelated routes in place.
 
-**Verification.** From the repository root, run the local setup-path test.
-It uses fake mail, a fake Tailscale CLI and Python 3 to drive the terminal.
+**Verify from the repository root.** The test uses fake mail, a fake Tailscale
+CLI and Python 3 to drive the terminal.
 
 ```sh
 go test -race -count=1 -timeout=180s ./cmd/croton-mcp -run '^TestRemoteConnectorSetup$'
@@ -210,11 +208,10 @@ go test -race -count=1 -timeout=180s ./cmd/croton-mcp -run '^TestRemoteConnector
 A claude.ai smoke test requires separate operator authorization. With synthetic
 mail, confirm discovery, automatic registration, terminal pairing, JSON MCP
 responses, a read after actual access expiry and refresh, refusal in an
-unapproved browser, and local unpair. Record whether the actual `initialize`
-request advertises form elicitation as **present**, **absent**, or
-**unobservable** if the request or its capabilities cannot be observed. Use
-the request itself as evidence. Record only outcomes, keeping secrets, mail,
-account identifiers, token-bearing URLs and raw requests out of the report.
+unapproved browser, and local unpair. From the actual `initialize` request,
+record form elicitation as **present**, **absent**, or **unobservable** if you
+cannot inspect the request or its capabilities. Report outcomes only. Omit
+secrets, mail, account identifiers, token-bearing URLs and raw requests.
 
 ## 6. Verify
 
