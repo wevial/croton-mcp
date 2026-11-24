@@ -5,7 +5,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -76,9 +75,6 @@ func (f funnelFixture) write(t *testing.T, name, data string) {
 func (f funnelFixture) calls(t *testing.T) []string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(f.dir, "calls"))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +138,7 @@ func TestFunnelServePreflight(t *testing.T) {
 				t.Fatalf("unexpected refusal: %v", err)
 			}
 			calls := f.calls(t)
-			if len(calls) == 0 || len(calls) > len(preflightCalls) || !slices.Equal(calls, preflightCalls[:len(calls)]) {
+			if len(calls) > len(preflightCalls) || !slices.Equal(calls, preflightCalls[:len(calls)]) {
 				t.Fatalf("unexpected commands %q", calls)
 			}
 		})
