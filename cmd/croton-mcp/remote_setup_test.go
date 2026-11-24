@@ -200,7 +200,8 @@ func setupProxyClient(t *testing.T, targetURL string) *httpProcess {
 	proxy := httptest.NewTLSServer(httputil.NewSingleHostReverseProxy(target))
 	t.Cleanup(proxy.Close)
 
-	transport := proxy.Client().Transport.(*http.Transport).Clone()
+	client := proxy.Client()
+	transport := client.Transport.(*http.Transport)
 	transport.TLSClientConfig.ServerName = "127.0.0.1"
 	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 		if address != host+":443" {
@@ -210,11 +211,11 @@ func setupProxyClient(t *testing.T, targetURL string) *httpProcess {
 	}
 	t.Cleanup(transport.CloseIdleConnections)
 
-	jar, _ := cookiejar.New(nil)
-	return &httpProcess{origin: "https://" + host, client: &http.Client{
-		Transport: transport, Jar: jar, Timeout: 5 * time.Second,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}}
+	client.Jar, _ = cookiejar.New(nil)
+	client.Timeout = 5 * time.Second
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+	return &httpProcess{origin: "https://" + host, client: client}
 }
 
 // Use the stateless MCP wire format directly, independently of the server SDK.
