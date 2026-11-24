@@ -70,9 +70,9 @@ func TestForwardOwnerCommands(t *testing.T) {
 		}
 		return out.String()
 	}
-	limits := func(limit, count int) {
+	limits := func(limit int, autoRemember bool, count int) {
 		t.Helper()
-		want := fmt.Sprintf("dailyLimit=%d autoRemember=true rememberedRecipients=%d/100\n", limit, count)
+		want := fmt.Sprintf("dailyLimit=%d autoRemember=%t rememberedRecipients=%d/100\n", limit, autoRemember, count)
 		if got := invoke(true, "limits"); got != want {
 			t.Errorf("limits = %q, want %q", got, want)
 		}
@@ -81,13 +81,13 @@ func TestForwardOwnerCommands(t *testing.T) {
 	login("owner@bridge.test")
 	writeConfig()
 	invoke(true, "init-forward-state")
-	limits(3, 1)
+	limits(3, true, 1)
 	login("second@bridge.test")
-	limits(3, 1)
+	limits(3, true, 1)
 
 	login("owner@bridge.test")
 	invoke(true, "forget", "seed@RECIPIENT.test")
-	limits(3, 0)
+	limits(3, true, 0)
 	invoke(true, "allow", "new@recipient.test")
 	invoke(true, "allow", "new@RECIPIENT.test")
 	invoke(true, "limits", "1")
@@ -98,29 +98,29 @@ func TestForwardOwnerCommands(t *testing.T) {
 	} {
 		invoke(false, args...)
 	}
-	limits(1, 1)
+	limits(1, true, 1)
 
 	forward["dailyLimit"] = 9
 	forward["rememberedRecipients"] = []string{"seed@recipient.test", "another@recipient.test"}
 	writeConfig()
 	// Both accounts have one recipient. Only the second still has the seed.
 	login("second@bridge.test")
-	limits(3, 1)
+	limits(3, true, 1)
 	invoke(true, "allow", "seed@recipient.test")
-	limits(3, 1)
+	limits(3, true, 1)
 	invoke(true, "limits", "100")
-	limits(100, 1)
+	limits(100, true, 1)
 
 	login("owner@bridge.test")
-	limits(1, 1)
+	limits(1, true, 1)
 	invoke(true, "forget", "new@recipient.test")
-	limits(1, 0)
+	limits(1, true, 0)
 
 	login("third@bridge.test")
 	delete(forward, "dailyLimit")
 	delete(forward, "rememberedRecipients")
 	writeConfig()
-	limits(10, 0)
+	limits(10, true, 0)
 	for key, bad := range map[string][]any{
 		"dailyLimit": {0, 101, 1.5, "10", nil}, "autoRemember": {"false", nil},
 		"rememberedRecipients": {[]string{"x@recipient.test,y@recipient.test"}, "x@recipient.test"},
@@ -141,10 +141,11 @@ func TestForwardOwnerCommands(t *testing.T) {
 	writeConfig()
 	invoke(false, "limits")
 	forward["rememberedRecipients"] = addresses
+	forward["autoRemember"] = false
 	writeConfig()
-	limits(10, 100)
+	limits(10, false, 100)
 	invoke(false, "allow", "overflow@recipient.test")
 	invoke(true, "allow", addresses[0])
 	invoke(true, "forget", addresses[99])
-	limits(10, 99)
+	limits(10, false, 99)
 }
