@@ -542,6 +542,80 @@ func TestForwardSend(t *testing.T) {
 		}
 	})
 
+	t.Run("Frame", func(t *testing.T) {
+		f := plainFixture(t)
+		p := newSMTPPeer(t, "", "")
+		store := NewForwardPreviews(f.store.adapter)
+		store.Submission = p.config
+		server := New(Options{Mail: store.adapter, Forward: store})
+		local, remote := net.Pipe()
+		ss, err := server.sdk.Connect(t.Context(), stdioframe.NewTransport(local, local), nil)
+		requireForwardSetup(t, err)
+		t.Cleanup(func() {
+			remote.Close()
+			ss.Close()
+		})
+
+		const uuid = "edb503e2-8f0b-4b7b-8a13-9fb2eeb3ab53"
+		frame := func(id any, params mcp.CallToolParams) []byte {
+			t.Helper()
+			data, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": params})
+			requireForwardSetup(t, err)
+			return append(data, '\n')
+		}
+		reader := json.NewDecoder(remote)
+		call := func(data []byte) *mcp.CallToolResult {
+			t.Helper()
+			_, err := remote.Write(data)
+			requireForwardSetup(t, err)
+			var reply struct{ Result *mcp.CallToolResult }
+			requireForwardSetup(t, reader.Decode(&reply))
+			if reply.Result == nil {
+				t.Fatal("missing tool result")
+			}
+			return reply.Result
+		}
+
+		meta := mcp.Meta{
+			mcp.MetaKeyProtocolVersion:    "2026-07-28",
+			mcp.MetaKeyClientCapabilities: map[string]any{"elicitation": map[string]any{"form": map[string]any{}}},
+		}
+		args := f.arguments(false)
+		prepare := mcp.CallToolParams{Name: forwardTool, Arguments: args, Meta: meta}
+		var r forwardResult
+		decodeResult(t, call(frame(1, prepare)), &r)
+		send := mcp.CallToolParams{Name: sendForwardTool, Arguments: r, Meta: meta}
+		approved := mcp.InputResponseMap{forwardConfirmation: &mcp.ElicitResult{Action: "accept", Content: map[string]any{"confirm": true}}}
+		send.RequestState, send.InputResponses = r.Handle, approved
+		room := stdioframe.MaxFrameBytes - len(frame(uuid, send))
+
+		note := args["text"].(string) + strings.Repeat("x", room)
+		args["text"] = note + "x"
+		requireToolError(t, call(frame(2, prepare)), errBoundsExceeded)
+
+		args["text"] = note
+		decodeResult(t, call(frame(3, prepare)), &r)
+		send.RequestState, send.InputResponses = "", nil
+
+		// Even one equivalent escape would put the UUID continuation over budget.
+		encoded, err := json.Marshal(r)
+		requireForwardSetup(t, err)
+		send.Arguments = json.RawMessage(bytes.Replace(encoded, []byte("xxx"), []byte(`xx\u0078`), 1))
+		requireToolError(t, call(frame(4, send)), errBoundsExceeded)
+
+		send.Arguments = r
+		form := call(frame(5, send))
+		if form.RequestState == "" || len(form.InputRequests) != 1 || p.connections.Load() != 0 {
+			t.Fatal("expected approval before SMTP")
+		}
+		send.RequestState, send.InputResponses = form.RequestState, approved
+		continuation := frame(uuid, send)
+		if len(continuation) != stdioframe.MaxFrameBytes {
+			t.Fatalf("UUID continuation is %d bytes, want exactly 64 KiB", len(continuation))
+		}
+		requireSendOutcome(t, call(continuation), "accepted")
+	})
+
 	t.Run("Wire", func(t *testing.T) {
 		f := newForwardFixture(t, bridge.BoundsPatch{})
 		f.setWrappedText(t, strings.Repeat("long é", 800)+"\r\n.\r\n..last")
@@ -576,39 +650,7 @@ func TestForwardSend(t *testing.T) {
 				t.Cleanup(func() { cs.Close() })
 
 				var r forwardResult
-				args := f.arguments(false)
-				if tc.version == "2026-07-28" && tc.want == "accepted" {
-					probe := &mcp.CallToolParams{Name: forwardTool, Arguments: args}
-					result, err := cs.CallTool(t.Context(), probe)
-					if err != nil {
-						t.Fatal(err)
-					}
-					decodeResult(t, result, &r)
-
-					// The initial SDK send fits with 20 bytes to spare, but
-					// its continuation would close the bounded transport.
-					initial, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-						"params": mcp.CallToolParams{Name: sendForwardTool, Meta: probe.Meta, Arguments: r},
-					})
-					requireForwardSetup(t, err)
-					padding := stdioframe.MaxFrameBytes - len(initial) - 1 - 20
-					note := args["text"].(string) + strings.Repeat("x", padding)
-					args["text"] = note
-					requireToolError(t, callTool(t, cs, forwardTool, args), errBoundsExceeded)
-					args["text"] = note[:len(note)-200]
-				}
-				callJSON(t, cs, forwardTool, args, &r)
-				if tc.version == "2026-07-28" && tc.want == "accepted" {
-					// The same preview can take more bytes in the client's JSON.
-					// Spend the 200 bytes removed above on equivalent escapes.
-					encoded, err := json.Marshal(r)
-					requireForwardSetup(t, err)
-					escaped := bytes.Replace(encoded, bytes.Repeat([]byte("x"), 40), bytes.Repeat([]byte(`\u0078`), 40), 1)
-					requireToolError(t, callTool(t, cs, sendForwardTool, json.RawMessage(escaped)), errBoundsExceeded)
-					if forms.Load() != 0 || p.connections.Load() != 0 {
-						t.Fatal("requested approval or opened SMTP for an oversized continuation")
-					}
-				}
+				callJSON(t, cs, forwardTool, f.arguments(false), &r)
 				stored, ok := store.lookup(r, time.Now())
 				if !ok {
 					t.Fatal("missing stored MIME")

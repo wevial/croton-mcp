@@ -63,3 +63,28 @@ func TestBoundedFrameReaderRejectsAmbiguousJSONBeforeDelivery(t *testing.T) {
 		}
 	}
 }
+
+func TestForwardFrameRequestID(t *testing.T) {
+	const uuid = `"edb503e2-8f0b-4b7b-8a13-9fb2eeb3ab53"`
+	longID := `"` + strings.Repeat("x", 37) + `"`
+	for _, tc := range []struct {
+		id, tool string
+		refuse   bool
+	}{
+		{"1", "send_forward", false},
+		{uuid, "send_forward", false},
+		{strings.Replace(uuid, "5", `\u0035`, 1), "send_forward", true},
+		{longID, "send_forward", true},
+		{longID, "prepare_forward", false},
+	} {
+		frame := `{"jsonrpc":"2.0","method":"tools/call","id":` + tc.id + `,"ID":1,"params":{"name":"` + tc.tool + `"}}` + "\n"
+		got, err := io.ReadAll(newBoundedFrameReader(strings.NewReader(frame), MaxFrameBytes))
+		if tc.refuse {
+			if !errors.Is(err, errStdioFrameInvalid) || len(got) != 0 {
+				t.Fatal("oversized forward ID reached the SDK")
+			}
+		} else if err != nil || string(got) != frame {
+			t.Fatal("valid frame rejected", err)
+		}
+	}
+}

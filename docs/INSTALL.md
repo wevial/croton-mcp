@@ -293,8 +293,13 @@ credential helper and login as IMAP.
 ```
 
 Before first use, run the following command once, then restart the stdio
-session. The parent directory must already exist. Initialization creates a
-new owner-only directory (0700) and quota database (0600) on Linux or macOS.
+session. The parent directory must already exist. Root or the user running
+Croton must own each directory from the parent up to the filesystem root.
+Any group- or world-writable directory in that chain must have the sticky bit
+set. If a shared directory fails these checks, choose a different parent
+and leave the shared directory's permissions intact.
+Initialization creates a new owner-only directory (0700) and quota database
+(0600) on Linux or macOS.
 On macOS, choose a path without ACL grants on the database, directory, or
 its ancestors. Deny-only ACLs are supported.
 
@@ -302,7 +307,13 @@ its ancestors. Deny-only ACLs are supported.
 ~/bin/croton-mcp init-forward-state --config /home/you/.config/croton/mail.json
 ```
 
-Keep the same state directory across restarts and clients for this account.
+If first initialization fails after creating the directory, and no client has
+ever used it for forwarding, set the partial directory aside. Correct the
+cause, set `stateDir` to an unused path under a suitable parent, and rerun
+the command before starting any client.
+
+Once a client has used the directory for forwarding, keep the same state
+directory across restarts and clients for this account.
 Every reservation counts toward the limit of ten in a rolling 24 hours, even
 if SMTP fails or the outcome is uncertain. A full quota returns `quota_reached`
 before connecting to SMTP. Declining the form uses no slot.
@@ -310,10 +321,17 @@ If existing state is missing or damaged, sending stops. Restore the current
 state before resuming. Both bbolt metadata pages must be intact so recovery
 cannot silently drop the most recent reservation.
 
-With sending enabled, `prepare_forward` budgets for the client metadata and
-approval response in the 64 KiB input frame. Before showing the form,
-`send_forward` checks that budget again using the preview as encoded by the
-client. If either call returns `bounds_exceeded`, prepare a shorter forward.
+Use compact JSON for each `send_forward` request. Each JSON-RPC `id` may use
+up to 38 encoded bytes, including string quotes and escapes. A quoted UUID
+fits exactly. A longer ID closes the stdio input. With sending enabled,
+`prepare_forward` reserves space for the ID, client metadata and approval
+response. Before showing the form, `send_forward` checks again using the
+client's encoded arguments.
+Encode the envelope and `_meta` without padding, extra fields or unnecessary
+escapes. On continuation, reuse the encoded `arguments` and `_meta`, echo
+`requestState`, and send only the requested confirmation in `inputResponses`.
+The complete request, including its final newline, must fit in 64 KiB.
+If either tool returns `bounds_exceeded`, prepare a shorter forward.
 
 Pass the returned `handle` and complete, unchanged `preview` to
 `send_forward`. The client must display the full preview, including sender,

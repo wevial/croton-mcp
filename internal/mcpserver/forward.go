@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"encoding/json/jsontext"
 	"fmt"
-	"math"
 	"mime/quotedprintable"
 	"strings"
 	"sync"
@@ -199,14 +198,14 @@ func runPrepareForward(ctx context.Context, options Options, args json.RawMessag
 }
 
 // Preview-only uses the documented compact call. For a sendable preview, size
-// the SDK call with this client's metadata and room for its largest numeric ID.
+// the continuation with this client's metadata and the full wire ID allowance.
 func fitsForwardFrame(arguments json.RawMessage, handle string, request *mcp.CallToolRequest, sendEnabled bool) bool {
 	// The placeholder keeps envelope marshaling from rewriting the client's argument bytes.
 	const placeholder = "null"
 	params := mcp.CallToolParams{Name: sendForwardTool, Arguments: json.RawMessage(placeholder)}
-	id := int64(1)
+	extraIDBytes := 0
 	if sendEnabled {
-		id = math.MaxInt64
+		extraIDBytes = stdioframe.MaxForwardIDBytes - 1 // replace the one-byte ID below
 		params.Meta = request.Params.Meta
 		if request.ProtocolVersion() >= "2026-07-28" {
 			// rand.Text handles and challenges have the same encoded length.
@@ -217,8 +216,8 @@ func fitsForwardFrame(arguments json.RawMessage, handle string, request *mcp.Cal
 		}
 	}
 
-	frame, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": params})
-	return err == nil && len(frame)-len(placeholder)+len(arguments)+1 <= stdioframe.MaxFrameBytes
+	frame, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params})
+	return err == nil && len(frame)-len(placeholder)+len(arguments)+extraIDBytes+1 <= stdioframe.MaxFrameBytes
 }
 
 func (pending *preparedForward) valid(now time.Time) bool {

@@ -6,6 +6,7 @@ toolchain go1.27.4
 
 require (
 	authelia.com/provider/oauth2 v0.4.3
+	github.com/ebitengine/purego v0.11.3
 	github.com/emersion/go-imap/v2 v2.0.0-beta.8
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	go.etcd.io/bbolt v1.5.0

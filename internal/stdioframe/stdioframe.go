@@ -17,6 +17,8 @@ package stdioframe
 
 import (
 	"bufio"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"io"
 
@@ -27,6 +29,9 @@ import (
 // MaxFrameBytes is the ceiling on one newline-delimited stdio frame,
 // including its terminating newline.
 const MaxFrameBytes = 64 * 1024
+
+// MaxForwardIDBytes accommodates a quoted UUID on both send_forward calls.
+const MaxForwardIDBytes = 38
 
 var (
 	errStdioFrameTooLarge = errors.New("stdio frame exceeds limit")
@@ -99,7 +104,7 @@ func (reader *boundedFrameReader) Read(destination []byte) (int, error) {
 			reader.terminalErr = err
 			return 0, err
 		}
-		if !strictjson.ValidateObject(frame, reader.maximum) {
+		if !strictjson.ValidateObject(frame, reader.maximum) || oversizedForwardID(frame) {
 			reader.terminalErr = errStdioFrameInvalid
 			return 0, reader.terminalErr
 		}
@@ -113,4 +118,18 @@ func (reader *boundedFrameReader) Read(destination []byte) (int, error) {
 	count := copy(destination, reader.pending)
 	reader.pending = reader.pending[count:]
 	return count, nil
+}
+
+// Check the wire token here, before the SDK decodes escapes and strips the ID
+// from the request passed to the tool handler.
+func oversizedForwardID(frame []byte) bool {
+	var call struct {
+		ID     jsontext.Value `json:"id"`
+		Method string         `json:"method"`
+		Params struct {
+			Name string `json:"name"`
+		} `json:"params"`
+	}
+	return json.Unmarshal(frame, &call, jsontext.AllowInvalidUTF8(true)) == nil && call.Method == "tools/call" &&
+		call.Params.Name == "send_forward" && len(call.ID) > MaxForwardIDBytes
 }
