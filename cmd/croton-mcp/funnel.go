@@ -465,6 +465,8 @@ func (f *tailscaleFunnel) remove() error {
 	return nil
 }
 
+var funnelProbeTransport http.RoundTripper = &http.Transport{DisableKeepAlives: true}
+
 func (f *tailscaleFunnel) serve(ctx context.Context, listener net.Listener, handler http.Handler) (err error) {
 	// Keep the protected listener bound until cleanup has inspected the route.
 	backend, stopBackend := context.WithCancel(context.WithoutCancel(ctx))
@@ -486,7 +488,7 @@ func (f *tailscaleFunnel) serve(ctx context.Context, listener net.Listener, hand
 	}
 	req.Host = f.node.host
 	client := http.Client{
-		Transport:     &http.Transport{DisableKeepAlives: true},
+		Transport:     funnelProbeTransport,
 		Timeout:       3 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}

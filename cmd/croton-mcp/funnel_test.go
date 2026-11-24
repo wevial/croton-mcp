@@ -27,13 +27,14 @@ const funnelNodeJSON = `{"BackendState":"Running","Self":{"ID":"node.test","DNSN
 const funnelScript = `#!/bin/sh
 set -eu
 cd "${0%/*}"
-# Check the backend before even recording the publication attempt.
-probe_status=0
+# Snapshot Croton's own probe result as soon as the publication command starts.
 if [ "$1 ${2-}" = 'funnel --bg' ]; then
-  CROTON_TEST_FUNNEL_TARGET="$4" "$CROTON_TEST_BINARY" -test.run='^TestFunnelBackendProbe$' >probe-result || probe_status=$?
+  expected="GET $4/mcp croton.tail.test 401 "'Bearer resource_metadata="https://croton.tail.test/.well-known/oauth-protected-resource/mcp"'
+  if [ ! -f probe-response ] || ! IFS= read -r response < probe-response || [ "$response" != "$expected" ]; then
+    printf '%s\n' 'publication started before Croton received the expected bearer challenge' >> calls
+  fi
 fi
 printf '%s\n' "$*" >> calls
-[ "$probe_status" -eq 0 ] || exit "$probe_status"
 case "$1 ${2-}" in
   'funnel --bg'|'funnel --https=443')
     if [ -f version-warning ] || [ -f prompt ]; then
@@ -97,12 +98,6 @@ func acceptFunnel(ctx context.Context, host, target string) error {
 
 func newFunnelFixture(t *testing.T, config string) funnelFixture {
 	t.Helper()
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("CROTON_TEST_BINARY", executable)
-
 	probe, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -234,31 +229,24 @@ func TestFunnelServeApproval(t *testing.T) {
 	}
 }
 
-func TestFunnelBackendProbe(t *testing.T) {
-	target := os.Getenv("CROTON_TEST_FUNNEL_TARGET")
-	if target == "" {
-		return
+type recordingFunnelTransport struct {
+	http.RoundTripper
+	responseFile string
+}
+
+func (r recordingFunnelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := r.RoundTripper.RoundTrip(req)
+	if err != nil {
+		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, target+"/mcp", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Host = "croton.tail.test"
-	client := http.Client{
-		Timeout:       time.Second,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	line := fmt.Sprintf("%s %s %s %d %s\n", req.Method, req.URL, req.Host, resp.StatusCode, resp.Header.Get("WWW-Authenticate"))
+	if err := os.WriteFile(r.responseFile, []byte(line), 0600); err != nil {
+		resp.Body.Close()
+		return nil, err
 	}
 
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized || resp.Header.Get("WWW-Authenticate") !=
-		`Bearer resource_metadata="https://croton.tail.test/.well-known/oauth-protected-resource/mcp"` {
-		t.Fatal("Funnel invocation requires the protected backend's bearer challenge")
-	}
+	return resp, nil
 }
 
 func TestFunnelServeLifecycle(t *testing.T) {
@@ -283,22 +271,25 @@ func TestFunnelServeLifecycle(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFunnelFixture(t, config)
-			t.Cleanup(func() {
-				if t.Failed() {
-					if result, err := os.ReadFile(filepath.Join(f.dir, "probe-result")); err == nil {
-						t.Logf("backend probe at Funnel invocation: %s", result)
-					}
-				}
-			})
 			f.write(t, tc.name, "")
 			if tc.name == "wrong readback" {
 				f.write(t, "owned", `{"AllowFunnel":{"croton.tail.test:443":true}}`)
 			}
 			ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
-			defer cancel()
+
+			transport := funnelProbeTransport
+			funnelProbeTransport = recordingFunnelTransport{transport, filepath.Join(f.dir, "probe-response")}
 
 			done := make(chan error, 1)
-			go func() { done <- runCLI(ctx, f.args, io.Discard, owneroauth.Defaults(), acceptFunnel) }()
+			go func() {
+				defer close(done)
+				done <- runCLI(ctx, f.args, io.Discard, owneroauth.Defaults(), acceptFunnel)
+			}()
+			defer func() {
+				cancel()
+				<-done
+				funnelProbeTransport = transport
+			}()
 
 			if tc.serves {
 				waitForMarker(t, filepath.Join(f.dir, "readback"))
