@@ -125,11 +125,26 @@ func TestNormalizeMessageUsesOfflineHTMLFallback(t *testing.T) {
 func TestNormalizeMessagePreservesLiteralEncodedWordMarker(t *testing.T) {
 	t.Parallel()
 
-	for _, subject := range []string{"=? literal marker", "=? literal ?="} {
-		message, err := bridge.NormalizeMessage(strings.NewReader("Subject: "+subject+"\r\n\r\nsynthetic body"), bridge.NormalizeOptions{})
-		if err != nil || message.Headers.Subject != subject {
-			t.Errorf("normalize subject %q: got %q, error %v", subject, message.Headers.Subject, err)
-		}
+	checkLiteralSubject(t, "=? literal marker")
+}
+
+func TestNormalizeMessagePreservesTerminatedLiteralEncodedWordMarker(t *testing.T) {
+	t.Parallel()
+
+	checkLiteralSubject(t, "=? literal ?=")
+}
+
+func checkLiteralSubject(t *testing.T, subject string) {
+	t.Helper()
+
+	raw := "Subject: " + subject + "\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\nsynthetic body"
+	message, err := bridge.NormalizeMessage(strings.NewReader(raw), bridge.NormalizeOptions{})
+	if err != nil {
+		t.Fatalf("normalize subject %q: %v", subject, err)
+	}
+
+	if message.Headers.Subject != subject {
+		t.Errorf("subject = %q, want %q", message.Headers.Subject, subject)
 	}
 }
 
