@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/wevial/croton-mcp/bridge"
+	"github.com/wevial/croton-mcp/internal/forwardpolicy"
 	"github.com/wevial/croton-mcp/internal/stdioframe"
 	"github.com/wevial/croton-mcp/internal/strictjson"
 )
@@ -45,7 +47,11 @@ type forwardResult struct {
 	Preview forwardPreview `json:"preview"`
 }
 
+type forwardSessionKey struct{}
+
 type preparedForward struct {
+	session   *mcp.ServerSession
+	challenge string
 	forwardResult
 	message          string
 	expires          time.Time
@@ -76,9 +82,12 @@ func registerForward(server *mcp.Server, options Options) {
 		}, []string{"messageId", "to"}),
 		run: runPrepareForward,
 	}
+	handler := makeHandler(def, options)
 	server.AddTool(&mcp.Tool{Name: def.name, Description: def.description, InputSchema: def.schema,
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: new(false)},
-	}, makeHandler(def, options))
+	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return handler(context.WithValue(ctx, forwardSessionKey{}, req.Session), req)
+	})
 }
 
 func runPrepareForward(ctx context.Context, options Options, args json.RawMessage) (any, string) {
@@ -126,7 +135,8 @@ func runPrepareForward(ctx context.Context, options Options, args json.RawMessag
 	if len(message) > bridge.MaxForwardMIMEBytes {
 		return nil, errBoundsExceeded
 	}
-	pending := &preparedForward{forwardResult: result, message: message, expires: now.Add(2 * time.Minute), connectionClosed: source.ConnectionClosed}
+	session, _ := ctx.Value(forwardSessionKey{}).(*mcp.ServerSession)
+	pending := &preparedForward{session: session, forwardResult: result, message: message, expires: now.Add(2 * time.Minute), connectionClosed: source.ConnectionClosed}
 
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -216,6 +226,103 @@ func (store *ForwardPreviews) lookup(approval forwardResult, now time.Time) (str
 		return "", false
 	}
 	return pending.message, true
+}
+
+// openApproved checks the form, atomically spends the preview and opens the
+// authenticated transport. The MCP catalog has no submission handler.
+func (store *ForwardPreviews) openApproved(ctx context.Context, cfg bridge.ForwardConfig, req *mcp.CallToolRequest) (*bridge.ForwardSMTP, *preparedForward, *mcp.CallToolResult) {
+	pending, result := store.approval(cfg, req)
+	if result != nil {
+		return nil, nil, result
+	}
+
+	smtp, err := store.adapter.OpenForwardSMTP(ctx, cfg, pending.Preview.From, pending.connectionClosed, func() error {
+		return store.reserve(ctx, cfg.StateDir, pending)
+	})
+	if err != nil {
+		return nil, nil, errorResult(errUnavailable)
+	}
+	return smtp, pending, nil
+}
+
+// approval handles both rounds of a form elicitation. The SDK carries the
+// input request for current clients and handles the round trip for legacy ones.
+// The challenge belongs to just this preview, session and form.
+func (store *ForwardPreviews) approval(cfg bridge.ForwardConfig, request *mcp.CallToolRequest) (*preparedForward, *mcp.CallToolResult) {
+	if !cfg.Enabled || request == nil || request.Session == nil || request.Params == nil {
+		return nil, errorResult(errUnavailable)
+	}
+	caps := request.ClientCapabilities()
+	if caps == nil || caps.Elicitation == nil || caps.Elicitation.Form == nil {
+		return nil, errorResult(errUnsupported)
+	}
+
+	params := request.Params
+	if len(params.Arguments) > stdioframe.MaxFrameBytes {
+		return nil, errorResult(errBoundsExceeded)
+	}
+	args := jsontext.Value(bytes.Clone(params.Arguments))
+	if err := args.Format(jsontext.ReorderRawObjects(true)); err != nil {
+		return nil, errorResult(errInvalidArgument)
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	pending := store.current
+	if !pending.valid(time.Now()) || pending.session != request.Session {
+		return nil, errorResult(errUnavailable)
+	}
+	// Compare the whole JSON tree including required zero-valued fields.
+	// Formatting preserves string values and number syntax and removes only
+	// insignificant object order, whitespace and escape differences.
+	stored, err := json.Marshal(pending.forwardResult)
+	want := jsontext.Value(stored)
+	if err != nil || want.Format(jsontext.ReorderRawObjects(true)) != nil || !bytes.Equal(want, args) {
+		return nil, errorResult(errInvalidArgument)
+	}
+
+	if params.InputResponses == nil && params.RequestState == "" {
+		pending.challenge = rand.Text()
+		preview, _ := json.Marshal(pending.Preview)
+		return nil, &mcp.CallToolResult{
+			InputRequests: mcp.InputRequestMap{"confirmation": &mcp.ElicitParams{
+				Mode: "form", Message: "Approve this one forward? Review the complete preview.\n" + string(preview),
+				RequestedSchema: objectSchema(map[string]json.RawMessage{"confirm": booleanSchema()}, []string{"confirm"}),
+			}},
+			RequestState: pending.challenge,
+		}
+	}
+
+	if pending.challenge == "" || pending.challenge != params.RequestState {
+		return nil, errorResult(errInvalidArgument)
+	}
+	pending.challenge = ""
+	response, ok := params.InputResponses["confirmation"].(*mcp.ElicitResult)
+	if !ok || response == nil || len(params.InputResponses) != 1 || response.Action != "accept" ||
+		len(response.Content) != 1 || response.Content["confirm"] != true {
+		return nil, errorResult(errInvalidArgument)
+	}
+	return pending, nil
+}
+
+// reserve consumes the exact prepared message after the adapter has rechecked
+// its login. A committed slot survives all subsequent transport outcomes.
+func (store *ForwardPreviews) reserve(ctx context.Context, dir string, pending *preparedForward) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if ctx.Err() != nil || pending != store.current || !pending.valid(time.Now()) {
+		return forwardpolicy.ErrUnavailable
+	}
+
+	if err := forwardpolicy.Reserve(dir, pending.Preview.From); err != nil {
+		return err
+	}
+	store.current = nil
+	store.timer.Stop()
+	if ctx.Err() != nil || !pending.valid(time.Now()) {
+		return forwardpolicy.ErrUnavailable
+	}
+	return nil
 }
 
 func serializeForward(preview forwardPreview, now time.Time) string {

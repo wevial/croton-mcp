@@ -95,6 +95,7 @@ JSON: unknown, null, duplicate and case-folded-alias fields fail.
 | `bounds.maxHeaderBytes` | 16384 | header-only reads; clamped to 65536 |
 | `audit.enabled` | false | tool-call audit lines on stderr |
 | `mutations.enabled` | false | see [Enabling writes](#7-enabling-writes) |
+| `forward.enabled` | false | leave false or omit for preview-only forwarding |
 
 ## 5. Register with your MCP client
 
@@ -243,10 +244,17 @@ secrets, mail, account identifiers, token-bearing URLs and raw requests.
 ## 6. Verify
 
 Listing tools validates the configuration but does not run the helper or dial
-Bridge. Expect exactly `list_folders`, `search_mail`, `get_message`,
-`get_thread`, `list_attachments` and `select_digest_candidates`, and no
-resources or prompts. The first `tools/call`, even `list_folders`, is the
-first helper run, Bridge connection and live read.
+Bridge. Both transports list `list_folders`, `search_mail`, `get_message`,
+`get_thread`, `list_attachments` and `select_digest_candidates`. Local stdio
+also lists `prepare_forward`. Resources and prompts are absent. The first
+`tools/call`, even `list_folders`, is the first helper run, Bridge connection
+and live read.
+
+Forwarding currently ends at the local preview. Setting `forward.enabled` to
+`true` stops startup. A preview handle stays in the stdio session and expires
+after two minutes. Preview equality verifies the message contents. Human
+approval requires a trusted client to display the complete preview and obtain
+a decision for that call in the same turn. Leave automatic approval off.
 
 ## 7. Enabling writes
 

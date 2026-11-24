@@ -21,6 +21,7 @@ type Config struct {
 	Bounds    BoundsPatch     `json:"bounds"`
 	Audit     AuditConfig     `json:"audit"`
 	Mutations MutationsConfig `json:"mutations"`
+	Forward   ForwardConfig   `json:"forward"`
 }
 
 // IMAPConfig configures the local Proton Mail Bridge endpoint.
@@ -57,6 +58,15 @@ type AuditConfig struct {
 // Enabling it registers tools; it never approves an individual call.
 type MutationsConfig struct {
 	Enabled bool `json:"enabled"`
+}
+
+// ForwardConfig describes the operator's settings for a local SMTP session.
+type ForwardConfig struct {
+	Enabled        bool   `json:"enabled"`
+	SMTPPort       int    `json:"smtpPort"`
+	SMTPTLSMode    string `json:"smtpTLSMode"`
+	SMTPSPKISHA256 string `json:"smtpSPKISHA256"`
+	StateDir       string `json:"stateDir"`
 }
 
 // ValidatedConfig has defaults and hard ceilings applied and is safe to use for connections.

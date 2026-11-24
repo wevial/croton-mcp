@@ -111,7 +111,7 @@ func runCLI(ctx context.Context, arguments []string, stderr io.Writer, settings 
 		if authorizer != "owner" {
 			return errors.New("HTTP authorizer unavailable")
 		}
-		if loaded.Mutations.Enabled {
+		if loaded.Mutations.Enabled || loaded.Forward.Enabled {
 			return errors.New("HTTP requires read-only configuration")
 		}
 		address, err := netip.ParseAddrPort(bind)
@@ -133,6 +133,10 @@ func runCLI(ctx context.Context, arguments []string, stderr io.Writer, settings 
 		}
 
 		return serveHTTP(ctx, loaded, address, dir, cert, key, publicOrigin, settings, auditor, funnel)
+	}
+
+	if loaded.Forward.Enabled {
+		return errors.New("forward submission unavailable")
 	}
 
 	adapter, err := bridge.NewAdapter(loaded)
