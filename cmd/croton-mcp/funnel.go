@@ -324,7 +324,7 @@ func (f *tailscaleFunnel) currentNode(ctx context.Context, requireEligibility bo
 		json.Unmarshal(self["DNSName"], &dnsName) != nil {
 		return node, errStatus
 	}
-	if id, ok := self["ID"]; ok && json.Unmarshal(id, &node.id) != nil {
+	if json.Unmarshal(self["ID"], &node.id) != nil || strings.TrimSpace(node.id) == "" {
 		return node, errStatus
 	}
 

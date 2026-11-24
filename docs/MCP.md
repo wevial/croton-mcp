@@ -370,16 +370,19 @@ credentials, cookies, query strings and request and response bodies.
 Run `croton-mcp serve --public=tailscale --authorizer owner --config /absolute/path/to/croton.json`
 with Tailscale CLI 1.104.5 or later. Use the default `--bind=127.0.0.1:8787`
 or choose a port on `127.0.0.1` or `[::1]`. Croton checks the bind before
-asking for approval. The node needs HTTPS and Funnel eligibility for port 443.
+asking for approval. Tailscale must report a nonempty node ID and HTTPS and
+Funnel eligibility for port 443.
 Routes on other ports can coexist, including case-sensitive mounts such as
 `/api` and `/API`. Keep exclusive control of port 443 for the entire run.
 Checking the configuration and changing it are separate Tailscale CLI calls.
 
 Croton shows the node's HTTPS origin, loopback target and routes on the owner
 terminal. Typing `yes` approves public access to **all paths on port 443**.
-Croton checks the configuration again, starts the protected backend, and verifies
-the background route. On a handled exit it removes the matching route and
-verifies removal. A Tailscale client/daemon version warning permits publication
-and cleanup to continue. A feature-enablement prompt aborts the command.
+Croton checks the configuration again and waits for the backend's bearer
+challenge before starting Funnel. It then verifies the background route.
+On a handled exit it checks that the node ID, hostname and published
+configuration still match before removing the route and verifying removal.
+A Tailscale client/daemon version warning permits publication and cleanup to
+continue. A feature-enablement prompt aborts the command.
 If ownership is uncertain, Croton warns and leaves the
 configuration alone. After a crash, inspect `tailscale funnel status` manually.

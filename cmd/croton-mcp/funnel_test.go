@@ -27,7 +27,13 @@ const funnelNodeJSON = `{"BackendState":"Running","Self":{"ID":"node.test","DNSN
 const funnelScript = `#!/bin/sh
 set -eu
 cd "${0%/*}"
+# Check the backend before even recording the publication attempt.
+probe_status=0
+if [ "$1 ${2-}" = 'funnel --bg' ]; then
+  CROTON_TEST_FUNNEL_TARGET="$4" "$CROTON_TEST_BINARY" -test.run='^TestFunnelBackendProbe$' >probe-result || probe_status=$?
+fi
 printf '%s\n' "$*" >> calls
+[ "$probe_status" -eq 0 ] || exit "$probe_status"
 case "$1 ${2-}" in
   'funnel --bg'|'funnel --https=443')
     if [ -f version-warning ] || [ -f prompt ]; then
@@ -52,8 +58,6 @@ case "$*" in
       printf 'To enable Funnel, visit private.test\n' >&2
       exec sleep 30
     fi
-    touch publishing
-    while [ ! -f proceed ]; do sleep 0.01; done
     cp owned config
     touch published
     if [ -f fail-publish ]; then exit 1; fi
@@ -93,6 +97,12 @@ func acceptFunnel(ctx context.Context, host, target string) error {
 
 func newFunnelFixture(t *testing.T, config string) funnelFixture {
 	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CROTON_TEST_BINARY", executable)
+
 	probe, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -121,14 +131,18 @@ func newFunnelFixture(t *testing.T, config string) funnelFixture {
 var preflightCalls = []string{"version", "status --json", "serve status --json", "funnel status --json"}
 
 func TestFunnelServePreflight(t *testing.T) {
+	const occupied = " configuration occupies port 443. Move it to another port or use a dedicated node"
 	config := writeServerConfig(t, fixtureBridge(t))
 	for _, tc := range []struct{ name, file, data, diagnostic string }{
 		{"old CLI", "version", "1.104.4", "1.104.5"},
 		{"unreadable version", "version", "private.test", "1.104.5"},
-		{"background", "config", `{"TCP":{"443":{"HTTPS":true}}}`, "Serve TCP"},
-		{"foreground", "config", `{"Foreground":{"private.test":{"TCP":{"443":{"HTTP":true}}}}}`, "foreground"},
-		{"Web", "config", `{"Web":{"private.test:443":{"Handlers":{"/":{"Text":"private.test"}}}}}`, "Serve Web"},
-		{"Funnel", "config", `{"AllowFunnel":{"private.test:443":true}}`, "AllowFunnel"},
+		{"background", "config", `{"TCP":{"443":{"HTTPS":true}}}`, "Serve TCP" + occupied},
+		{"foreground", "config", `{"Foreground":{"private.test":{"TCP":{"443":{"HTTP":true}}}}}`, "foreground Serve/Funnel: Serve TCP" + occupied},
+		{"Web", "config", `{"Web":{"private.test:443":{"Handlers":{"/":{"Text":"private.test"}}}}}`, "Serve Web" + occupied},
+		{"Funnel", "config", `{"AllowFunnel":{"private.test:443":true}}`, "AllowFunnel" + occupied},
+		{"missing node ID", "node", strings.Replace(funnelNodeJSON, `"ID":"node.test",`, "", 1), "Run tailscale"},
+		{"null node ID", "node", strings.Replace(funnelNodeJSON, `"node.test"`, "null", 1), "Run tailscale"},
+		{"empty node ID", "node", strings.Replace(funnelNodeJSON, `"node.test"`, `""`, 1), "Run tailscale"},
 		{"missing HTTPS", "node", strings.Replace(funnelNodeJSON, `"https":null,`, "", 1), "eligibility"},
 		{"missing Funnel", "node", strings.Replace(funnelNodeJSON, `"funnel":[]`, `"other":[]`, 1), "eligibility"},
 		{"wrong ports", "node", strings.Replace(funnelNodeJSON, "440-445", "1443", 1), "443"},
@@ -148,7 +162,10 @@ func TestFunnelServePreflight(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFunnelFixture(t, config)
 			f.write(t, tc.file, tc.data)
-			err := run(t.Context(), f.args, io.Discard, owneroauth.Defaults())
+			err := runCLI(t.Context(), f.args, io.Discard, owneroauth.Defaults(), func(context.Context, string, string) error {
+				t.Fatal("preflight reached approval")
+				return errDeclined
+			})
 			if err == nil || !strings.Contains(err.Error(), tc.diagnostic) || strings.Contains(err.Error(), "private.test") {
 				t.Fatalf("unexpected refusal: %v", err)
 			}
@@ -217,6 +234,33 @@ func TestFunnelServeApproval(t *testing.T) {
 	}
 }
 
+func TestFunnelBackendProbe(t *testing.T) {
+	target := os.Getenv("CROTON_TEST_FUNNEL_TARGET")
+	if target == "" {
+		return
+	}
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, target+"/mcp", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "croton.tail.test"
+	client := http.Client{
+		Timeout:       time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized || resp.Header.Get("WWW-Authenticate") !=
+		`Bearer resource_metadata="https://croton.tail.test/.well-known/oauth-protected-resource/mcp"` {
+		t.Fatal("Funnel invocation requires the protected backend's bearer challenge")
+	}
+}
+
 func TestFunnelServeLifecycle(t *testing.T) {
 	config := writeServerConfig(t, fixtureBridge(t))
 	for _, tc := range []struct {
@@ -230,6 +274,7 @@ func TestFunnelServeLifecycle(t *testing.T) {
 		{"wrong readback", "verified", false, false},
 		{"other mount", "ownership", true, false},
 		{"different node", "ownership", true, false},
+		{"empty node ID", "ownership", true, false},
 		{"replaced target", "ownership", true, false},
 		{"changed foreground", "ownership", true, false},
 		{"unreadable at stop", "ownership", true, false},
@@ -238,6 +283,13 @@ func TestFunnelServeLifecycle(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFunnelFixture(t, config)
+			t.Cleanup(func() {
+				if t.Failed() {
+					if result, err := os.ReadFile(filepath.Join(f.dir, "probe-result")); err == nil {
+						t.Logf("backend probe at Funnel invocation: %s", result)
+					}
+				}
+			})
 			f.write(t, tc.name, "")
 			if tc.name == "wrong readback" {
 				f.write(t, "owned", `{"AllowFunnel":{"croton.tail.test:443":true}}`)
@@ -248,30 +300,13 @@ func TestFunnelServeLifecycle(t *testing.T) {
 			done := make(chan error, 1)
 			go func() { done <- runCLI(ctx, f.args, io.Discard, owneroauth.Defaults(), acceptFunnel) }()
 
-			if tc.name != "prompt" {
-				waitForMarker(t, filepath.Join(f.dir, "publishing"))
-				req, err := http.NewRequestWithContext(ctx, "GET", f.target+"/mcp", nil)
-				if err != nil {
-					t.Fatal(err)
-				}
-				req.Host = "croton.tail.test"
-				resp, err := http.DefaultClient.Do(req)
-				if err != nil {
-					t.Fatal(err)
-				}
-				resp.Body.Close()
-				if resp.StatusCode != 401 || resp.Header.Get("WWW-Authenticate") !=
-					`Bearer resource_metadata="https://croton.tail.test/.well-known/oauth-protected-resource/mcp"` {
-					t.Fatal("public command started before protected backend was ready")
-				}
-				f.write(t, "proceed", "")
-			}
-
 			if tc.serves {
 				waitForMarker(t, filepath.Join(f.dir, "readback"))
 				switch tc.name {
 				case "different node":
 					f.write(t, "node", strings.Replace(funnelNodeJSON, "node.test", "other.test", 1))
+				case "empty node ID":
+					f.write(t, "node", strings.Replace(funnelNodeJSON, `"node.test"`, `""`, 1))
 				case "other mount":
 					f.write(t, "config", strings.Replace(f.owned, `"Handlers":{`, `"Handlers":{"/private":{"Text":"private.test"},`, 1))
 				case "replaced target":
@@ -297,7 +332,7 @@ func TestFunnelServeLifecycle(t *testing.T) {
 				want = append(want, readback...)
 			}
 			want = append(want, "status --json")
-			if tc.name != "different node" {
+			if tc.name != "different node" && tc.name != "empty node ID" {
 				want = append(want, "serve status --json")
 				if tc.name != "unreadable at stop" {
 					want = append(want, "funnel status --json")
