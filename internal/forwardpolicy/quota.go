@@ -119,8 +119,7 @@ func update(dir string, create bool, write func(*bolt.Tx) error) error {
 		return ErrUnavailable
 	}
 
-	// Open holds the exclusive file lock until Close. Inspect both on-disk
-	// snapshots before bbolt can overwrite evidence of a fallback.
+	// Check both snapshots under the exclusive lock before an update can hide a fallback.
 	err = ErrUnavailable
 	if validMetaPages(file, db.Info().PageSize) {
 		err = db.Update(write)

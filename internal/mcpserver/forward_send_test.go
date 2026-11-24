@@ -43,8 +43,7 @@ type smtpDelivery struct {
 	from, to, message string
 }
 
-// Keep the private fixture under the sticky system temp root even when the
-// Go test runner uses a group-writable workspace or umask.
+// The sticky system temp root keeps group-writable workspaces out of the quota path.
 func newQuotaTestDir(t *testing.T) string {
 	t.Helper()
 	root, err := filepath.EvalSymlinks("/tmp")
@@ -243,7 +242,6 @@ func requirePreflightRefusal(t *testing.T, f *forwardFixture, cfg bridge.Forward
 }
 
 func TestForwardSend(t *testing.T) {
-	// Reopen the parent's fully reserved account in a fresh process.
 	if len(os.Args) > 2 && os.Args[len(os.Args)-2] == "--check-forward-quota" {
 		if err := forwardpolicy.Reserve(os.Args[len(os.Args)-1], forwardLogin); err != forwardpolicy.ErrLimit {
 			t.Fatal("fresh process lost reservations")
