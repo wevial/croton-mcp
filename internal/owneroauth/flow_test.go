@@ -142,9 +142,12 @@ func TestOwnerOAuthCodeRegistrationMetadata(t *testing.T) {
 		status         int
 	}{
 		{"optional metadata", `"client_uri":"https://client.test","software_id":"app.test","software_version":"1","extension":{"tags":["test"]}`, http.StatusCreated},
+		{"null in extension", `"example_extension":{"label":null}`, http.StatusCreated},
 		{"duplicate in extension", `"extension":{"tag":1,"tag":2}`, http.StatusBadRequest},
 		{"case alias", `"client_name":"one","CLIENT_NAME":"two"`, http.StatusBadRequest},
 		{"wrong known type", `"client_name":42`, http.StatusBadRequest},
+		{"null client name", `"client_name":null`, http.StatusBadRequest},
+		{"null grant types", `"grant_types":null`, http.StatusBadRequest},
 		{"oversize extension", `"extension":"` + strings.Repeat("x", 64<<10) + `"`, http.StatusRequestEntityTooLarge},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

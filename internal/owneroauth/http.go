@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"authelia.com/provider/oauth2"
@@ -85,6 +86,45 @@ func readForm(w http.ResponseWriter, r *http.Request) (url.Values, error) {
 	return parseValues(string(body))
 }
 
+func readRegistration(w http.ResponseWriter, r *http.Request) (registration, error) {
+	body, err := readBody(w, r, "application/json")
+	if err != nil {
+		return registration{}, err
+	}
+
+	var metadata map[string]json.RawMessage
+	if !strictjson.DecodeValue(body, stdioframe.MaxFrameBytes, &metadata) {
+		return registration{}, errInvalid
+	}
+
+	var c registration
+	for key, value := range metadata {
+		var field any
+		switch {
+		case strings.EqualFold(key, "client_name"):
+			field = &c.Name
+		case strings.EqualFold(key, "redirect_uris"):
+			field = &c.Redirects
+		case strings.EqualFold(key, "application_type"):
+			field = &c.Application
+		case strings.EqualFold(key, "token_endpoint_auth_method"):
+			field = &c.Auth
+		case strings.EqualFold(key, "grant_types"):
+			field = &c.Grants
+		case strings.EqualFold(key, "response_types"):
+			field = &c.Responses
+		default:
+			continue
+		}
+
+		if string(value) == "null" || json.Unmarshal(value, field) != nil {
+			return registration{}, errInvalid
+		}
+	}
+
+	return c, nil
+}
+
 func (a *Authority) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "same-origin")
@@ -128,20 +168,9 @@ func (a *Authority) route(w http.ResponseWriter, r *http.Request) error {
 			},
 		})
 	case "POST /register":
-		body, err := readBody(w, r, "application/json")
+		c, err := readRegistration(w, r)
 		if err != nil {
 			return err
-		}
-
-		// Validate the whole object, including metadata this server ignores.
-		var metadata json.RawMessage
-		if !strictjson.DecodeObject(body, stdioframe.MaxFrameBytes, &metadata) {
-			return errInvalid
-		}
-
-		var c registration
-		if err := json.Unmarshal(metadata, &c); err != nil {
-			return errInvalid
 		}
 
 		id, err := a.register(c)

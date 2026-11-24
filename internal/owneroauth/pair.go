@@ -15,12 +15,12 @@ import (
 )
 
 type registration struct {
-	Name        string   `json:"client_name,omitempty"`
-	Redirects   []string `json:"redirect_uris"`
-	Application string   `json:"application_type,omitempty"`
-	Auth        string   `json:"token_endpoint_auth_method,omitempty"`
-	Grants      []string `json:"grant_types,omitempty"`
-	Responses   []string `json:"response_types,omitempty"`
+	Name        string
+	Redirects   []string
+	Application string
+	Auth        string
+	Grants      []string
+	Responses   []string
 }
 
 type authorization struct {
