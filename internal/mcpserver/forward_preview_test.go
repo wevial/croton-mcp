@@ -49,8 +49,7 @@ func multiStructure(kind string, children ...string) string {
 	return "(" + strings.Join(children, " ") + " \"" + kind + "\" NIL NIL NIL NIL)"
 }
 
-// A one-UID TLS transcript. Only a matching numbered PEEK can return the
-// configured literal. An attached message carries a real nested BODYSTRUCTURE.
+// Only a matching numbered PEEK can return the configured body literal.
 type forwardFixture struct {
 	mu                               sync.Mutex
 	conn                             net.Conn
@@ -347,8 +346,7 @@ func TestForwardPreview(t *testing.T) {
 			}
 		}
 
-		// Force subject folding and QP soft breaks while preserving every
-		// decoded rune, hard break and trailing blank line.
+		// Exercise subject folding and QP soft breaks alongside hard breaks.
 		f.setHeader(strings.Replace(forwardHeader, "Original  subject", strings.Repeat("Résumé", 180), 1))
 		sourceText := strings.Repeat("é=", 600) + "\r\n\r\n"
 		f.set(plainStructure(sourceText), "1", sourceText)

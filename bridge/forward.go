@@ -58,9 +58,7 @@ func (adapter *Adapter) ReadForwardSource(ctx context.Context, identifier string
 		}
 
 		section := plan.section
-		// A partial PEEK that fills the entire requested range cannot
-		// distinguish a complete section from a longer one. Reserve room
-		// for EOF detection within both the section and total read budgets.
+		// Reserve one octet in both read budgets to detect an underdeclared section.
 		if uint64(section.size) >= uint64(min(bounds.MaxBodyBytes, MaxForwardMIMEBytes)) {
 			return errorCode(CodeBoundsExceeded)
 		}
@@ -274,7 +272,7 @@ func hasNonASCII(raw []byte) bool {
 	return bytes.ContainsFunc(raw, func(r rune) bool { return r >= utf8.RuneSelf })
 }
 
-// Decode in place. The standard reader repairs malformed escapes and strips
+// The standard reader repairs malformed escapes and strips
 // unencoded trailing whitespace, both of which would produce a lossy preview.
 func decodeForwardQP(raw []byte) ([]byte, error) {
 	out := raw[:0]

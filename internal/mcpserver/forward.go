@@ -174,8 +174,7 @@ func plainMailbox(value string) bool {
 	return true
 }
 
-// fitsForwardFrame sizes the canonical call with the exact approval object.
-// MaxFrameBytes includes the newline that delimits the JSON-RPC frame.
+// MaxFrameBytes includes the canonical call's terminating newline.
 func fitsForwardFrame(result forwardResult) bool {
 	args, err := json.Marshal(result)
 	const envelope = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send_forward","arguments":`
@@ -194,8 +193,7 @@ func (pending *preparedForward) valid(now time.Time) bool {
 	}
 }
 
-// lookup matches the whole approved preview and returns the immutable MIME
-// bytes originally serialized with its envelope and fresh Message-ID.
+// Keep the approved MIME bytes so lookup preserves the original envelope and Message-ID.
 func (store *ForwardPreviews) lookup(approval forwardResult, now time.Time) (string, bool) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -215,8 +213,7 @@ func serializeForward(preview forwardPreview, now time.Time) string {
 	var wire strings.Builder
 	fmt.Fprintf(&wire, "From: %s\r\nTo: %s\r\nDate: %s\r\nMessage-ID: <%s@croton.invalid>\r\nSubject: ",
 		preview.From, preview.To, now.Format(time.RFC1123Z), rand.Text())
-	// Fold between RFC 2047 words. Even an unbroken ASCII subject can be
-	// longer than the 998-octet line limit.
+	// RFC 2047 words let even an unbroken ASCII subject fold within the 998-octet limit.
 	subject := preview.Subject
 	for len(subject) > 0 {
 		end := min(45, len(subject))
