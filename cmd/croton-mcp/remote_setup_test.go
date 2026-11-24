@@ -25,8 +25,7 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// Croton prompts on /dev/tty. Give each invocation its own controlling
-// terminal on both supported platforms. Keep its output in the test process.
+// A private controlling terminal keeps each command's /dev/tty prompts and replies inside the test.
 func setupTerminal(ctx context.Context, binary, input string, args ...string) *exec.Cmd {
 	const driver = `
 import errno, os, pty, signal, sys
@@ -193,8 +192,7 @@ func setupProxyClient(t *testing.T, targetURL string) *httpProcess {
 	t.Helper()
 	const host = "croton.tail.test"
 
-	// Model the approved host's TLS termination entirely on loopback. Preserve
-	// the external Host and Origin, including for the browser's secure cookie.
+	// Terminate TLS on loopback while preserving the public Host and Origin for the secure cookie.
 	target, err := url.Parse(targetURL)
 	if err != nil {
 		t.Fatal(err)
