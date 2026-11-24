@@ -14,8 +14,10 @@ registration steps are in [INSTALL.md](INSTALL.md).
 - No resources, prompts, Roots, Sampling or MCP Logging.
 - Each inbound frame must be one strictly decoded JSON object of at most
   64 KiB before the SDK sees it.
-- Tool arguments are capped at 24 KiB and decoded strictly: one object, no
-  unknown, null, duplicate or case-folded-alias fields, no trailing values.
+- Tool arguments are capped at 24 KiB except for `prepare_forward`, whose
+  arguments may use the space available in the 64 KiB stdio request frame.
+  Every tool requires one strictly decoded arguments object with no unknown,
+  null, duplicate or case-folded-alias fields and no trailing values.
   Schemas are closed (`additionalProperties: false`) and publish `maxLength`
   and `x-maxBytes`, but the server validates and clamps every value itself.
 - Every successful result is one JSON text item of at most 100 000 bytes.
@@ -237,8 +239,11 @@ headers of inline parts. Ambiguous declarations, HTML-only, signed or flowed
 mail, primary nested messages and incomplete or undecodable text are refused.
 A declared charset or format must have a single, decodable parameter value.
 Multipart containers accept 7bit (the default), 8bit or binary transfer
-encoding. Base64 and quoted-printable source lines can contain up to 76
-encoded characters before CRLF. Source text must decode losslessly.
+encoding. In a 7bit or 8bit text section, lines are limited to 998 octets,
+line breaks must be CRLF and NUL is forbidden. A 7bit section also requires
+ASCII octets. Base64 and quoted-printable source lines can contain up to 76
+encoded characters before CRLF. Quoted-printable escapes require uppercase
+hexadecimal digits. Source text must decode losslessly.
 Supported charsets include UTF-8, ISO-8859-1, Windows-1252 and ISO-2022-JP
 with either JIS X 0208 designation. Authored text can include a literal
 Unicode replacement character (U+FFFD).

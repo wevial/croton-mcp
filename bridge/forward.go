@@ -15,6 +15,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"golang.org/x/net/html/charset"
 	"golang.org/x/text/encoding/ianaindex"
 	"golang.org/x/text/encoding/japanese"
 	"golang.org/x/text/encoding/simplifiedchinese"
@@ -79,22 +80,6 @@ func (adapter *Adapter) ReadForwardSource(ctx context.Context, identifier string
 			return err
 		}
 
-		h := headers.Headers
-		if headers.Truncation.HeaderCount || headers.Truncation.Headers {
-			return errorCode(CodeBoundsExceeded)
-		}
-		if headers.Metadata.From == "" || headers.Metadata.DateSource != DateSourceHeader ||
-			!validSenderEncodedWords(headers.Metadata.Subject) || !utf8.ValidString(headers.Metadata.Subject) {
-			return errorCode(CodeUnsupported)
-		}
-		for _, value := range []string{h.From, h.Date, h.Subject} {
-			if strings.ContainsFunc(value, func(r rune) bool {
-				return r == utf8.RuneError || (unicode.IsControl(r) && r != '\t')
-			}) {
-				return errorCode(CodeUnsupported)
-			}
-		}
-
 		raw, err := session.UIDFetchBody(ctx, id.UID, section.part, probe)
 		if err != nil {
 			return err
@@ -108,7 +93,7 @@ func (adapter *Adapter) ReadForwardSource(ctx context.Context, identifier string
 		}
 
 		source = ForwardSource{Login: adapter.login, ConnectionClosed: adapter.connectionClosed,
-			From: h.From, Date: h.Date, Subject: h.Subject, Text: body, Omissions: plan.omissions}
+			From: headers.From, Date: headers.Date, Subject: headers.Subject, Text: body, Omissions: plan.omissions}
 		return nil
 	})
 
@@ -218,36 +203,90 @@ func (plan *forwardSelection) visit(structure bodyStructure, path []int, parent 
 
 // BODYSTRUCTURE can normalize conflicting parameters or omit a malformed
 // disposition. Check the original declarations before fetching any body bytes.
-func (plan *forwardSelection) readHeaders(ctx context.Context, session bridgeSession, uid uint32, headerLimit, remaining int) (MessageHeaders, error) {
-	var root MessageHeaders
+func (plan *forwardSelection) readHeaders(ctx context.Context, session bridgeSession, uid uint32, headerLimit, remaining int) (CanonicalHeaders, error) {
+	var root CanonicalHeaders
 	for _, entity := range plan.inline {
 		limit := min(headerLimit, remaining)
 		raw, err := session.fetchMIMEHeader(ctx, uid, entity.part, limit)
 		if err != nil {
-			return MessageHeaders{}, err
+			return CanonicalHeaders{}, err
 		}
 		remaining -= len(raw)
 
 		if headerTerminatorEnd(raw) != len(raw) {
-			return MessageHeaders{}, errorCode(CodeIMAPProtocol)
+			return CanonicalHeaders{}, errorCode(CodeIMAPProtocol)
 		}
 		if _, truncated := boundedHeaderCount(raw, defaultMaxHeaderCount); truncated {
-			return MessageHeaders{}, errorCode(CodeBoundsExceeded)
+			return CanonicalHeaders{}, errorCode(CodeBoundsExceeded)
 		}
 		message, err := mail.ReadMessage(bytes.NewReader(raw))
 		if err != nil || !entity.validHeader(message.Header, plan.section) {
-			return MessageHeaders{}, errorCode(CodeUnsupported)
+			return CanonicalHeaders{}, errorCode(CodeUnsupported)
 		}
 
 		if len(entity.part) == 0 {
-			root, err = selectedHeaderRecord(MessageMetadata{}, raw, limit)
+			record, err := selectedHeaderRecord(MessageMetadata{}, raw, limit)
 			if err != nil {
-				return MessageHeaders{}, err
+				return CanonicalHeaders{}, err
+			}
+			if record.Truncation.HeaderCount || record.Truncation.Headers {
+				return CanonicalHeaders{}, errorCode(CodeBoundsExceeded)
+			}
+
+			root = record.Headers
+			if len(message.Header["From"]) != 1 || root.From == "" || record.Metadata.DateSource != DateSourceHeader ||
+				!validForwardHeader(message.Header.Get("From"), root.From) ||
+				!validForwardHeader(message.Header.Get("Date"), root.Date) ||
+				!validForwardHeader(message.Header.Get("Subject"), root.Subject) {
+				return CanonicalHeaders{}, errorCode(CodeUnsupported)
 			}
 		}
 	}
 
 	return root, nil
+}
+
+var forwardWordPrefix = regexp.MustCompile(`=\?([^?[:space:]]+)\?[^?[:space:]]*\?`)
+
+// The projection repairs invalid UTF-8. Account for literal U+FFFD in both
+// raw text and encoded words before accepting that character in the preview.
+func validForwardHeader(value, projected string) bool {
+	if !utf8.ValidString(value) || strings.ContainsFunc(projected, func(r rune) bool { return unicode.IsControl(r) && r != '\t' }) {
+		return false
+	}
+
+	decoder := mime.WordDecoder{CharsetReader: charset.NewReaderLabel}
+	replacements := strings.Count(value, "\uFFFD")
+	for {
+		prefix := forwardWordPrefix.FindStringSubmatchIndex(value)
+		if prefix == nil {
+			return replacements == strings.Count(projected, "\uFFFD")
+		}
+		payload, rest, ok := strings.Cut(value[prefix[1]:], "?=")
+		if !ok || payload == "" || strings.ContainsFunc(payload, unicode.IsSpace) {
+			return false
+		}
+		word := value[prefix[0] : len(value)-len(rest)]
+		decoded, err := decoder.Decode(word)
+		if err != nil || !utf8.ValidString(decoded) {
+			return false
+		}
+		label := value[prefix[2]:prefix[3]]
+		if !strings.EqualFold(label, "utf-8") && strings.ContainsRune(decoded, utf8.RuneError) {
+			// Recover the original octets to distinguish a literal U+FFFD
+			// from a charset decoder's substitution.
+			octets, err := decoder.Decode("=?utf-8" + word[len("=?")+len(label):])
+			if err != nil {
+				return false
+			}
+			strict, err := decodeForwardCharset([]byte(octets), label)
+			if err != nil || string(strict) != decoded {
+				return false
+			}
+		}
+		replacements += strings.Count(decoded, "\uFFFD")
+		value = rest
+	}
 }
 
 func (entity inlineEntity) validHeader(header mail.Header, plain *textSection) bool {
@@ -353,7 +392,14 @@ func decodeForwardText(raw []byte, part *textSection) (string, error) {
 		if hasNonASCII(raw) {
 			return "", errorCode(CodeUnsupported)
 		}
-	case "8bit", "binary":
+		fallthrough
+	case "8bit":
+		for line := range bytes.SplitSeq(raw, []byte("\r\n")) {
+			if len(line) > 998 || bytes.ContainsAny(line, "\x00\r\n") {
+				return "", errorCode(CodeUnsupported)
+			}
+		}
+	case "binary":
 	case "base64":
 		for line := range bytes.SplitSeq(raw, []byte("\r\n")) {
 			if len(line) > 76 || bytes.ContainsAny(line, "\r\n") {
@@ -539,6 +585,9 @@ func decodeForwardQP(raw []byte) ([]byte, error) {
 				return nil, errorCode(CodeUnsupported)
 			}
 			if raw[i+1] != '\r' || raw[i+2] != '\n' {
+				if bytes.ContainsAny(raw[i+1:i+3], "abcdef") {
+					return nil, errorCode(CodeUnsupported)
+				}
 				var err error
 				out, err = hex.AppendDecode(out, raw[i+1:i+3])
 				if err != nil {

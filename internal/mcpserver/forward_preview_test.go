@@ -31,6 +31,7 @@ import (
 
 const (
 	plainMIME     = "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n"
+	qpMIME        = "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n"
 	forwardTool   = "prepare_forward"
 	utf8Params    = `("charset" "utf-8")`
 	forwardLogin  = "owner@bridge.test"
@@ -54,16 +55,17 @@ func multiStructure(kind string, children ...string) string {
 
 // Only a matching numbered PEEK can return the configured body literal.
 type forwardFixture struct {
-	mu                               sync.Mutex
-	conn                             net.Conn
-	generation                       int
-	header, body, section, structure string
-	mimeFields                       map[string]string
-	commands                         []string
-	credentials                      string
-	store                            *ForwardPreviews
-	client                           *mcp.ClientSession
-	id                               string
+	mu                      sync.Mutex
+	conn                    net.Conn
+	generation              int
+	header, body, structure string
+	sections                []string
+	mimeFields              map[string]string
+	commands                []string
+	credentials             string
+	store                   *ForwardPreviews
+	client                  *mcp.ClientSession
+	id                      string
 }
 
 func newForwardFixture(t *testing.T, bounds bridge.BoundsPatch) *forwardFixture {
@@ -135,12 +137,29 @@ func (f *forwardFixture) setHeader(header string) {
 	f.header = header
 }
 
-func (f *forwardFixture) set(structure, section, body string) {
+func (f *forwardFixture) set(structure, section, body string, otherSections ...string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.structure, f.section, f.body = structure, section, body
+	f.structure, f.body = structure, body
+	f.sections = append([]string{section}, otherSections...)
 	f.mimeFields = map[string]string{"HEADER": plainMIME}
 	f.commands = nil
+}
+
+func (f *forwardFixture) setWrappedText(t *testing.T, body string) {
+	t.Helper()
+
+	var raw strings.Builder
+	writer := quotedprintable.NewWriter(&raw)
+	if _, err := io.WriteString(writer, body); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	f.set(textStructure("plain", "quoted-printable", utf8Params, raw.Len()), "1", raw.String())
+	f.setMIME(map[string]string{"HEADER": qpMIME})
 }
 
 func (f *forwardFixture) setMIME(fields map[string]string) {
@@ -219,12 +238,23 @@ func (f *forwardFixture) reply(command string) string {
 	}
 
 	match := forwardPeek.FindStringSubmatch(command)
-	if match == nil || match[1] != f.section {
+	if match == nil || !slices.Contains(f.sections, match[1]) {
 		return "BAD"
 	}
 	n, _ := strconv.Atoi(match[2])
 	content := f.body[:min(n, len(f.body))]
 	return fmt.Sprintf("* 1 FETCH (UID 1 BODY[%s]<0> {%d}\r\n%s)\r\n", match[1], len(content), content)
+}
+
+func (f *forwardFixture) requireTranscript(t *testing.T, fetches ...string) {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	want := append([]string{"EXAMINE INBOX", "UID SEARCH UID 1", "UID FETCH 1 (UID BODYSTRUCTURE)"}, fetches...)
+	if !slices.Equal(f.commands, want) {
+		t.Fatalf("Bridge commands = %q, want %q", f.commands, want)
+	}
 }
 
 func (f *forwardFixture) arguments(consent bool) map[string]any {
@@ -257,33 +287,33 @@ func TestForwardPreview(t *testing.T) {
 		f := newForwardFixture(t, bridge.BoundsPatch{})
 		// Search metadata caps From at 512 bytes. The bounded header
 		// projection keeps this entire display name, including its comma.
-		namePrefix := strings.Repeat("Archive contact ", 33)
+		namePrefix := "Archive\tcontact " + strings.Repeat("Archive contact ", 32)
 		header := strings.Replace(forwardHeader, "From: ", "From: "+namePrefix, 1)
-		f.setHeader(strings.Replace(header, "Original  subject", "=?UTF-8?Q?What_does_x=3D=3F__mean?=", 1))
 
-		const raw = "one=0A=c3=a9\r\nlast\r\n\r\n"
-		const qpMIME = "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n"
+		const raw = "one=0A=C3=A9\r\nlast\r\n\r\n"
 		const altMIME = "Content-Type: multipart/alternative; boundary=alt\r\n"
 		const htmlMIME = "Content-Type: text/html\r\n"
 		plain := textStructure("plain", "quoted-printable", utf8Params, len(raw))
 		alt := multiStructure("alternative", plain, textStructure("html", "7bit", "NIL", 91))
 		for _, tc := range []struct {
 			name, structure, section string
+			rawSubject, subject      string
 			omissions                bridge.ForwardOmissions
 			fields                   map[string]string
 			sections                 []string
 		}{
 			{
-				"plain", plain, "1", bridge.ForwardOmissions{},
+				"plain", plain, "1", "What does x=? mean", "What does x=? mean", bridge.ForwardOmissions{},
 				map[string]string{"HEADER": qpMIME}, []string{"HEADER"},
 			},
 			{
-				"alternative", alt, "1", bridge.ForwardOmissions{HTMLAlternatives: 1},
+				"alternative", alt, "1", "=?UTF-8?Q?What_does_x=3D=3F__mean?=", "What does x=?  mean", bridge.ForwardOmissions{HTMLAlternatives: 1},
 				map[string]string{"HEADER": altMIME, "1.MIME": qpMIME, "2.MIME": htmlMIME},
 				[]string{"HEADER", "1.MIME", "2.MIME"},
 			},
 			{
 				"attached message", multiStructure("mixed", alt, file, nested), "1.1",
+				"=?UTF-8?B?77+9?=", "�",
 				bridge.ForwardOmissions{HTMLAlternatives: 1, Files: 1, AttachedMessages: 1},
 				map[string]string{"HEADER": "Content-Type: multipart/mixed; boundary=mixed\r\n",
 					"1.MIME": altMIME, "1.1.MIME": qpMIME, "1.2.MIME": htmlMIME},
@@ -291,26 +321,21 @@ func TestForwardPreview(t *testing.T) {
 			},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
+				f.setHeader(strings.Replace(header, "Original  subject", tc.rawSubject, 1))
 				f.set(tc.structure, tc.section, raw)
 				f.setMIME(tc.fields)
 				result := f.prepare(t, tc.omissions.Files != 0)
-				want := forwardPreview{From: forwardLogin, To: forwardTo, Subject: "Fwd: What does x=? mean", Omissions: tc.omissions,
-					Body: "My note\r\n\r\n---------- Forwarded message ----------\r\nFrom: " + namePrefix + forwardFrom + "\r\nDate: " + declaredDate + "\r\nSubject: What does x=?  mean\r\n\r\none\r\né\r\nlast\r\n\r\n"}
+				want := forwardPreview{From: forwardLogin, To: forwardTo, Subject: "Fwd: " + strings.ReplaceAll(tc.subject, "  ", " "), Omissions: tc.omissions,
+					Body: "My note\r\n\r\n---------- Forwarded message ----------\r\nFrom: " + namePrefix + forwardFrom + "\r\nDate: " + declaredDate + "\r\nSubject: " + tc.subject + "\r\n\r\none\r\né\r\nlast\r\n\r\n"}
 				if result.Preview != want {
 					t.Fatalf("preview = %+v", result.Preview)
 				}
-				f.mu.Lock()
-				defer f.mu.Unlock()
 				var fetches []string
 				for _, section := range tc.sections {
 					fetches = append(fetches, "UID FETCH 1 (UID BODY.PEEK["+section+"])")
 				}
 				fetches = append(fetches, fmt.Sprintf("UID FETCH 1 (UID BODY.PEEK[%s]<0.%d>)", tc.section, len(raw)+1))
-				if len(f.commands) < 3 || !strings.HasPrefix(f.commands[0], "EXAMINE ") ||
-					!strings.HasPrefix(f.commands[1], "UID SEARCH ") || f.commands[2] != "UID FETCH 1 (UID BODYSTRUCTURE)" ||
-					!slices.Equal(f.commands[3:], fetches) {
-					t.Fatalf("unexpected transcript %q", f.commands)
-				}
+				f.requireTranscript(t, fetches...)
 			})
 		}
 	})
@@ -319,13 +344,14 @@ func TestForwardPreview(t *testing.T) {
 		f := newForwardFixture(t, bridge.BoundsPatch{})
 		for _, tc := range []struct{ charset, encoding, raw, want string }{
 			{"ISO-2022-JP", "7bit", "\x1b(J\\~\x1b(B", "¥‾"},
-			{"HZ-GB-2312", "7bit", "ab~\ncd", "abcd"},
+			{"HZ-GB-2312", "base64", base64.StdEncoding.EncodeToString([]byte("ab~\ncd")), "abcd"},
 			{"UTF-16", "binary", "\xff\xfe\xfd\xff", "�"},
 			{"GB18030", "8bit", "\x80\x84\x31\xa4\x37", "€�"},
 			{"ISO-2022-JP", "7bit", "\x1b$@$\"\x1b(B", "あ"},
 			{"us-ascii", "base64", strings.Repeat("YWJj", 19) + "\r\neA==", strings.Repeat("abc", 19) + "x"},
 			{"windows-1252", "quoted-printable", "Price =8012", "Price €12"},
 			{"utf-8", "8bit", "literal U+FFFD: �", "literal U+FFFD: �"},
+			{"utf-8", "8bit", strings.Repeat("é", 499) + "\r\nx", strings.Repeat("é", 499) + "\r\nx"},
 			{"us-ascii", "quoted-printable", strings.Repeat("a", 75) + "=\r\nb", strings.Repeat("a", 75) + "b"},
 		} {
 			f.set(textStructure("plain", tc.encoding, fmt.Sprintf(`("charset" %q)`, tc.charset), len(tc.raw)), "1", tc.raw)
@@ -344,9 +370,6 @@ func TestForwardPreview(t *testing.T) {
 			consent              bool
 		}{
 			{"HTML only", textStructure("html", "8bit", utf8Params, 2), "ok", true},
-			{"ambiguous", multiStructure("mixed", plain, plain), "ok", true},
-			{"signed", multiStructure("signed", plain, file), "ok", true},
-			{"flowed", textStructure("plain", "7bit", `("format" "flowed")`, 2), "ok", true},
 			{"short", plain, "o", false}, {"underdeclared", plain, "okay", false},
 			{"oversize", textStructure("plain", "8bit", utf8Params, 262145), "ok", false},
 			{"damaged name parameter", textStructure("plain", "7bit", `("name*" "unknown''file.txt")`, 2), "ok", true},
@@ -356,6 +379,28 @@ func TestForwardPreview(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				f.set(tc.structure, "1", tc.raw)
 				f.refuse(t, f.arguments(tc.consent))
+			})
+		}
+		const signature = `("application" "pgp-signature" NIL NIL NIL "7bit" 2 NIL ("attachment" NIL) NIL NIL)`
+		for _, tc := range []struct {
+			name, structure string
+			fields          map[string]string
+			otherSections   []string
+		}{
+			{"ambiguous", fmt.Sprintf(`(%s %s "mixed" ("boundary" "m") NIL NIL NIL)`, plain, plain),
+				map[string]string{"HEADER": "Content-Type: multipart/mixed; boundary=m\r\n", "1.MIME": plainMIME, "2.MIME": plainMIME}, []string{"2"}},
+			{"signed", fmt.Sprintf(`(%s %s "signed" ("boundary" "s" "protocol" "application/pgp-signature" "micalg" "pgp-sha256") NIL NIL NIL)`, plain, signature),
+				map[string]string{"HEADER": "Content-Type: multipart/signed; protocol=\"application/pgp-signature\"; micalg=pgp-sha256; boundary=s\r\n",
+					"1.MIME": plainMIME, "2.MIME": "Content-Type: application/pgp-signature\r\nContent-Disposition: attachment\r\n"}, []string{"2"}},
+			{"flowed", textStructure("plain", "7bit", `("format" "flowed")`, 2),
+				map[string]string{"HEADER": "Content-Type: text/plain; format=flowed\r\n"}, nil},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				f.set(tc.structure, "1", "ok", tc.otherSections...)
+				f.setMIME(tc.fields)
+
+				requireToolError(t, callTool(t, f.client, forwardTool, f.arguments(true)), errUnsupported)
+				f.requireTranscript(t)
 			})
 		}
 		for _, tc := range []struct {
@@ -390,6 +435,12 @@ func TestForwardPreview(t *testing.T) {
 		})
 
 		for _, tc := range []struct{ name, charset, encoding, raw string }{
+			{"7bit NUL", "UTF-16LE", "7bit", "A\x00B\x00"},
+			{"8bit NUL", "UTF-16LE", "8bit", "A\x00B\x00"},
+			{"7bit bare LF", "utf-8", "7bit", "a\nb"},
+			{"8bit bare CR", "UTF-16LE", "8bit", "\rA"},
+			{"overlong 8bit line", "utf-8", "8bit", strings.Repeat("é", 499) + "x"},
+			{"lowercase QP", "utf-8", "quoted-printable", "caf=c3=a9"},
 			{"overlong base64 line", "us-ascii", "base64", base64.StdEncoding.EncodeToString([]byte(strings.Repeat("a", 58)))},
 			{"spurious HZ shift", "HZ-GB-2312", "7bit", "a~}b"},
 			{"truncated ISO-2022-JP", "ISO-2022-JP", "7bit", "\x1b$@$"},
@@ -495,10 +546,11 @@ func TestForwardPreview(t *testing.T) {
 		f.mu.Unlock()
 		requireToolError(t, callTool(t, f.client, forwardTool, f.arguments(false)), errStaleID)
 
-		t.Run("underdeclared at section limit", func(t *testing.T) {
+		t.Run("configured section limit", func(t *testing.T) {
 			f := newForwardFixture(t, bridge.BoundsPatch{MaxBodyBytes: bridge.Int(4)})
-			f.set(plainStructure("four"), "1", "four!")
-			f.refuse(t, f.arguments(false))
+			f.set(plainStructure("four"), "1", "four")
+			requireToolError(t, callTool(t, f.client, forwardTool, f.arguments(false)), errBoundsExceeded)
+			f.requireTranscript(t)
 		})
 	})
 
@@ -520,7 +572,7 @@ func TestForwardPreview(t *testing.T) {
 		// Exercise subject folding and QP soft breaks alongside hard breaks.
 		f.setHeader(strings.Replace(forwardHeader, "Original  subject", strings.Repeat("Résumé", 180), 1))
 		sourceText := strings.Repeat("é=", 600) + "\r\n\r\n"
-		f.set(plainStructure(sourceText), "1", sourceText)
+		f.setWrappedText(t, sourceText)
 		first := f.prepare(t, false)
 		wire, ok := f.store.lookup(first, time.Now())
 		if !ok {
@@ -628,7 +680,7 @@ func TestForwardPreview(t *testing.T) {
 					want = content + base.Preview.Body
 					f.set(plainStructure(""), "1", "")
 				} else {
-					f.set(plainStructure(content), "1", content)
+					f.setWrappedText(t, content)
 				}
 
 				var exact forwardResult
@@ -643,7 +695,7 @@ func TestForwardPreview(t *testing.T) {
 						t.Fatal("authored-text fixture exceeds the prepare request frame")
 					}
 				} else {
-					f.set(plainStructure(content+"x"), "1", content+"x")
+					f.setWrappedText(t, content+"x")
 				}
 				requireToolError(t, callTool(t, f.client, forwardTool, args), errBoundsExceeded)
 				if _, ok := f.store.lookup(exact, time.Now()); !ok {
