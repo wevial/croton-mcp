@@ -137,7 +137,7 @@ func (sc serveConfig) checkFree() error {
 type cliOutput struct {
 	data          bytes.Buffer
 	cancel        context.CancelFunc
-	successPrefix *string
+	successPrefix []byte
 	err           error
 }
 
@@ -148,8 +148,7 @@ func (out *cliOutput) Write(p []byte) (int, error) {
 		out.data.Write(p)
 		if prefix := out.successPrefix; prefix != nil {
 			got := out.data.Bytes()
-			want := []byte(*prefix)
-			if (*prefix == "" && len(got) != 0) || (!bytes.HasPrefix(got, want) && !bytes.HasPrefix(want, got)) {
+			if (len(prefix) == 0 && len(got) != 0) || (!bytes.HasPrefix(got, prefix) && !bytes.HasPrefix(prefix, got)) {
 				out.err = errEnablement
 			}
 		}
@@ -161,7 +160,7 @@ func (out *cliOutput) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (f *tailscaleFunnel) command(ctx context.Context, successPrefix *string, args ...string) ([]byte, error) {
+func (f *tailscaleFunnel) command(ctx context.Context, successPrefix []byte, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -237,16 +236,13 @@ func allows443(caps map[string][]json.RawMessage) bool {
 		found = true
 		for spec := range strings.SplitSeq(q.Get("ports"), ",") {
 			first, last, span := strings.Cut(spec, "-")
-			lo, ok := portNumber(first)
-			hi := lo
-			if !ok {
-				return false
+			if !span {
+				last = first
 			}
-			if span {
-				hi, ok = portNumber(last)
-				if !ok || hi < lo {
-					return false
-				}
+			lo, validFirst := portNumber(first)
+			hi, validLast := portNumber(last)
+			if !validFirst || !validLast || hi < lo {
+				return false
 			}
 			allowed = allowed || (lo <= 443 && 443 <= hi)
 		}
@@ -352,13 +348,12 @@ func readFunnelApproval(ctx context.Context, r io.Reader, w io.Writer, host, tar
 	}()
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
 	case yes := <-answer:
 		if !yes {
 			return errDeclined
 		}
-		return ctx.Err()
 	}
+	return ctx.Err()
 }
 
 func approveFunnel(ctx context.Context, address netip.AddrPort, confirm func(context.Context, string, string) error) (*tailscaleFunnel, error) {
@@ -398,7 +393,7 @@ func (f *tailscaleFunnel) remove() error {
 		return errOwnership
 	}
 
-	_, offErr := f.command(ctx, new(""), "funnel", funnelPortFlag, "off")
+	_, offErr := f.command(ctx, []byte{}, "funnel", funnelPortFlag, "off")
 	sc, err = f.config(ctx)
 	if offErr != nil || err != nil || sc.snapshot() != f.before {
 		return errors.New("warning: could not verify Funnel removal. Inspect port 443 manually")
@@ -443,7 +438,7 @@ func (f *tailscaleFunnel) serve(ctx context.Context, listener net.Listener, hand
 
 	// A CLI error can arrive after tailscaled persisted the background route.
 	defer func() { err = errors.Join(err, f.remove()) }()
-	_, err = f.command(active, new("Available on the internet:\n"), "funnel", "--bg", funnelPortFlag, f.target)
+	_, err = f.command(active, []byte("Available on the internet:\n"), "funnel", "--bg", funnelPortFlag, f.target)
 	if err != nil {
 		return err
 	}
