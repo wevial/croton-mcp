@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/wevial/croton-mcp/internal/owneroauth"
 	"github.com/wevial/croton-mcp/internal/testkit"
 )
 
@@ -28,6 +29,19 @@ func TestMain(m *testing.M) {
 	if os.Getenv(runMainEnv) == "1" {
 		if marker := os.Getenv("CROTON_TEST_BRIDGE_GATE"); marker != "" {
 			go markQueuedCall(marker)
+		}
+		if marker := os.Getenv("CROTON_TEST_STALL_OWNER"); marker != "" {
+			settings := owneroauth.Defaults()
+			settings.Now = func() time.Time {
+				if err := os.WriteFile(marker, nil, 0600); err != nil {
+					os.Exit(1)
+				}
+				select {}
+			}
+			if run(context.Background(), os.Args[1:], os.Stderr, settings) != nil {
+				os.Exit(1)
+			}
+			os.Exit(0)
 		}
 		main()
 		os.Exit(0)

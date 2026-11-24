@@ -34,7 +34,9 @@ croton-mcp serve --authorizer owner --config /absolute/path/to/croton.json
 Set the client’s Streamable HTTP endpoint to `http://127.0.0.1:8787/mcp`.
 `--bind` accepts a loopback IP literal and port. Omit port 80 for HTTP or
 port 443 for HTTPS in the endpoint URL, Host and Origin. Include any other
-port. Each authorization request uses its own Secure, HttpOnly cookie.
+port. For an IPv4-mapped IPv6 bind such as `[::ffff:127.0.0.1]:8787`, use
+the browser spelling `[::ffff:7f00:1]:8787` in the URL, Host and Origin.
+Each authorization request uses its own Secure, HttpOnly cookie.
 If your browser rejects it over HTTP, use HTTPS.
 For HTTPS, supply both `--tls-cert` and `--tls-key` and use `https://` in the
 endpoint. Your browser and client must trust the certificate for the listener
@@ -88,7 +90,8 @@ port at authorization. The server checks Host, any Origin header, bearer, and th
 64 KiB JSON frame before MCP dispatch. Tool calls share the configured IMAP
 command timeout across queuing and execution. On shutdown, the listener
 cancels tool calls and allows one second for HTTP connections to drain
-before closing any remaining sockets.
+before closing any remaining sockets. It then waits up to one second for owner
+IPC and OAuth database cleanup and up to one second for Bridge logout.
 
 ## Read tools
 

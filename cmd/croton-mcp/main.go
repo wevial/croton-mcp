@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"errors"
 	"flag"
 	"fmt"
@@ -27,13 +28,13 @@ import (
 )
 
 func main() {
-	if err := run(context.Background(), os.Args[1:], os.Stderr); err != nil {
+	if err := run(context.Background(), os.Args[1:], os.Stderr, owneroauth.Defaults()); err != nil {
 		fmt.Fprintf(os.Stderr, "croton-mcp: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, arguments []string, stderr io.Writer) error {
+func run(ctx context.Context, arguments []string, stderr io.Writer, settings owneroauth.Settings) error {
 	command := ""
 	if len(arguments) > 0 && !strings.HasPrefix(arguments[0], "-") {
 		command, arguments = arguments[0], arguments[1:]
@@ -47,7 +48,6 @@ func run(ctx context.Context, arguments []string, stderr io.Writer) error {
 	flags := flag.NewFlagSet("croton-mcp", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	var configPath, bind, authorizer, cert, key, dir string
-	settings := owneroauth.Defaults()
 	if command == "" || command == "serve" {
 		flags.StringVar(&configPath, "config", "", "absolute path to the Croton configuration file")
 	}
@@ -112,7 +112,7 @@ func run(ctx context.Context, arguments []string, stderr io.Writer) error {
 		if err != nil || !address.Addr().IsLoopback() || address.Addr().Zone() != "" || address.Port() == 0 {
 			return errors.New("invalid loopback bind")
 		}
-		return serveHTTP(ctx, loaded, address.String(), dir, cert, key, settings, auditor)
+		return serveHTTP(ctx, loaded, address, dir, cert, key, settings, auditor)
 	}
 
 	adapter, err := bridge.NewAdapter(loaded)
@@ -131,8 +131,15 @@ func run(ctx context.Context, arguments []string, stderr io.Writer) error {
 	return mcpserver.Serve(ctx, server, stdioframe.NewTransport(os.Stdin, os.Stdout))
 }
 
-func serveHTTP(ctx context.Context, cfg bridge.Config, address, dir, cert, key string, settings owneroauth.Settings, auditor *mcpserver.Auditor) error {
-	origin := "http://" + strings.TrimSuffix(address, ":80")
+func serveHTTP(ctx context.Context, cfg bridge.Config, address netip.AddrPort, dir, cert, key string, settings owneroauth.Settings, auditor *mcpserver.Auditor) error {
+	// Browsers serialize mapped IPv6 addresses as hexadecimal groups.
+	hostPort := address.String()
+	if address.Addr().Is4In6() {
+		ip := address.Addr().As4()
+		hostPort = fmt.Sprintf("[::ffff:%x:%x]:%d", binary.BigEndian.Uint16(ip[:2]), binary.BigEndian.Uint16(ip[2:]), address.Port())
+	}
+
+	origin := "http://" + strings.TrimSuffix(hostPort, ":80")
 	var tlsConfig *tls.Config
 	if cert != "" || key != "" {
 		pair, err := tls.LoadX509KeyPair(cert, key)
@@ -140,7 +147,7 @@ func serveHTTP(ctx context.Context, cfg bridge.Config, address, dir, cert, key s
 			return errors.New("HTTP TLS unavailable")
 		}
 		tlsConfig = &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}
-		origin = "https://" + strings.TrimSuffix(address, ":443")
+		origin = "https://" + strings.TrimSuffix(hostPort, ":443")
 	}
 
 	validated, err := bridge.ValidateConfig(cfg)
@@ -151,42 +158,54 @@ func serveHTTP(ctx context.Context, cfg bridge.Config, address, dir, cert, key s
 	if err != nil {
 		return err
 	}
-	// Limit the wait for IMAP logout to leave time for CLI shutdown.
-	defer func() {
-		done := make(chan struct{})
-		go func() { _ = adapter.Close(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(time.Second):
-		}
-	}()
+	defer waitForCleanup(func() { _ = adapter.Close() })
 
 	authority, err := owneroauth.Open(dir, origin, settings)
 	if err != nil {
 		return err
 	}
-	defer authority.Close()
+	var stopOwner func()
+	defer waitForCleanup(func() {
+		if stopOwner != nil {
+			stopOwner()
+		}
+		_ = authority.Close()
+	})
 
 	handler, err := mcpserver.NewHTTP(origin, adapter, auditor, time.Duration(validated.IMAP.CommandTimeoutMs)*time.Millisecond, authority.ValidBearer, authority)
 	if err != nil {
 		return err
 	}
 
-	listener, err := net.Listen("tcp", address)
+	listener, err := net.Listen("tcp", address.String())
 	if err != nil {
 		return errors.New("HTTP listener unavailable")
 	}
 	defer listener.Close()
-	stopOwner, err := authority.ListenOwner(ctx)
+	stopOwner, err = authority.ListenOwner(ctx)
 	if err != nil {
 		return err
 	}
-	defer stopOwner()
 	if tlsConfig != nil {
 		listener = tls.NewListener(listener, tlsConfig)
 	}
 
 	return runHTTP(ctx, listener, handler)
+}
+
+// After the one-second HTTP drain, owner IPC and database cleanup share one
+// second, and Bridge logout has another even if owner cleanup stalls.
+func waitForCleanup(cleanup func()) {
+	done := make(chan struct{})
+	go func() {
+		cleanup()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+	}
 }
 
 func runHTTP(parent context.Context, listener net.Listener, handler http.Handler) error {

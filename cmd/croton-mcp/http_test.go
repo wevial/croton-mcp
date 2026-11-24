@@ -86,17 +86,17 @@ func TestHTTPTransportStartup(t *testing.T) {
 		{[]string{"serve", "--authorizer", "other", "--config", config}, "HTTP authorizer unavailable"},
 		{[]string{"serve", "--config", config, "--authorizer", "owner", "--bind", l.Addr().String()}, "HTTP listener unavailable"},
 	} {
-		if err := run(t.Context(), append(test.args, "--state-dir", dir), io.Discard); err == nil || err.Error() != test.want {
+		if err := run(t.Context(), append(test.args, "--state-dir", dir), io.Discard, owneroauth.Defaults()); err == nil || err.Error() != test.want {
 			t.Fatalf("startup error = %v, want %s", err, test.want)
 		}
 	}
 	for _, bad := range []string{":8787", "0.0.0.0:8787", "[::]:8787", "192.0.2.1:8787", "localhost:8787"} {
-		if err := run(t.Context(), []string{"serve", "--config", config, "--authorizer", "owner", "--bind", bad}, io.Discard); err == nil || err.Error() != "invalid loopback bind" {
+		if err := run(t.Context(), []string{"serve", "--config", config, "--authorizer", "owner", "--bind", bad}, io.Discard, owneroauth.Defaults()); err == nil || err.Error() != "invalid loopback bind" {
 			t.Fatal("accepted invalid bind")
 		}
 	}
 	editConfig(t, config, func(cfg map[string]any) { cfg["mutations"] = map[string]bool{"enabled": true} })
-	if err := run(t.Context(), []string{"serve", "--config", config, "--authorizer", "owner", "--state-dir", dir}, io.Discard); err == nil || err.Error() != "HTTP requires read-only configuration" {
+	if err := run(t.Context(), []string{"serve", "--config", config, "--authorizer", "owner", "--state-dir", dir}, io.Discard, owneroauth.Defaults()); err == nil || err.Error() != "HTTP requires read-only configuration" {
 		t.Fatal("mutation configuration")
 	}
 	if _, err := os.Lstat(filepath.Join(dir, "owner.sock")); !os.IsNotExist(err) {
@@ -276,17 +276,39 @@ func TestHTTPTransportDefaultPortOrigin(t *testing.T) {
 			probe.Close()
 
 			p := startHTTPAt(t, config, tc.address, tc.origin, nil)
-			_, body := p.request(t, "GET", owneroauth.ResourceMetadataPath, "", "", http.StatusOK)
-			var metadata struct {
-				Resource string   `json:"resource"`
-				Issuers  []string `json:"authorization_servers"`
-			}
-			if json.Unmarshal(body, &metadata) != nil || metadata.Resource != tc.origin+"/mcp" || !slices.Equal(metadata.Issuers, []string{tc.origin}) {
-				t.Fatal("incorrect default-port discovery metadata")
-			}
+			p.checkDiscovery(t)
 			p.stop(t)
 		})
 	}
+}
+
+func (p *httpProcess) checkDiscovery(t *testing.T) {
+	t.Helper()
+
+	_, body := p.request(t, "GET", owneroauth.ResourceMetadataPath, "", "", http.StatusOK)
+	var metadata struct {
+		Resource string   `json:"resource"`
+		Issuers  []string `json:"authorization_servers"`
+	}
+	if json.Unmarshal(body, &metadata) != nil || metadata.Resource != p.origin+"/mcp" || !slices.Equal(metadata.Issuers, []string{p.origin}) {
+		t.Fatal("incorrect origin in discovery metadata")
+	}
+}
+
+func TestHTTPTransportMappedLoopbackOrigin(t *testing.T) {
+	config := writeServerConfig(t, fixtureBridge(t))
+	probe, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := probe.Addr().(*net.TCPAddr).Port
+	probe.Close()
+
+	bind := fmt.Sprintf("[::ffff:127.0.0.1]:%d", port)
+	origin := fmt.Sprintf("https://[::ffff:7f00:1]:%d", port)
+	p := startHTTPAt(t, config, bind, origin, nil)
+	p.checkDiscovery(t)
+	p.stop(t)
 }
 
 type terminalIO struct {
@@ -418,7 +440,7 @@ func waitForMarker(t *testing.T, marker string) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("Bridge call did not reach %s", filepath.Base(marker))
+	t.Fatalf("timed out waiting for %s", filepath.Base(marker))
 }
 
 func TestHTTPTransportBridgeQueue(t *testing.T) {
@@ -536,6 +558,37 @@ func TestHTTPTransportBlockedAuditShutdown(t *testing.T) {
 	waitForMarker(t, marker)
 
 	p.stop(t)
+}
+
+func TestHTTPTransportBlockedOwnerShutdown(t *testing.T) {
+	config := writeServerConfig(t, fixtureBridge(t))
+	for _, operation := range []string{"token", "pair"} {
+		t.Run(operation, func(t *testing.T) {
+			marker := filepath.Join(t.TempDir(), "owner-operation")
+			p := startHTTP(t, config, nil, "CROTON_TEST_STALL_OWNER="+marker)
+
+			// The child stalls inside the token write transaction or owner IPC handler.
+			go func() {
+				if operation == "pair" {
+					_ = owneroauth.Terminal(t.Context(), p.dir, "pair", &bytes.Buffer{})
+					return
+				}
+
+				form := url.Values{
+					"grant_type":    {"authorization_code"},
+					"code":          {"fixture.test"},
+					"code_verifier": {strings.Repeat("v", 43)},
+					"resource":      {p.origin + "/mcp"},
+				}
+				resp, err := p.client.PostForm(p.origin+"/token", form)
+				if err == nil {
+					resp.Body.Close()
+				}
+			}()
+			waitForMarker(t, marker)
+			p.stop(t)
+		})
+	}
 }
 
 // Serve the pipe first so a TLS write blocks until the test peer reads it.
