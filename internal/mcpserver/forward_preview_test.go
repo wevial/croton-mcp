@@ -575,9 +575,15 @@ func TestForwardPreview(t *testing.T) {
 
 		t.Run("configured section limit", func(t *testing.T) {
 			f := newForwardFixture(t, bridge.BoundsPatch{MaxBodyBytes: bridge.Int(4)})
+			f.set(plainStructure("abc"), "1", "abc")
+			previous := f.prepare(t, false)
+
 			f.set(plainStructure("four"), "1", "four")
 			requireToolError(t, callTool(t, f.client, forwardTool, f.arguments(false)), errBoundsExceeded)
 			f.requireTranscript(t)
+			if _, ok := f.store.lookup(previous, time.Now()); !ok {
+				t.Fatal("section preflight invalidated the previous handle")
+			}
 		})
 
 		t.Run("source MIME ceiling", func(t *testing.T) {

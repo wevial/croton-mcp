@@ -252,7 +252,9 @@ Unicode replacement character (U+FFFD).
 
 Header, section, part and depth bounds apply. The partial PEEK requests one
 octet beyond the declared section length to verify it is complete. That octet
-must fit within the configured section read budget.
+must fit within the configured section read budget. If the declared length
+leaves no room for it, the tool returns `bounds_exceeded` before the PEEK
+and preserves the connection and any current preview handle.
 Source MIME reads and stored UTF-8 quoted-printable MIME each have a 256 KiB
 ceiling.
 

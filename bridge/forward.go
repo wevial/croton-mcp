@@ -71,7 +71,7 @@ func (adapter *Adapter) ReadForwardSource(ctx context.Context, identifier string
 		section := plan.section
 		// Reserve one octet in both read budgets to detect an underdeclared section.
 		if uint64(section.size) >= uint64(min(bounds.MaxBodyBytes, MaxForwardMIMEBytes)) {
-			return errorCode(CodeBoundsExceeded)
+			return errPreflightBounds
 		}
 
 		probe := int(section.size) + 1

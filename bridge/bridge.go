@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 )
@@ -79,6 +80,9 @@ func (adapter *Adapter) openSession(ctx context.Context) (bridgeSession, error) 
 	return session, nil
 }
 
+// errPreflightBounds signals a local refusal with no pending IMAP response.
+var errPreflightBounds = errors.New("preflight bounds exceeded")
+
 func (adapter *Adapter) execute(ctx context.Context, operation func(context.Context, bridgeSession) error) error {
 	if err := adapter.acquire(ctx); err != nil {
 		return err
@@ -97,6 +101,9 @@ func (adapter *Adapter) execute(ctx context.Context, operation func(context.Cont
 		}
 		if err == nil {
 			return nil
+		}
+		if err == errPreflightBounds {
+			return errorCode(CodeBoundsExceeded)
 		}
 
 		retry := attempt == 0 && adapter.canReplay(operationContext, err)
