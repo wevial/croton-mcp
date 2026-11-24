@@ -12,7 +12,6 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
-	"path/filepath"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -59,15 +58,8 @@ func TestPublicServeOrigin(t *testing.T) {
 }
 
 func TestPublicServeProxy(t *testing.T) {
-	config := writeServerConfig(t, fixtureBridge(t))
-	marker := filepath.Join(canonicalTempDir(t), "active")
-	editConfig(t, config, func(cfg map[string]any) {
-		imap := cfg["imap"].(map[string]any)
-		imap["commandTimeoutMs"] = 30000
-		imap["credentialCommand"] = []string{"/bin/sh", "-c", `echo started >> "$1"; exec /bin/sleep 45`, "fixture.test", marker}
-	})
-
 	const origin = "https://mail.test"
+	config, marker := stalledBridgeConfig(t, 30*time.Second)
 	dir := httpStateDir(t)
 	probe, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
