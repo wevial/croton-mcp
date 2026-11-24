@@ -60,8 +60,8 @@ esac
 `
 
 type funnelFixture struct {
-	dir, state, target string
-	args               []string
+	dir, state, target, owned string
+	args                      []string
 }
 
 func (f funnelFixture) write(t *testing.T, name, data string) {
@@ -103,8 +103,9 @@ func newFunnelFixture(t *testing.T, config string) funnelFixture {
 	f.write(t, "config", before)
 	f.write(t, "before", before)
 	f.write(t, "target", f.target)
-	f.write(t, "owned", fmt.Sprintf(`{"TCP":{"8443":{"TCPForward":"127.0.0.1:8043"},"443":{"HTTPS":true}},
-		"AllowFunnel":{"croton.tail.test:443":true},"Web":{"croton.tail.test:443":{"Handlers":{"/":{"Proxy":%q}}}}}`, f.target))
+	f.owned = fmt.Sprintf(`{"TCP":{"8443":{"TCPForward":"127.0.0.1:8043"},"443":{"HTTPS":true}},
+		"AllowFunnel":{"croton.tail.test:443":true},"Web":{"croton.tail.test:443":{"Handlers":{"/":{"Proxy":%q}}}}}`, f.target)
+	f.write(t, "owned", f.owned)
 	t.Setenv("PATH", f.dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return f
 }
@@ -168,8 +169,8 @@ func TestFunnelServeApproval(t *testing.T) {
 				}
 
 				err := readFunnelApproval(ctx, answer, &display, host, target)
-				review, prompt, ok := strings.Cut(display.String(), "Type yes")
-				if !ok || prompt == "" {
+				review, prompt, _ := strings.Cut(display.String(), "Type yes")
+				if prompt == "" {
 					t.Fatal("missing confirmation")
 				}
 				for _, want := range []string{"https://croton.tail.test", f.target, "All routes on port 443", "exclusive operator control",
@@ -188,13 +189,12 @@ func TestFunnelServeApproval(t *testing.T) {
 				return err
 			}
 
-			err := runCLI(ctx, f.args, io.Discard, owneroauth.Defaults(), confirm)
-			if err == nil {
+			if err := runCLI(ctx, f.args, io.Discard, owneroauth.Defaults(), confirm); err == nil {
 				t.Fatal("started without a current approval")
 			}
-			want := slices.Clone(preflightCalls)
+			want := preflightCalls
 			if tc.answer == "yes\n" {
-				want = append(want, preflightCalls...)
+				want = slices.Concat(preflightCalls, preflightCalls)
 			}
 			if calls := f.calls(t); !slices.Equal(calls, want) {
 				t.Fatalf("unexpected commands %q", calls)
@@ -257,19 +257,15 @@ func TestFunnelServeLifecycle(t *testing.T) {
 
 			if tc.serves {
 				waitForMarker(t, filepath.Join(f.dir, "readback"))
-				owned, err := os.ReadFile(filepath.Join(f.dir, "owned"))
-				if err != nil {
-					t.Fatal(err)
-				}
 				switch tc.name {
 				case "different node":
 					f.write(t, "node", strings.Replace(funnelNodeJSON, "node.test", "other.test", 1))
 				case "other mount":
-					f.write(t, "config", strings.Replace(string(owned), `"Handlers":{`, `"Handlers":{"/private":{"Text":"private.test"},`, 1))
+					f.write(t, "config", strings.Replace(f.owned, `"Handlers":{`, `"Handlers":{"/private":{"Text":"private.test"},`, 1))
 				case "replaced target":
-					f.write(t, "config", strings.Replace(string(owned), f.target, "http://127.0.0.1:9000", 1))
+					f.write(t, "config", strings.Replace(f.owned, f.target, "http://127.0.0.1:9000", 1))
 				case "changed foreground":
-					f.write(t, "config", strings.Replace(string(owned), `"Web":`, `"Foreground":{"private.test":{"TCP":{"443":{"HTTP":true}}}},"Web":`, 1))
+					f.write(t, "config", strings.Replace(f.owned, `"Web":`, `"Foreground":{"private.test":{"TCP":{"443":{"HTTP":true}}}},"Web":`, 1))
 				case "unreadable at stop":
 					f.write(t, "config", "private.test")
 				}
