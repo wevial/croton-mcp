@@ -253,11 +253,11 @@ func decodeForwardText(raw []byte, part *textSection) (string, error) {
 		}
 	case "utf-8":
 	case "iso-8859-1":
-		var decoded strings.Builder
+		var decoded bytes.Buffer
 		for _, b := range raw {
 			decoded.WriteRune(rune(b))
 		}
-		raw = []byte(decoded.String())
+		raw = decoded.Bytes()
 	default:
 		return "", errorCode(CodeUnsupported)
 	}
@@ -286,11 +286,11 @@ func decodeForwardQP(raw []byte) ([]byte, error) {
 				return nil, errorCode(CodeUnsupported)
 			}
 			if raw[i+1] != '\r' || raw[i+2] != '\n' {
-				var octet [1]byte
-				if _, err := hex.Decode(octet[:], raw[i+1:i+3]); err != nil {
+				var err error
+				out, err = hex.AppendDecode(out, raw[i+1:i+3])
+				if err != nil {
 					return nil, errorCode(CodeUnsupported)
 				}
-				out = append(out, octet[0])
 			}
 			i += 2
 			continue

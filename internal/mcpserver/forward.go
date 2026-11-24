@@ -73,9 +73,8 @@ func registerForward(server *mcp.Server, options Options) {
 		}, []string{"messageId", "to"}),
 		run: runPrepareForward,
 	}
-	closedWorld := false
 	server.AddTool(&mcp.Tool{Name: def.name, Description: def.description, InputSchema: def.schema,
-		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: &closedWorld},
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: new(false)},
 	}, makeHandler(def, options))
 }
 
@@ -163,11 +162,12 @@ func plainMailbox(value string) bool {
 
 	// ParseAddress checks address literals, but accepts header dot-atoms
 	// such as "a/b.test" in the domain of an envelope mailbox.
-	if !strings.HasPrefix(domain, "[") {
-		for label := range strings.SplitSeq(domain, ".") {
-			if !mailboxDomainLabel.MatchString(label) {
-				return false
-			}
+	if strings.HasPrefix(domain, "[") {
+		return true
+	}
+	for label := range strings.SplitSeq(domain, ".") {
+		if !mailboxDomainLabel.MatchString(label) {
+			return false
 		}
 	}
 

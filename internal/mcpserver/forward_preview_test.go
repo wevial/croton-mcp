@@ -187,23 +187,20 @@ func (f *forwardFixture) reply(command string) string {
 		return fmt.Sprintf("* 1 EXISTS\r\n* OK [UIDVALIDITY %d] generation\r\n* OK [UIDNEXT 2] next\r\n", f.generation)
 	case strings.HasPrefix(command, "UID SEARCH "):
 		return "* SEARCH 1\r\n"
-	case strings.HasPrefix(command, "UID FETCH 1 "):
-		switch {
-		case command == "UID FETCH 1 (UID BODYSTRUCTURE)":
-			return "* 1 FETCH (UID 1 BODYSTRUCTURE " + f.structure + ")\r\n"
-		case command == "UID FETCH 1 (UID FLAGS RFC822.SIZE BODY.PEEK[HEADER])",
-			command == "UID FETCH 1 (UID RFC822.SIZE FLAGS BODY.PEEK[HEADER])":
-			return fmt.Sprintf("* 1 FETCH (UID 1 FLAGS () RFC822.SIZE %d BODY[HEADER] {%d}\r\n%s)\r\n", len(f.header)+len(f.body), len(f.header), f.header)
-		default:
-			match := forwardPeek.FindStringSubmatch(command)
-			if match != nil && match[1] == f.section {
-				n, _ := strconv.Atoi(match[2])
-				content := f.body[:min(n, len(f.body))]
-				return fmt.Sprintf("* 1 FETCH (UID 1 BODY[%s]<0> {%d}\r\n%s)\r\n", match[1], len(content), content)
-			}
-		}
+	case command == "UID FETCH 1 (UID BODYSTRUCTURE)":
+		return "* 1 FETCH (UID 1 BODYSTRUCTURE " + f.structure + ")\r\n"
+	case command == "UID FETCH 1 (UID FLAGS RFC822.SIZE BODY.PEEK[HEADER])",
+		command == "UID FETCH 1 (UID RFC822.SIZE FLAGS BODY.PEEK[HEADER])":
+		return fmt.Sprintf("* 1 FETCH (UID 1 FLAGS () RFC822.SIZE %d BODY[HEADER] {%d}\r\n%s)\r\n", len(f.header)+len(f.body), len(f.header), f.header)
 	}
-	return "BAD"
+
+	match := forwardPeek.FindStringSubmatch(command)
+	if match == nil || match[1] != f.section {
+		return "BAD"
+	}
+	n, _ := strconv.Atoi(match[2])
+	content := f.body[:min(n, len(f.body))]
+	return fmt.Sprintf("* 1 FETCH (UID 1 BODY[%s]<0> {%d}\r\n%s)\r\n", match[1], len(content), content)
 }
 
 func (f *forwardFixture) arguments(consent bool) map[string]any {
