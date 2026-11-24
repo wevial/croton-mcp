@@ -9,6 +9,7 @@ import (
 	"encoding/json/jsontext"
 	"fmt"
 	"mime/quotedprintable"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -203,10 +204,20 @@ func fitsForwardFrame(arguments json.RawMessage, handle string, request *mcp.Cal
 	// The placeholder keeps envelope marshaling from rewriting the client's argument bytes.
 	const placeholder = "null"
 	params := mcp.CallToolParams{Name: sendForwardTool, Arguments: json.RawMessage(placeholder)}
-	extraIDBytes := 0
+	extraBytes := 0
 	if sendEnabled {
-		extraIDBytes = stdioframe.MaxForwardIDBytes - 1 // replace the one-byte ID below
-		params.Meta = request.Params.Meta
+		if request.Extra == nil {
+			return false
+		}
+		metaBytes, err := strconv.Atoi(request.Extra.Header.Get(stdioframe.ForwardMetaBytesHeader))
+		if err != nil || metaBytes < 0 || metaBytes > stdioframe.MaxFrameBytes {
+			return false
+		}
+
+		extraBytes = stdioframe.MaxForwardIDBytes - 1 // replace the one-byte ID below
+		if metaBytes > 0 {
+			extraBytes += len(`,"_meta":`) + metaBytes
+		}
 		if request.ProtocolVersion() >= "2026-07-28" {
 			// rand.Text handles and challenges have the same encoded length.
 			params.RequestState = handle
@@ -217,7 +228,7 @@ func fitsForwardFrame(arguments json.RawMessage, handle string, request *mcp.Cal
 	}
 
 	frame, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params})
-	return err == nil && len(frame)-len(placeholder)+len(arguments)+extraIDBytes+1 <= stdioframe.MaxFrameBytes
+	return err == nil && len(frame)-len(placeholder)+len(arguments)+extraBytes+1 <= stdioframe.MaxFrameBytes
 }
 
 func (pending *preparedForward) valid(now time.Time) bool {

@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -202,12 +203,19 @@ func forwardRequest(t *testing.T, f *forwardFixture, r forwardResult) *mcp.CallT
 	t.Helper()
 	args, err := json.Marshal(r)
 	requireForwardSetup(t, err)
+	meta := mcp.Meta{mcp.MetaKeyClientCapabilities: map[string]any{"elicitation": map[string]any{"form": map[string]any{}}}}
+	encodedMeta, err := json.Marshal(meta)
+	requireForwardSetup(t, err)
+
 	f.store.mu.Lock()
 	defer f.store.mu.Unlock()
-	return &mcp.CallToolRequest{Session: f.store.current.session, Params: &mcp.CallToolParamsRaw{
-		Name: "send_forward", Arguments: args,
-		Meta: mcp.Meta{mcp.MetaKeyClientCapabilities: map[string]any{"elicitation": map[string]any{"form": map[string]any{}}}},
-	}}
+	return &mcp.CallToolRequest{
+		Session: f.store.current.session,
+		Params:  &mcp.CallToolParamsRaw{Name: "send_forward", Arguments: args, Meta: meta},
+		Extra: &mcp.RequestExtra{Header: http.Header{
+			stdioframe.ForwardMetaBytesHeader: {strconv.Itoa(len(encodedMeta))},
+		}},
+	}
 }
 
 func confirmation(t *testing.T, f *forwardFixture, cfg bridge.ForwardConfig, r forwardResult) *mcp.CallToolRequest {
@@ -579,6 +587,7 @@ func TestForwardSend(t *testing.T) {
 		meta := mcp.Meta{
 			mcp.MetaKeyProtocolVersion:    "2026-07-28",
 			mcp.MetaKeyClientCapabilities: map[string]any{"elicitation": map[string]any{"form": map[string]any{}}},
+			"progressToken":               json.Number("1.000"),
 		}
 		args := f.arguments(false)
 		prepare := mcp.CallToolParams{Name: forwardTool, Arguments: args, Meta: meta}
@@ -604,7 +613,12 @@ func TestForwardSend(t *testing.T) {
 		requireToolError(t, call(frame(4, send)), errBoundsExceeded)
 
 		send.Arguments = r
-		form := call(frame(5, send))
+		// Reusing this encoding would add four bytes to the UUID continuation.
+		meta["progressToken"] = json.Number("1.0000000")
+		requireToolError(t, call(frame(5, send)), errBoundsExceeded)
+
+		meta["progressToken"] = json.Number("1.000")
+		form := call(frame(6, send))
 		if form.RequestState == "" || len(form.InputRequests) != 1 || p.connections.Load() != 0 {
 			t.Fatal("expected approval before SMTP")
 		}

@@ -326,7 +326,7 @@ up to 38 encoded bytes, including string quotes and escapes. A quoted UUID
 fits exactly. A longer ID closes the stdio input. With sending enabled,
 `prepare_forward` reserves space for the ID, client metadata and approval
 response. Before showing the form, `send_forward` checks again using the
-client's encoded arguments.
+original byte lengths of `arguments` and `_meta` from that call.
 Encode the envelope and `_meta` without padding, extra fields or unnecessary
 escapes. On continuation, reuse the encoded `arguments` and `_meta`, echo
 `requestState`, and send only the requested confirmation in `inputResponses`.

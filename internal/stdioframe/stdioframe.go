@@ -17,11 +17,15 @@ package stdioframe
 
 import (
 	"bufio"
+	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"io"
+	"net/http"
+	"strconv"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/wevial/croton-mcp/internal/strictjson"
 )
@@ -32,6 +36,10 @@ const MaxFrameBytes = 64 * 1024
 
 // MaxForwardIDBytes accommodates a quoted UUID on both send_forward calls.
 const MaxForwardIDBytes = 38
+
+// ForwardMetaBytesHeader carries a stdio-only measurement in SDK RequestExtra.
+// Its value is local to the request and never appears on the wire.
+const ForwardMetaBytesHeader = "Croton-Forward-Meta-Bytes"
 
 var (
 	errStdioFrameTooLarge = errors.New("stdio frame exceeds limit")
@@ -44,13 +52,49 @@ var (
 // ambiguous frame fragments never reach the SDK. Standard output is kept
 // exclusively for SDK JSON-RPC frames and is never closed by the SDK.
 func NewTransport(stdin io.ReadCloser, stdout io.Writer) mcp.Transport {
-	return &mcp.IOTransport{
+	return stdioTransport{mcp.IOTransport{
 		Reader: &boundedReadCloser{
 			Reader: newBoundedFrameReader(stdin, MaxFrameBytes),
 			Closer: stdin,
 		},
 		Writer: nopWriteCloser{Writer: stdout},
+	}}
+}
+
+type stdioTransport struct{ mcp.IOTransport }
+
+func (t stdioTransport) Connect(ctx context.Context) (mcp.Connection, error) {
+	conn, err := t.IOTransport.Connect(ctx)
+	if err != nil {
+		return nil, err
 	}
+
+	return stdioConnection{conn}, nil
+}
+
+type stdioConnection struct{ mcp.Connection }
+
+func (c stdioConnection) Read(ctx context.Context) (jsonrpc.Message, error) {
+	msg, err := c.Connection.Read(ctx)
+	req, ok := msg.(*jsonrpc.Request)
+	if err != nil || !ok || req.Method != "tools/call" {
+		return msg, err
+	}
+
+	// Params still contains the original JSON here. Tool handlers receive
+	// _meta as a map, which loses number spellings, whitespace and escapes.
+	var params struct {
+		Name string         `json:"name"`
+		Meta jsontext.Value `json:"_meta"`
+	}
+	if json.Unmarshal(req.Params, &params, jsontext.AllowInvalidUTF8(true)) == nil &&
+		(params.Name == "prepare_forward" || params.Name == "send_forward") {
+		req.Extra = &mcp.RequestExtra{Header: http.Header{
+			ForwardMetaBytesHeader: {strconv.Itoa(len(params.Meta))},
+		}}
+	}
+
+	return msg, nil
 }
 
 type boundedReadCloser struct {
