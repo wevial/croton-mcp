@@ -194,12 +194,12 @@ clients and revoke the registration ID for this connector in the owner terminal.
 Disconnect the connector in Claude and stop the serving process with Ctrl-C.
 Check `tailscale funnel status` and `tailscale serve status` again. Confirm
 the background HTTPS 443 root route to Croton is gone. After a crash or a
-cleanup warning, inspect the current target before reusing the port. If
-you verify the remaining route is yours, run `tailscale funnel --https=443 off`
-and recheck both statuses. Leave unrelated routes in place.
+cleanup warning, inspect the root mount before reusing the port. If its
+target matches the Croton loopback target you approved, run
+`tailscale funnel --https=443 --set-path=/ off` and recheck both statuses.
 
 **Verify from the repository root.** The test uses fake mail, a fake Tailscale
-CLI and Python 3 to drive the terminal.
+CLI and Python 3.9 or later to drive the terminal.
 
 ```sh
 go test -race -count=1 -timeout=180s ./cmd/croton-mcp -run '^TestRemoteConnectorSetup$'

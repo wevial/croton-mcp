@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wevial/croton-mcp/internal/testkit"
+	"golang.org/x/net/html"
+	"golang.org/x/net/html/atom"
 	"golang.org/x/oauth2"
 )
 
@@ -136,12 +140,18 @@ func TestRemoteConnectorSetup(t *testing.T) {
 		"code_challenge_method": {"S256"}, "code_challenge": {oauth2.S256ChallengeFromVerifier(clientVerifier)},
 		"resource": {resource.Resource}, "state": {"setup.test"},
 	}
-	_, body = p.request(t, "GET", path(metadata.Authorize)+"?"+authorize.Encode(), "", "", http.StatusOK)
-	signin := url.Values{"owner": {owner}, "request": {field(body, `name="request" value="([^"]+)"`)}}.Encode()
-	_, body = p.request(t, "POST", "/owner/signin", clientForm, signin, http.StatusOK)
+	authorizeURL := metadata.Authorize + "?" + authorize.Encode()
+	_, body = p.request(t, "GET", path(authorizeURL), "", "", http.StatusOK)
+	signinURL, signin := setupPostForm(t, authorizeURL, body)
+	if !signin.Has("owner") {
+		t.Fatal("sign-in form is missing the browser owner field")
+	}
+	signin.Set("owner", owner)
+	_, body = p.request(t, "POST", path(signinURL), clientForm, signin.Encode(), http.StatusOK)
 	terminal("approve", field(body, `<strong>([^<]+)</strong>`)+"\n")
 
-	headers, _ = p.request(t, "POST", "/owner/finish", clientForm, signin, http.StatusSeeOther)
+	finishURL, continuation := setupPostForm(t, signinURL, body)
+	headers, _ = p.request(t, "POST", path(finishURL), clientForm, continuation.Encode(), http.StatusSeeOther)
 	callback, err := url.Parse(headers.Get("Location"))
 	if err != nil || callback.Scheme+"://"+callback.Host+callback.Path != clientRedirect ||
 		callback.Query().Get("state") != authorize.Get("state") || callback.Query().Get("iss") != metadata.Issuer {
@@ -167,7 +177,11 @@ func TestRemoteConnectorSetup(t *testing.T) {
 		"redirect_uri": {clientRedirect}, "code_verifier": {clientVerifier}, "resource": {resource.Resource},
 	})
 	expired := time.Now().Add(lifetime)
+	beforeRead := len(bridge.Commands())
 	setupFolderRead(t, p, resource.Resource, client.Access, http.StatusOK)
+	if !slices.ContainsFunc(bridge.Commands()[beforeRead:], func(cmd testkit.Command) bool { return cmd.Name == "LIST" }) {
+		t.Fatal("list_folders did not issue LIST to the synthetic Bridge")
+	}
 
 	time.Sleep(time.Until(expired))
 	setupFolderRead(t, p, resource.Resource, client.Access, http.StatusUnauthorized)
@@ -186,6 +200,50 @@ func TestRemoteConnectorSetup(t *testing.T) {
 	if bridge.AssertReadOnlyCommands() != nil {
 		t.Fatal("unexpected command at the synthetic Bridge")
 	}
+}
+
+func setupPostForm(t *testing.T, pageURL string, body []byte) (string, url.Values) {
+	t.Helper()
+	page, err := url.Parse(pageURL)
+	if err != nil {
+		t.Fatal("invalid form page URL")
+	}
+	doc, err := html.Parse(bytes.NewReader(body))
+	if err != nil {
+		t.Fatal("invalid form page")
+	}
+
+	attributes := func(node *html.Node) map[string]string {
+		attrs := make(map[string]string, len(node.Attr))
+		for _, attr := range node.Attr {
+			attrs[attr.Key] = attr.Val
+		}
+		return attrs
+	}
+	for form := range doc.Descendants() {
+		if form.DataAtom != atom.Form {
+			continue
+		}
+		attrs := attributes(form)
+		action, err := page.Parse(attrs["action"])
+		if err != nil || !strings.EqualFold(attrs["method"], "post") {
+			t.Fatal("expected a form with a valid POST action")
+		}
+
+		fields := url.Values{}
+		for input := range form.Descendants() {
+			if input.DataAtom != atom.Input {
+				continue
+			}
+			attrs := attributes(input)
+			if _, disabled := attrs["disabled"]; !disabled && attrs["name"] != "" {
+				fields.Add(attrs["name"], attrs["value"])
+			}
+		}
+		return action.String(), fields
+	}
+	t.Fatal("missing OAuth form")
+	return "", nil
 }
 
 func setupProxyClient(t *testing.T, targetURL string) *httpProcess {
