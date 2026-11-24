@@ -13,7 +13,6 @@ import (
 // request order, recording every searched window and fetched UID.
 type orderedSearchSession struct {
 	boundedSearchSession
-	snapshot  mailboxSnapshot
 	members   []uint32
 	ascending bool
 
@@ -21,8 +20,13 @@ type orderedSearchSession struct {
 	fetched [][]uint32
 }
 
-func (session *orderedSearchSession) Examine(context.Context, string) (mailboxSnapshot, error) {
-	return session.snapshot, nil
+func newOrderedSearchAdapter(snapshot mailboxSnapshot, members []uint32, budget int) (*Adapter, *orderedSearchSession) {
+	session := &orderedSearchSession{members: members}
+	session.snapshot = snapshot
+	adapter := newBoundedSearchAdapter(session, defaultMaxOutputBytes)
+	adapter.config.Bounds.MaxSearchResults = budget
+
+	return adapter, session
 }
 
 func (session *orderedSearchSession) UIDSearchWindow(_ context.Context, _ SearchQuery, window uidWindow, _ int) ([]uint32, error) {
@@ -87,9 +91,7 @@ func TestSearchOrderAdapter(t *testing.T) {
 	t.Run("dense_window", func(t *testing.T) {
 		for _, budget := range []int{1, 50} {
 			t.Run(fmt.Sprintf("budget_%d", budget), func(t *testing.T) {
-				session := &orderedSearchSession{snapshot: mailboxSnapshot{UIDNext: 101, UIDValidity: 9001}, members: uidRange(1, 100)}
-				adapter := newBoundedSearchAdapter(session, defaultMaxOutputBytes)
-				adapter.config.Bounds.MaxSearchResults = budget
+				adapter, session := newOrderedSearchAdapter(mailboxSnapshot{UIDNext: 101, UIDValidity: 9001}, uidRange(1, 100), budget)
 
 				page, err := adapter.SearchMailPage(context.Background(), SearchQuery{Mailbox: "INBOX"})
 				if err != nil {
@@ -118,13 +120,9 @@ func TestSearchOrderAdapter(t *testing.T) {
 			{name: "shuffled", ascending: false},
 		} {
 			t.Run(test.name, func(t *testing.T) {
-				session := &orderedSearchSession{
-					snapshot:  mailboxSnapshot{UIDNext: 201, UIDValidity: 7007},
-					members:   []uint32{3, 7, 40, 93, 101, 110, 150, 199, 200},
-					ascending: test.ascending,
-				}
-				adapter := newBoundedSearchAdapter(session, defaultMaxOutputBytes)
-				adapter.config.Bounds.MaxSearchResults = 20
+				members := []uint32{3, 7, 40, 93, 101, 110, 150, 199, 200}
+				adapter, session := newOrderedSearchAdapter(mailboxSnapshot{UIDNext: 201, UIDValidity: 7007}, members, 20)
+				session.ascending = test.ascending
 
 				page, err := adapter.SearchMailPage(context.Background(), SearchQuery{Mailbox: "INBOX"})
 				if err != nil {
@@ -165,9 +163,7 @@ func TestSearchOrderAdapter(t *testing.T) {
 			{name: "dense_hard_budget", uidNext: 1001, members: uidRange(1, 1000), budget: hardMaxSearchResults, wantCount: hardMaxSearchResults, wantTruncated: true, wantSearches: 3},
 		} {
 			t.Run(test.name, func(t *testing.T) {
-				session := &orderedSearchSession{snapshot: mailboxSnapshot{UIDNext: test.uidNext, UIDValidity: 9001}, members: test.members}
-				adapter := newBoundedSearchAdapter(session, defaultMaxOutputBytes)
-				adapter.config.Bounds.MaxSearchResults = test.budget
+				adapter, session := newOrderedSearchAdapter(mailboxSnapshot{UIDNext: test.uidNext, UIDValidity: 9001}, test.members, test.budget)
 
 				page, err := adapter.SearchMailPage(context.Background(), SearchQuery{Mailbox: "INBOX"})
 				if err != nil {
