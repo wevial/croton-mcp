@@ -57,8 +57,7 @@ func unpair(db *bolt.DB, id string) error {
 		if families != nil {
 			key := digest(id)
 			if family := families.Bucket(key); family != nil {
-				// Earlier bearers have no Client field. The family still
-				// identifies its current bearer by hash.
+				// The family stores the current bearer's hash even for records without a Client field.
 				var state refreshFamily
 				access := tx.Bucket([]byte("access"))
 				if access == nil || json.Unmarshal(family.Get([]byte("current")), &state) != nil {

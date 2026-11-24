@@ -132,8 +132,7 @@ func runOwnerCommand(ctx context.Context, command string, args []string, tty io.
 	flags.SetOutput(io.Discard)
 	dir := flags.String("state-dir", "", "private owner state directory")
 
-	// A generated client ID can start with a dash. Take it as a positional
-	// argument, on either side of the optional state directory flag.
+	// A client ID on either side of --state-dir can start with a dash.
 	var id string
 	if command == "unpair" && len(args) > 0 {
 		flagName, _, _ := strings.Cut(args[0], "=")

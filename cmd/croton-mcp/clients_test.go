@@ -318,8 +318,7 @@ func TestOwnerOAuthClientsWrongUID(t *testing.T) {
 		// Drop privileges only in this short-lived test subprocess.
 		requireOK(syscall.Setuid(foreignUID))
 
-		// The shared path lets the connection reach the server's peer
-		// check despite the private state directory.
+		// The shared path reaches the peer check outside the private state directory.
 		server, err := net.DialTimeout("unix", actualSocket, time.Second)
 		requireOK(err)
 		server.SetDeadline(time.Now().Add(2 * time.Second))
