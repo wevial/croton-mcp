@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
-	"net/mail"
 	"slices"
 	"strings"
 	"unicode"
@@ -58,13 +57,14 @@ func (adapter *Adapter) ReadForwardSource(ctx context.Context, identifier string
 		}
 
 		section := plan.section
-		if bounds.MaxBodyBytes == 0 || uint64(section.size) > uint64(bounds.MaxBodyBytes) || section.size >= MaxForwardMIMEBytes {
+		// A partial PEEK that fills the entire requested range cannot
+		// distinguish a complete section from a longer one. Reserve room
+		// for EOF detection within both the section and total read budgets.
+		if uint64(section.size) >= uint64(min(bounds.MaxBodyBytes, MaxForwardMIMEBytes)) {
 			return errorCode(CodeBoundsExceeded)
 		}
 
-		// Probe one extra octet when the section budget permits it. This
-		// catches understated as well as overstated BODYSTRUCTURE sizes.
-		probe := min(int(section.size)+1, bounds.MaxBodyBytes)
+		probe := int(section.size) + 1
 		headerLimit := min(bounds.MaxHeaderBytes, MaxForwardMIMEBytes-probe)
 		headers, err := session.UIDFetchHeaders(ctx, id.UID, headerLimit)
 		if err != nil {
@@ -77,13 +77,15 @@ func (adapter *Adapter) ReadForwardSource(ctx context.Context, identifier string
 		}
 		if headers.Metadata.From == "" || headers.Metadata.DateSource != DateSourceHeader ||
 			!validSenderEncodedWords(headers.Metadata.Subject) || !utf8.ValidString(headers.Metadata.Subject) ||
-			strings.Contains(h.Subject, "=?") || strings.ContainsRune(h.Subject, utf8.RuneError) ||
-			strings.ContainsRune(h.From, utf8.RuneError) {
+			strings.Contains(h.Subject, "=?") {
 			return errorCode(CodeUnsupported)
 		}
-
-		if _, err := mail.ParseAddressList(h.From); err != nil {
-			return errorCode(CodeUnsupported)
+		for _, value := range []string{h.From, h.Date, h.Subject} {
+			if strings.ContainsFunc(value, func(r rune) bool {
+				return r == utf8.RuneError || (unicode.IsControl(r) && r != '\t')
+			}) {
+				return errorCode(CodeUnsupported)
+			}
 		}
 
 		raw, err := session.UIDFetchBody(ctx, id.UID, section.part, probe)
@@ -167,7 +169,11 @@ func (plan *forwardSelection) visit(structure bodyStructure, path []int, parent 
 			return errorCode(CodeUnsupported)
 		}
 	case "text/plain":
-		if format, declared := entity.parameters["format"]; plan.section != nil || (declared && !strings.EqualFold(format, "fixed")) {
+		if plan.section != nil || !forwardTextParameter(params, entity.parameters, "charset") ||
+			!forwardTextParameter(params, entity.parameters, "format") {
+			return errorCode(CodeUnsupported)
+		}
+		if format := entity.parameters["format"]; format != "" && !strings.EqualFold(format, "fixed") {
 			return errorCode(CodeUnsupported)
 		}
 		part := structure.(*singlePartStructure)
@@ -189,6 +195,25 @@ func (plan *forwardSelection) visit(structure bodyStructure, path []int, parent 
 	}
 
 	return nil
+}
+
+// ParseMediaType can drop an invalid extended value, override a regular
+// value or partially recover a continuation. Only use an explicit charset
+// or format when a single parameter supplies its entire value.
+func forwardTextParameter(raw, parsed map[string]string, name string) bool {
+	declared := false
+	for key := range raw {
+		base, suffix, _ := strings.Cut(key, "*")
+		if !strings.EqualFold(base, name) {
+			continue
+		}
+		if declared || suffix != "" || parsed[name] == "" {
+			return false
+		}
+		declared = true
+	}
+
+	return true
 }
 
 func forwardFileParam(params map[string]string, name string) bool {

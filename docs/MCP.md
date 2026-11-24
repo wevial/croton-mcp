@@ -222,8 +222,9 @@ address from the authenticated Bridge login. The login must be a plain mailbox
 address too. Only the caller supplies the recipient.
 
 The result contains a `handle` and a complete `preview` with `from`, `to`,
-`subject`, `body` and `omissions`. The body includes the original From, declared
-Date, Subject and complete plain text. The omissions object counts
+`subject`, `body` and `omissions`. The body quotes the From, declared Date and
+first Subject from the bounded Bridge header projection, followed by the
+complete plain text. The omissions object counts
 `htmlAlternatives`, `files` and `attachedMessages` separately. HTML alternatives
 are skipped automatically. Files and attached messages require explicit
 `text_only: true` consent. Their content is never fetched.
@@ -231,10 +232,13 @@ are skipped automatically. Files and attached messages require explicit
 The tool uses one read-only Bridge operation to check the mailbox generation,
 UID, extended BODYSTRUCTURE, header and selected plain section. It refuses
 ambiguous bodies, HTML-only, signed or flowed mail, primary nested messages
-and incomplete or undecodable text. The Bridge header projection retains the
-first Subject field when a message declares several. Text decoding supports
-US-ASCII, UTF-8 and ISO-8859-1. Header, section, part and depth bounds apply. Source MIME reads and stored UTF-8 quoted-printable MIME each have a
-256 KiB ceiling.
+and incomplete or undecodable text. Text decoding supports US-ASCII, UTF-8
+and ISO-8859-1. A declared charset or format must have a single, decodable
+parameter value. Header, section, part and depth bounds apply. The partial
+PEEK requests one octet beyond the declared section length to verify it is
+complete. That octet must fit within the configured section read budget.
+Source MIME reads and stored UTF-8 quoted-printable MIME each have a 256 KiB
+ceiling.
 
 Each successful preview replaces the previous handle in that stdio session.
 The handle binds the envelope, preview and serialized message for two minutes

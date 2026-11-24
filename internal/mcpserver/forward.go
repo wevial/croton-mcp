@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"mime/quotedprintable"
 	"net/mail"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -96,12 +97,6 @@ func runPrepareForward(ctx context.Context, options Options, args json.RawMessag
 	if !plainMailbox(source.Login) {
 		return nil, errUnsupported
 	}
-	for _, h := range []string{source.From, source.Date, source.Subject} {
-		if strings.ContainsFunc(h, func(r rune) bool { return unicode.IsControl(r) && r != '\t' }) {
-			return nil, errUnsupported
-		}
-	}
-
 	var body strings.Builder
 	if authored != "" {
 		body.WriteString(authored)
@@ -150,6 +145,8 @@ func runPrepareForward(ctx context.Context, options Options, args json.RawMessag
 	return result, ""
 }
 
+var mailboxDomainLabel = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
+
 func plainMailbox(value string) bool {
 	if value == "" || len(value) > 254 || strings.ContainsFunc(value, func(r rune) bool { return r <= ' ' || r >= 127 }) {
 		return false
@@ -158,8 +155,22 @@ func plainMailbox(value string) bool {
 	if err != nil || address.Name != "" || address.Address != value {
 		return false
 	}
-	local, _, ok := strings.Cut(value, "@")
-	return ok && len(local) <= 64
+	local, domain, ok := strings.Cut(value, "@")
+	if !ok || len(local) > 64 {
+		return false
+	}
+
+	// ParseAddress checks address literals, but accepts header dot-atoms
+	// such as "a/b.test" in the domain of an envelope mailbox.
+	if !strings.HasPrefix(domain, "[") {
+		for label := range strings.SplitSeq(domain, ".") {
+			if !mailboxDomainLabel.MatchString(label) {
+				return false
+			}
+		}
+	}
+
+	return true
 }
 
 // fitsForwardFrame sizes the canonical call with the exact approval object.

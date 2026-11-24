@@ -30,9 +30,9 @@ import (
 const (
 	forwardLogin  = "owner@bridge.test"
 	forwardTo     = "reviewer@recipient.test"
-	forwardFrom   = "Original Sender <source@sender.test>"
+	forwardFrom   = "Sender, Original <source@sender.test>"
 	declaredDate  = "Thu, 01 Jan 2026 03:04:05 +0530"
-	forwardHeader = "From: " + forwardFrom + "\r\nDate: " + declaredDate + "\r\nSubject: Original  subject\r\nTo: trap@sender.test\r\nReply-To: trap@sender.test\r\nBcc: trap@sender.test\r\nMessage-ID: <original@sender.test>\r\n\r\n"
+	forwardHeader = "From: =?UTF-8?Q?Sender=2C_Original?= <source@sender.test>\r\nDate: " + declaredDate + "\r\nSubject: Original  subject\r\nSubject: Later subject\r\nTo: trap@sender.test\r\nReply-To: trap@sender.test\r\nBcc: trap@sender.test\r\nMessage-ID: <original@sender.test>\r\n\r\n"
 )
 
 func textStructure(subtype, encoding, parameters string, size int) string {
@@ -61,7 +61,7 @@ type forwardFixture struct {
 	id                               string
 }
 
-func newForwardFixture(t *testing.T) *forwardFixture {
+func newForwardFixture(t *testing.T, bounds bridge.BoundsPatch) *forwardFixture {
 	t.Helper()
 
 	cert := httptest.NewTLSServer(nil)
@@ -80,7 +80,7 @@ func newForwardFixture(t *testing.T) *forwardFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := bridge.Config{IMAP: bridge.IMAPConfig{
+	config := bridge.Config{Bounds: bounds, IMAP: bridge.IMAPConfig{
 		Port: listener.Addr().(*net.TCPAddr).Port, TLSMode: bridge.TLSModeImplicit,
 		TLS: bridge.TLSConfig{SPKISHA256: fmt.Sprintf("%x", pin)}, CredentialCommand: []string{cat, file},
 	}}
@@ -131,7 +131,7 @@ func (f *forwardFixture) set(structure, section, body string) {
 	f.commands = nil
 }
 
-var forwardPeek = regexp.MustCompile(`BODY\.PEEK\[([.0-9]+)\]<0\.([0-9]+)>`)
+var forwardPeek = regexp.MustCompile(`^UID FETCH 1 \(UID BODY\.PEEK\[([.0-9]+)\]<0\.([0-9]+)>\)$`)
 
 func (f *forwardFixture) serve(conn net.Conn) {
 	defer conn.Close()
@@ -181,9 +181,10 @@ func (f *forwardFixture) reply(command string) string {
 		return "* SEARCH 1\r\n"
 	case strings.HasPrefix(command, "UID FETCH 1 "):
 		switch {
-		case strings.Contains(command, "BODYSTRUCTURE"):
+		case command == "UID FETCH 1 (UID BODYSTRUCTURE)":
 			return "* 1 FETCH (UID 1 BODYSTRUCTURE " + f.structure + ")\r\n"
-		case strings.Contains(command, "BODY.PEEK[HEADER]"):
+		case command == "UID FETCH 1 (UID FLAGS RFC822.SIZE BODY.PEEK[HEADER])",
+			command == "UID FETCH 1 (UID RFC822.SIZE FLAGS BODY.PEEK[HEADER])":
 			return fmt.Sprintf("* 1 FETCH (UID 1 FLAGS () RFC822.SIZE %d BODY[HEADER] {%d}\r\n%s)\r\n", len(f.header)+len(f.body), len(f.header), f.header)
 		default:
 			match := forwardPeek.FindStringSubmatch(command)
@@ -225,7 +226,14 @@ func TestForwardPreview(t *testing.T) {
 	const utf8Params = `("charset" "utf-8")`
 
 	t.Run("Wire", func(t *testing.T) {
-		f := newForwardFixture(t)
+		f := newForwardFixture(t, bridge.BoundsPatch{})
+		// Search metadata caps From at 512 bytes. The bounded header
+		// projection keeps this entire display name, including its comma.
+		namePrefix := strings.Repeat("Archive contact ", 33)
+		f.mu.Lock()
+		f.header = strings.Replace(forwardHeader, "From: ", "From: "+namePrefix, 1)
+		f.mu.Unlock()
+
 		const raw = "one=0A=c3=a9\r\nlast\r\n\r\n"
 		plain := textStructure("plain", "quoted-printable", utf8Params, len(raw))
 		alt := multiStructure("alternative", plain, textStructure("html", "7bit", "NIL", 91))
@@ -241,7 +249,7 @@ func TestForwardPreview(t *testing.T) {
 				f.set(tc.structure, tc.section, raw)
 				result := f.prepare(t, tc.omissions.Files != 0)
 				want := forwardPreview{From: forwardLogin, To: forwardTo, Subject: "Fwd: Original subject", Omissions: tc.omissions,
-					Body: "My note\r\n\r\n---------- Forwarded message ----------\r\nFrom: " + forwardFrom + "\r\nDate: " + declaredDate + "\r\nSubject: Original  subject\r\n\r\none\r\né\r\nlast\r\n\r\n"}
+					Body: "My note\r\n\r\n---------- Forwarded message ----------\r\nFrom: " + namePrefix + forwardFrom + "\r\nDate: " + declaredDate + "\r\nSubject: Original  subject\r\n\r\none\r\né\r\nlast\r\n\r\n"}
 				if result.Preview != want {
 					t.Fatalf("preview = %+v", result.Preview)
 				}
@@ -257,7 +265,7 @@ func TestForwardPreview(t *testing.T) {
 	})
 
 	t.Run("Refuse", func(t *testing.T) {
-		f := newForwardFixture(t)
+		f := newForwardFixture(t, bridge.BoundsPatch{})
 		plain := plainStructure("ok")
 		for _, tc := range []struct {
 			name, structure, raw string
@@ -275,6 +283,8 @@ func TestForwardPreview(t *testing.T) {
 			{"bad base64", textStructure("plain", "base64", utf8Params, 4), "x!==", false},
 			{"bad QP", textStructure("plain", "quoted-printable", utf8Params, 3), "=xz", false},
 			{"damaged name parameter", textStructure("plain", "7bit", `("name*" "unknown''file.txt")`, 2), "ok", true},
+			{"damaged charset parameter", textStructure("plain", "8bit", `("charset*" "unknown''utf-8")`, 2), "ok", false},
+			{"ambiguous format", textStructure("plain", "8bit", `("format" "flowed" "format*" "us-ascii''fixed")`, 2), "ok", false},
 			{"lossy", plainStructure("\xff"), "\xff", false},
 			{"bad charset", textStructure("plain", "8bit", `("charset" "bogus")`, 2), "ok", false},
 		} {
@@ -289,6 +299,7 @@ func TestForwardPreview(t *testing.T) {
 			strings.Replace(forwardHeader, "Original  subject", "=?UTF-8?B?/w==?=", 1),
 			strings.Replace(forwardHeader, "From: ", "From: other@sender.test\r\nFrom: ", 1),
 			strings.Replace(forwardHeader, "Date: ", "Date: invalid\r\nDate: ", 1),
+			strings.Replace(forwardHeader, declaredDate, declaredDate+" (bad \xff)", 1),
 		} {
 			f.mu.Lock()
 			f.header = header
@@ -300,7 +311,8 @@ func TestForwardPreview(t *testing.T) {
 		f.commands = nil
 		f.mu.Unlock()
 
-		for _, to := range []string{"", "A <a@b.test>", "a@b.test,c@d.test", "a@b.test\r\nBcc: trap@sender.test", "a@b.test (comment)"} {
+		for _, to := range []string{"", "A <a@b.test>", "a@b.test,c@d.test", "a@b.test\r\nBcc: trap@sender.test", "a@b.test (comment)",
+			"recipient@bad/path.test", "recipient@-bad.test", "recipient@" + strings.Repeat("x", 64) + ".test"} {
 			args := f.arguments(false)
 			args["to"] = to
 			f.refuse(t, args)
@@ -312,10 +324,16 @@ func TestForwardPreview(t *testing.T) {
 		f.generation++
 		f.mu.Unlock()
 		requireToolError(t, callTool(t, f.client, "prepare_forward", f.arguments(false)), errStaleID)
+
+		t.Run("underdeclared at section limit", func(t *testing.T) {
+			f := newForwardFixture(t, bridge.BoundsPatch{MaxBodyBytes: bridge.Int(4)})
+			f.set(plainStructure("four"), "1", "four!")
+			f.refuse(t, f.arguments(false))
+		})
 	})
 
 	t.Run("Handle", func(t *testing.T) {
-		f := newForwardFixture(t)
+		f := newForwardFixture(t, bridge.BoundsPatch{})
 		list, err := f.client.ListTools(t.Context(), &mcp.ListToolsParams{})
 		if err != nil {
 			t.Fatal(err)
@@ -400,7 +418,7 @@ func TestForwardPreview(t *testing.T) {
 	})
 
 	t.Run("Frame", func(t *testing.T) {
-		f := newForwardFixture(t)
+		f := newForwardFixture(t, bridge.BoundsPatch{})
 		for _, unit := range []string{"p", "\"\\<&"} {
 			f.set(plainStructure(""), "1", "")
 			base := f.prepare(t, false)
