@@ -38,21 +38,18 @@ type Thread struct {
 // BuildThread links supplied headers using References and In-Reply-To without network or transport state.
 func BuildThread(messages []ThreadMessage, options ThreadOptions) Thread {
 	limits := normalizedLimits(options.Limits)
-	// A stable sort keeps input order as the final tiebreak.
 	ordered := slices.Clone(messages)
 	slices.SortStableFunc(ordered, compareThreadMessages)
 	ordered = ordered[:min(len(ordered), limits.MaxThreadMessages)]
 
 	thread := Thread{}
-	if len(messages) > limits.MaxThreadMessages {
-		thread.Truncation.ThreadMessages = true
-	}
+	thread.Truncation.ThreadMessages = len(ordered) < len(messages)
 
-	keys := make(map[string]int, len(ordered))
+	keys := make(map[string]bool, len(ordered))
 	identifiers := make(map[string]int, len(ordered))
 	for index := range ordered {
 		ordered[index].Key = stableThreadKey(ordered[index], keys)
-		keys[ordered[index].Key] = index
+		keys[ordered[index].Key] = true
 
 		if identifier := ordered[index].Headers.MessageID; identifier != "" {
 			if _, exists := identifiers[identifier]; !exists {
@@ -61,44 +58,38 @@ func BuildThread(messages []ThreadMessage, options ThreadOptions) Thread {
 		}
 	}
 
-	parents := make([]int, len(ordered))
-	for index := range parents {
-		parents[index] = -1
-	}
-
-	missingParents := make([]string, len(ordered))
-	for index := range ordered {
-		parents[index], missingParents[index], thread.Truncation.References = parentFor(ordered[index], identifiers, limits.MaxReferenceCount, thread.Truncation.References)
-		if parents[index] >= 0 && wouldCycle(index, parents[index], parents) {
-			parents[index] = -1
-			thread.Truncation.ThreadCycle = true
-		}
-	}
-
-	depths := make([]int, len(ordered))
-	for index := range ordered {
-		depths[index] = resolveThreadDepth(index, parents, depths)
-		if depths[index] > limits.MaxThreadDepth {
-			parents[index] = -1
-			depths[index] = 0
-			thread.Truncation.ThreadDepth = true
-		}
-	}
-
+	parents := slices.Repeat([]int{-1}, len(ordered))
 	thread.Nodes = make([]ThreadNode, len(ordered))
 	for index, message := range ordered {
-		node := ThreadNode{
+		parent, missing, truncated := parentFor(message.Headers, identifiers, limits.MaxReferenceCount)
+		thread.Nodes[index] = ThreadNode{
 			Key:             message.Key,
 			MessageID:       message.Headers.MessageID,
-			MissingParentID: missingParents[index],
-			Depth:           depths[index],
+			MissingParentID: missing,
 			Message:         message,
 		}
+		thread.Truncation.References = thread.Truncation.References || truncated
+		if wouldCycle(index, parent, parents) {
+			thread.Truncation.ThreadCycle = true
+			continue
+		}
+
+		parents[index] = parent
+	}
+
+	for index := range thread.Nodes {
+		node := &thread.Nodes[index]
+		depth := resolveThreadDepth(index, parents, thread.Nodes)
+		if depth > limits.MaxThreadDepth {
+			parents[index] = -1
+			thread.Truncation.ThreadDepth = true
+			continue
+		}
+
+		node.Depth = depth
 		if parent := parents[index]; parent >= 0 {
 			node.ParentKey = ordered[parent].Key
 		}
-
-		thread.Nodes[index] = node
 	}
 
 	return thread
@@ -112,53 +103,33 @@ func compareThreadMessages(left, right ThreadMessage) int {
 	return cmp.Or(cmp.Compare(left.Key, right.Key), cmp.Compare(left.Headers.MessageID, right.Headers.MessageID))
 }
 
-func stableThreadKey(message ThreadMessage, keys map[string]int) string {
-	key := message.Key
-	if key == "" {
-		key = message.Headers.MessageID
-	}
-	if key == "" {
-		key = "message"
-	}
-
-	base := key
-	for suffix := 2; ; suffix++ {
-		if _, exists := keys[key]; !exists {
-			return key
-		}
-
+func stableThreadKey(message ThreadMessage, keys map[string]bool) string {
+	base := cmp.Or(message.Key, message.Headers.MessageID, "message")
+	key := base
+	for suffix := 2; keys[key]; suffix++ {
 		key = base + "#" + strconv.Itoa(suffix)
 	}
+
+	return key
 }
 
-func parentFor(message ThreadMessage, identifiers map[string]int, maxReferences int, alreadyTruncated bool) (int, string, bool) {
-	references := message.Headers.References
-	truncated := alreadyTruncated
-	if len(references) > maxReferences {
+func parentFor(headers CanonicalHeaders, identifiers map[string]int, maxReferences int) (int, string, bool) {
+	references := headers.References
+	truncated := len(references) > maxReferences
+	if truncated {
 		references = references[len(references)-maxReferences:]
-		truncated = true
+	}
+	if len(references) == 0 {
+		references = []string{headers.InReplyTo}
 	}
 
-	for index := len(references) - 1; index >= 0; index-- {
-		identifier := references[index]
+	for _, identifier := range slices.Backward(references) {
 		if parent, exists := identifiers[identifier]; exists {
 			return parent, "", truncated
 		}
 	}
 
-	if len(references) > 0 {
-		return -1, references[len(references)-1], truncated
-	}
-
-	if identifier := message.Headers.InReplyTo; identifier != "" {
-		if parent, exists := identifiers[identifier]; exists {
-			return parent, "", truncated
-		}
-
-		return -1, identifier, truncated
-	}
-
-	return -1, "", truncated
+	return -1, references[len(references)-1], truncated
 }
 
 func wouldCycle(child, parent int, parents []int) bool {
@@ -173,15 +144,15 @@ func wouldCycle(child, parent int, parents []int) bool {
 	return false
 }
 
-func resolveThreadDepth(index int, parents, depths []int) int {
+func resolveThreadDepth(index int, parents []int, nodes []ThreadNode) int {
 	parent := parents[index]
 	if parent < 0 {
 		return 0
 	}
 
-	if depths[parent] > 0 {
-		return depths[parent] + 1
+	if nodes[parent].Depth > 0 {
+		return nodes[parent].Depth + 1
 	}
 
-	return resolveThreadDepth(parent, parents, depths) + 1
+	return resolveThreadDepth(parent, parents, nodes) + 1
 }
