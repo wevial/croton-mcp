@@ -115,11 +115,7 @@ func TestAdapterBoundedLiteralAbortReleasesFetchReader(t *testing.T) {
 func assertTranscriptContains(t *testing.T, commands []testkit.Command, fragments ...string) {
 	t.Helper()
 
-	transcript := make([]string, 0, len(commands))
-	for _, command := range commands {
-		transcript = append(transcript, command.Raw)
-	}
-	joined := strings.Join(transcript, "\n")
+	joined := strings.Join(commandStrings(commands), "\n")
 	for _, fragment := range fragments {
 		if !strings.Contains(joined, fragment) {
 			t.Fatalf("transcript %q does not contain %q", joined, fragment)

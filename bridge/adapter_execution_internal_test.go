@@ -2,7 +2,6 @@ package bridge
 
 import (
 	"context"
-	"sync"
 	"testing"
 	"time"
 )
@@ -60,14 +59,10 @@ func TestAdapterDoesNotReplayNonTransportFailures(t *testing.T) {
 		CodeIMAPProtocol,
 	} {
 		t.Run(code, func(t *testing.T) {
-			var mu sync.Mutex
 			factoryCalls := 0
 			adapter := &Adapter{
 				config: ValidatedConfig{IMAP: IMAPConfig{CommandTimeoutMs: 1000}},
 				factory: func(context.Context) (bridgeSession, error) {
-					mu.Lock()
-					defer mu.Unlock()
-
 					factoryCalls++
 					return &oversizedListSession{}, nil
 				},
@@ -82,8 +77,6 @@ func TestAdapterDoesNotReplayNonTransportFailures(t *testing.T) {
 				t.Fatalf("operation error = %v, want %q", err, code)
 			}
 
-			mu.Lock()
-			defer mu.Unlock()
 			if factoryCalls != 1 {
 				t.Fatalf("session factory calls = %d, want one", factoryCalls)
 			}
