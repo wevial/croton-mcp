@@ -295,14 +295,14 @@ func TestForwardPreview(t *testing.T) {
 			})
 		}
 		f.set(plain, "1", "ok")
-		for _, header := range []string{
-			strings.Replace(forwardHeader, "Original  subject", "=?UTF-8?Q?=ZZ?=", 1),
-			strings.Replace(forwardHeader, "Original  subject", "=?UTF-8?B?/w==?=", 1),
-			strings.Replace(forwardHeader, "From: ", "From: other@sender.test\r\nFrom: ", 1),
-			strings.Replace(forwardHeader, "Date: ", "Date: invalid\r\nDate: ", 1),
-			strings.Replace(forwardHeader, declaredDate, declaredDate+" (bad \xff)", 1),
+		for _, change := range []struct{ old, replacement string }{
+			{"Original  subject", "=?UTF-8?Q?=ZZ?="},
+			{"Original  subject", "=?UTF-8?B?/w==?="},
+			{"From: ", "From: other@sender.test\r\nFrom: "},
+			{"Date: ", "Date: invalid\r\nDate: "},
+			{declaredDate, declaredDate + " (bad \xff)"},
 		} {
-			f.setHeader(header)
+			f.setHeader(strings.Replace(forwardHeader, change.old, change.replacement, 1))
 			f.refuse(t, f.arguments(false))
 		}
 		f.mu.Lock()
@@ -414,18 +414,18 @@ func TestForwardPreview(t *testing.T) {
 	})
 
 	t.Run("Frame", func(t *testing.T) {
-		f := newForwardFixture(t, bridge.BoundsPatch{})
-		for _, unit := range []string{"p", "\"\\<&"} {
-			f.set(plainStructure(""), "1", "")
-			base := f.prepare(t, false)
-			frameSize := func(r forwardResult) int {
-				data, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "send_forward", "arguments": r}})
-				if err != nil {
-					t.Fatal(err)
-				}
-				return len(data) + 1
+		frameSize := func(r forwardResult) int {
+			data, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "send_forward", "arguments": r}})
+			if err != nil {
+				t.Fatal(err)
 			}
-			room := stdioframe.MaxFrameBytes - frameSize(base)
+			return len(data) + 1
+		}
+
+		f := newForwardFixture(t, bridge.BoundsPatch{})
+		f.set(plainStructure(""), "1", "")
+		room := stdioframe.MaxFrameBytes - frameSize(f.prepare(t, false))
+		for _, unit := range []string{"p", "\"\\<&"} {
 			encoded, _ := json.Marshal(unit)
 			cost := len(encoded) - 2
 			content := strings.Repeat(unit, room/cost) + strings.Repeat("x", room%cost)
