@@ -170,7 +170,6 @@ func TestOwnerOAuthRefreshTransaction(t *testing.T) {
 	dir := privateDir(t)
 	a := openTest(t, dir, Defaults())
 	client, first := approvedPair(t, a)
-	form := refreshForm(client, first.Refresh)
 
 	// Keep old pages pinned so each commit eventually needs a new page.
 	// The size limit interrupts commit after the handler staged both tokens.
@@ -217,7 +216,7 @@ func TestOwnerOAuthRefreshTransaction(t *testing.T) {
 			t.Fatal("database contained a plaintext token")
 		}
 	}
-	requireGrantDenial(t, PostToken(a, form))
+	requireGrantDenial(t, PostToken(a, refreshForm(client, first.Refresh)))
 	if a.ValidBearer(replacement.Access) {
 		t.Fatal("reuse marker failed to revoke retried exchange")
 	}

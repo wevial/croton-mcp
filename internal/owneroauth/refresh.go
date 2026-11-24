@@ -38,10 +38,7 @@ func pruneFamilies(tx *bolt.Tx, now time.Time) error {
 	for k, _ := c.First(); k != nil; {
 		var f refreshFamily
 		bucket := families.Bucket(k)
-		if bucket == nil {
-			return errState
-		}
-		if err := json.Unmarshal(bucket.Get([]byte("current")), &f); err != nil {
+		if bucket == nil || json.Unmarshal(bucket.Get([]byte("current")), &f) != nil {
 			return errState
 		}
 		if now.Before(f.Expires) {
@@ -138,12 +135,12 @@ func (a *Authority) refresh(ctx context.Context, form url.Values) (tokenPair, er
 			return errState
 		}
 
-		refresh, _ := response.GetExtra("refresh_token").(string)
-		if response.GetAccessToken() == "" || refresh == "" {
+		pair.Access = response.GetAccessToken()
+		pair.Refresh, _ = response.GetExtra("refresh_token").(string)
+		if pair.Access == "" || pair.Refresh == "" {
 			return errState
 		}
 
-		pair = tokenPair{Access: response.GetAccessToken(), Refresh: refresh}
 		return nil
 	})
 	if errors.Is(err, oauth2.ErrInvalidScope) {
