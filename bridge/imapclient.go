@@ -426,7 +426,7 @@ func (session *imapSession) UIDFetchMetadata(ctx context.Context, _ string, uids
 				}
 			}
 			if uidItems == 1 && sizeItems == 0 && bodySections == 0 {
-				return closeFlagsOnly(command)
+				return closeFetchWithError(command, errFlagsOnly)
 			}
 			if uidItems != 1 || bodySections != 1 {
 				return errorCode(CodeIMAPProtocol)
@@ -679,11 +679,7 @@ func (session *imapSession) UIDFetchBody(ctx context.Context, uid uint32, part [
 	err := session.fetch(ctx, imap.UIDSetNum(imap.UID(uid)), options, fetchInputBudget(limit, 1), func(command *imapclient.FetchCommand) error {
 		message := command.Next()
 		if message == nil {
-			if err := command.Close(); err != nil {
-				return err
-			}
-
-			return errorCode(CodeIMAPProtocol)
+			return closeFetchWithError(command, errorCode(CodeIMAPProtocol))
 		}
 		bodySections := 0
 		uidItems := 0
@@ -707,7 +703,7 @@ func (session *imapSession) UIDFetchBody(ctx context.Context, uid uint32, part [
 			}
 		}
 		if uidItems == 1 && bodySections == 0 {
-			return closeFlagsOnly(command)
+			return closeFetchWithError(command, errFlagsOnly)
 		}
 		if command.Next() != nil || body == nil || bodySections != 1 || uidItems != 1 {
 			return errorCode(CodeIMAPProtocol)
@@ -736,11 +732,7 @@ func (session *imapSession) UIDFetchHeaders(ctx context.Context, uid uint32, hea
 
 		message := command.Next()
 		if message == nil {
-			if err := command.Close(); err != nil {
-				return err
-			}
-
-			return errorCode(CodeIMAPProtocol)
+			return closeFetchWithError(command, errorCode(CodeIMAPProtocol))
 		}
 
 		uidItems := 0
@@ -776,7 +768,7 @@ func (session *imapSession) UIDFetchHeaders(ctx context.Context, uid uint32, hea
 			}
 		}
 		if uidItems == 1 && sizeItems == 0 && bodySections == 0 {
-			return closeFlagsOnly(command)
+			return closeFetchWithError(command, errFlagsOnly)
 		}
 		if command.Next() != nil || uidItems != 1 || bodySections != 1 {
 			return errorCode(CodeIMAPProtocol)
@@ -866,15 +858,13 @@ func headerTerminatorEnd(header []byte) int {
 // unchanged through mapIMAPError and as the result of a second such reply.
 var errFlagsOnly = &Error{Code: CodeIMAPProtocol}
 
-// closeFlagsOnly closes command after a flags-only reply without aborting
-// the transport; the remaining responses are drained and the tagged status
-// read, so the session can issue the FETCH again.
-func closeFlagsOnly(command *imapclient.FetchCommand) error {
+// Draining the FETCH gives a tagged command error precedence over the response-shape error.
+func closeFetchWithError(command *imapclient.FetchCommand, responseErr error) error {
 	if err := command.Close(); err != nil {
 		return err
 	}
 
-	return errFlagsOnly
+	return responseErr
 }
 
 // A flags-only reply has already been drained. Retry it once with a fresh
@@ -920,11 +910,7 @@ func (session *imapSession) fetchUIDStructure(ctx context.Context, uid uint32) (
 	err := session.fetch(ctx, imap.UIDSetNum(imap.UID(uid)), options, maxStructureResponseBytes, func(command *imapclient.FetchCommand) error {
 		message := command.Next()
 		if message == nil {
-			if err := command.Close(); err != nil {
-				return err
-			}
-
-			return errorCode(CodeIMAPProtocol)
+			return closeFetchWithError(command, errorCode(CodeIMAPProtocol))
 		}
 
 		uidItems := 0
@@ -951,7 +937,7 @@ func (session *imapSession) fetchUIDStructure(ctx context.Context, uid uint32) (
 			}
 		}
 		if uidItems == 1 && structure == nil {
-			return closeFlagsOnly(command)
+			return closeFetchWithError(command, errFlagsOnly)
 		}
 		if command.Next() != nil || uidItems != 1 || structure == nil {
 			return errorCode(CodeIMAPProtocol)
