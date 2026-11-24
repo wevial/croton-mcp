@@ -35,7 +35,7 @@ func listClients(db *bolt.DB, visit func(pairedClient) error) error {
 		}
 
 		return clients.ForEach(func(id, name []byte) error {
-			if !validClientID(string(id)) || name == nil || len(name) > 256 {
+			if !validClientID(string(id)) || name == nil || len(name) > maxClientNameBytes {
 				return errState
 			}
 			return visit(pairedClient{ID: string(id), Name: string(name)})
@@ -164,7 +164,7 @@ func Admin(ctx context.Context, dir, command, id string, tty io.Writer) error {
 		if out.Client == nil {
 			return nil
 		}
-		if command != "clients" || !validClientID(out.Client.ID) || len(out.Client.Name) > 256 {
+		if command != "clients" || !validClientID(out.Client.ID) || len(out.Client.Name) > maxClientNameBytes {
 			return errState
 		}
 		if err := display(*out.Client); err != nil {

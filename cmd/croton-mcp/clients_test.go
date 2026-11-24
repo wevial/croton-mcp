@@ -51,11 +51,11 @@ func approveClient(t *testing.T, p *httpProcess) approvedClient {
 		return string(match[1])
 	}
 
-	var tty bytes.Buffer
-	if err := runOwnerCommand(t.Context(), "pair", []string{"--state-dir", p.dir}, &tty); err != nil {
+	handoff, err := adminCommand(t, p.dir, "pair")
+	if err != nil {
 		t.Fatal(err)
 	}
-	link, err := url.Parse(strings.TrimSpace(tty.String()))
+	link, err := url.Parse(strings.TrimSpace(handoff))
 	if err != nil {
 		t.Fatal("invalid pairing link")
 	}
@@ -302,18 +302,27 @@ func TestOwnerOAuthClientsLocked(t *testing.T) {
 }
 
 func TestOwnerOAuthClientsWrongUID(t *testing.T) {
-	const helper = "CROTON_TEST_FOREIGN_LISTENER"
-	if os.Getenv(helper) == "1" {
-		// Drop privileges only in this short-lived test subprocess.
-		if err := syscall.Setuid(65534); err != nil {
-			t.Fatal(err)
-		}
-		// The shared path lets the connection reach the server's peer
-		// check despite the private state directory.
-		server, err := net.DialTimeout("unix", "actual.sock", time.Second)
+	const (
+		helper        = "CROTON_TEST_FOREIGN_LISTENER"
+		foreignUID    = 65534
+		actualSocket  = "actual.sock"
+		foreignSocket = "foreign.sock"
+	)
+	requireOK := func(err error) {
+		t.Helper()
 		if err != nil {
 			t.Fatal(err)
 		}
+	}
+
+	if os.Getenv(helper) == "1" {
+		// Drop privileges only in this short-lived test subprocess.
+		requireOK(syscall.Setuid(foreignUID))
+
+		// The shared path lets the connection reach the server's peer
+		// check despite the private state directory.
+		server, err := net.DialTimeout("unix", actualSocket, time.Second)
+		requireOK(err)
 		server.SetDeadline(time.Now().Add(2 * time.Second))
 		_, _ = io.WriteString(server, "clients\n")
 		response, err := io.ReadAll(server)
@@ -322,19 +331,14 @@ func TestOwnerOAuthClientsWrongUID(t *testing.T) {
 			t.Fatal("owner server did not reject the foreign client")
 		}
 
-		listener, err := net.ListenUnix("unix", &net.UnixAddr{Net: "unix", Name: "foreign.sock"})
-		if err != nil {
-			t.Fatal(err)
-		}
+		listener, err := net.ListenUnix("unix", &net.UnixAddr{Net: "unix", Name: foreignSocket})
+		requireOK(err)
 		defer listener.Close()
-		if _, err := os.Stdout.Write([]byte{1}); err != nil {
-			t.Fatal(err)
-		}
+		_, err = os.Stdout.Write([]byte{1})
+		requireOK(err)
 		listener.SetDeadline(time.Now().Add(5 * time.Second))
 		conn, err := listener.AcceptUnix()
-		if err != nil {
-			t.Fatal(err)
-		}
+		requireOK(err)
 		defer conn.Close()
 		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 		var b [1]byte
@@ -349,53 +353,34 @@ func TestOwnerOAuthClientsWrongUID(t *testing.T) {
 
 	dir := httpStateDir(t)
 	a, err := owneroauth.Open(dir, "https://127.0.0.1:8787", owneroauth.Defaults())
-	if err != nil {
-		t.Fatal(err)
-	}
+	requireOK(err)
 	defer a.Close()
 
 	stop, err := a.ListenOwner(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
+	requireOK(err)
 	defer stop()
 
 	staging := httpStateDir(t)
-	if err := os.Link(filepath.Join(dir, "owner.sock"), filepath.Join(staging, "actual.sock")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(filepath.Join(staging, "actual.sock"), 0777); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chown(staging, 65534, -1); err != nil {
-		t.Fatal(err)
-	}
+	requireOK(os.Link(filepath.Join(dir, "owner.sock"), filepath.Join(staging, actualSocket)))
+	requireOK(os.Chmod(filepath.Join(staging, actualSocket), 0777))
+	requireOK(os.Chown(staging, foreignUID, -1))
+
 	bin, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
+	requireOK(err)
 	cmd := exec.CommandContext(t.Context(), bin, "-test.run=^TestOwnerOAuthClientsWrongUID$")
 	cmd.Dir = staging
 	cmd.Env = append(os.Environ(), helper+"=1")
 	ready, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
+	requireOK(err)
+	requireOK(cmd.Start())
 	defer cmd.Process.Kill()
 	var b [1]byte
 	if _, err := io.ReadFull(ready, b[:]); err != nil || b[0] != 1 {
 		t.Fatal("foreign listener unavailable")
 	}
 	stop()
-	if err := a.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(filepath.Join(staging, "foreign.sock"), filepath.Join(dir, "owner.sock")); err != nil {
-		t.Fatal(err)
-	}
+	requireOK(a.Close())
+	requireOK(os.Rename(filepath.Join(staging, foreignSocket), filepath.Join(dir, "owner.sock")))
 
 	// The database is unlocked. A rejected peer must never trigger an offline retry.
 	if got, err := adminCommand(t, dir, "clients"); err == nil || got != "" {

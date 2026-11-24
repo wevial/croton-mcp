@@ -16,6 +16,8 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
+const maxClientNameBytes = 256
+
 type registration struct {
 	Name        string
 	Redirects   []string
@@ -148,7 +150,7 @@ func (a *Authority) register(c registration) (string, error) {
 	if !a.openWindow() || len(a.window.clients) >= a.settings.PendingLimit {
 		return "", errDenied
 	}
-	if len(c.Redirects) == 0 || len(c.Redirects) > 8 || len(c.Name) > 256 || (c.Auth != "" && c.Auth != "none") || (c.Application != "" && c.Application != "native" && c.Application != "web") {
+	if len(c.Redirects) == 0 || len(c.Redirects) > 8 || len(c.Name) > maxClientNameBytes || (c.Auth != "" && c.Auth != "none") || (c.Application != "" && c.Application != "native" && c.Application != "web") {
 		return "", errInvalid
 	}
 	grants := c.grantTypes()
