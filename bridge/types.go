@@ -60,7 +60,7 @@ type Truncation struct {
 
 // Any reports whether at least one result limit was applied.
 func (truncation Truncation) Any() bool {
-	return truncation.Headers || truncation.HeaderCount || truncation.Text || truncation.MIMEParts || truncation.MIMEDepth || truncation.Attachments || truncation.References || truncation.ThreadCycle || truncation.ThreadDepth || truncation.ThreadMessages
+	return truncation != (Truncation{})
 }
 
 // CanonicalHeaders contains the bounded message headers needed by Croton's public results.
@@ -153,9 +153,5 @@ func boundedLimit(value, defaultValue, maximum int) int {
 		return defaultValue
 	}
 
-	if value > maximum {
-		return maximum
-	}
-
-	return value
+	return min(value, maximum)
 }

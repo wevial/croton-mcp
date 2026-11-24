@@ -2,10 +2,10 @@ package bridge
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
-	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -47,10 +47,9 @@ func (connection *Connection) takeConn() (net.Conn, bool, error) {
 	}
 
 	transport := connection.connection
-	startTLS := connection.startTLS
 	connection.connection = nil
 
-	return transport, startTLS, nil
+	return transport, connection.startTLS, nil
 }
 
 // Dial validates the local endpoint and establishes its configured verified TLS transport.
@@ -108,10 +107,7 @@ func establishStartTLS(ctx context.Context, rawConnection net.Conn, tlsConfig *t
 	greeting, _, err := readStartTLSLine(reader, maxStartTLSGreetingBytes)
 	if err != nil {
 		_ = rawConnection.Close()
-		if ctx.Err() != nil {
-			return nil, connectionError(ctx, err)
-		}
-		if errors.Is(err, errStartTLSProtocol) {
+		if ctx.Err() == nil && errors.Is(err, errStartTLSProtocol) {
 			return nil, errorCode(CodeTLSNegotiation)
 		}
 		return nil, connectionError(ctx, err)
@@ -182,7 +178,7 @@ func imapCommand(reader *bufio.Reader, writer *bufio.Writer, budget *startTLSRes
 			continue
 		}
 		if !strings.HasPrefix(line, tag+" OK ") && line != tag+" OK" {
-			return false, fmt.Errorf("IMAP command rejected")
+			return false, errors.New("IMAP command rejected")
 		}
 		return hasStartTLS, nil
 	}
@@ -214,10 +210,10 @@ func readStartTLSLine(reader *bufio.Reader, limit int) (string, int, error) {
 	if len(line) > limit {
 		return "", 0, errStartTLSInputLimit
 	}
-	if len(line) < 2 || line[len(line)-2] != '\r' || line[len(line)-1] != '\n' {
+	content, ok := bytes.CutSuffix(line, []byte("\r\n"))
+	if !ok {
 		return "", 0, errStartTLSProtocol
 	}
-	content := line[:len(line)-2]
 	for _, value := range content {
 		if value == 0 || value == '\r' || value == '\n' || value > 0x7f {
 			return "", 0, errStartTLSProtocol
@@ -229,26 +225,19 @@ func readStartTLSLine(reader *bufio.Reader, limit int) (string, int, error) {
 
 func validStartTLSGreeting(line string) bool {
 	const prefix = "* OK "
-	if len(line) < len(prefix) || line[0] != '*' || line[1] != ' ' || !strings.EqualFold(line[2:4], "OK") || line[4] != ' ' {
+	if len(line) < len(prefix) || !strings.EqualFold(line[:len(prefix)], prefix) {
 		return false
 	}
 	responseText := line[len(prefix):]
-	if responseText == "" || responseText[0] != '[' {
+	if !strings.HasPrefix(responseText, "[") {
 		return true
 	}
 	closing := strings.IndexByte(responseText, ']')
 	if closing < 2 || closing+1 >= len(responseText) || responseText[closing+1] != ' ' {
 		return false
 	}
-	code := responseText[1:closing]
-	atom := code
-	if separator := strings.IndexByte(code, ' '); separator >= 0 {
-		atom = code[:separator]
-		if separator == len(code)-1 {
-			return false
-		}
-	}
-	return validIMAPAtom(atom)
+	atom, argument, hasArgument := strings.Cut(responseText[1:closing], " ")
+	return validIMAPAtom(atom) && (!hasArgument || argument != "")
 }
 
 func validIMAPAtom(atom string) bool {
@@ -300,13 +289,7 @@ func closeOnContext(ctx context.Context, connection net.Conn) func() {
 }
 
 func connectionError(ctx context.Context, err error) error {
-	if ctx.Err() != nil {
-		return errorCode(CodeBridgeUnreachable)
-	}
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return errorCode(CodeBridgeUnreachable)
-	}
-	if errors.Is(err, context.Canceled) {
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 		return errorCode(CodeBridgeUnreachable)
 	}
 	if strings.Contains(err.Error(), CodeTLSMismatch) {

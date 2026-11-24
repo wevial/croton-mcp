@@ -20,7 +20,20 @@ const trustAnchorMaxBytes = 16 * 1024
 // Its verifier is installed atomically with InsecureSkipVerify so callers cannot
 // accidentally pair IP-literal transport with omitted certificate verification.
 func NewTLSConfig(input TLSConfig) (*tls.Config, error) {
-	verifier, minimumVersion, err := newTLSVerifier(input)
+	minimumVersion, err := input.validateTrustAndVersion()
+	if err != nil {
+		return nil, err
+	}
+
+	var verifier tlsVerifier
+	if input.TrustAnchorFile != "" {
+		verifier.anchor, err = loadTrustAnchorWith(input.TrustAnchorFile, trustAnchorFileSupported, openTrustAnchor)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	verifier.pin, err = input.spkiPin()
 	if err != nil {
 		return nil, err
 	}
@@ -35,40 +48,6 @@ func NewTLSConfig(input TLSConfig) (*tls.Config, error) {
 type tlsVerifier struct {
 	anchor *x509.Certificate
 	pin    []byte
-}
-
-func newTLSVerifier(input TLSConfig) (*tlsVerifier, uint16, error) {
-	if strings.TrimSpace(input.TrustAnchorFile) == "" && strings.TrimSpace(input.SPKISHA256) == "" {
-		return nil, 0, errorCode(CodeTLSRequired)
-	}
-
-	minimumVersion, err := parseTLSMinimumVersion(input.MinVersion)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	verifier := &tlsVerifier{}
-	if input.TrustAnchorFile != "" {
-		anchor, err := loadTrustAnchor(input.TrustAnchorFile)
-		if err != nil {
-			return nil, 0, errorCode(CodeInvalidConfig)
-		}
-		verifier.anchor = anchor
-	}
-
-	if input.SPKISHA256 != "" {
-		pin, err := parseSPKIPin(input.SPKISHA256)
-		if err != nil {
-			return nil, 0, err
-		}
-		verifier.pin = pin
-	}
-
-	return verifier, minimumVersion, nil
-}
-
-func loadTrustAnchor(path string) (*x509.Certificate, error) {
-	return loadTrustAnchorWith(path, trustAnchorFileSupported, openTrustAnchor)
 }
 
 type trustAnchorOpener func(string) (*os.File, error)
@@ -102,35 +81,25 @@ func loadTrustAnchorWith(path string, supported bool, open trustAnchorOpener) (*
 	return certificate, nil
 }
 
-func validateTLSConfig(input TLSConfig) (uint16, error) {
-	if strings.TrimSpace(input.TrustAnchorFile) == "" && strings.TrimSpace(input.SPKISHA256) == "" {
-		return 0, errorCode(CodeTLSRequired)
+func (input TLSConfig) spkiPin() ([]byte, error) {
+	if input.SPKISHA256 == "" {
+		return nil, nil
 	}
 
-	version, err := parseTLSMinimumVersion(input.MinVersion)
-	if err != nil {
-		return 0, err
-	}
-	if input.SPKISHA256 != "" {
-		if _, err := parseSPKIPin(input.SPKISHA256); err != nil {
-			return 0, err
-		}
-	}
-
-	return version, nil
-}
-
-func parseSPKIPin(value string) ([]byte, error) {
-	pin, err := hex.DecodeString(value)
-	if err != nil || len(pin) != sha256.Size || strings.ToLower(value) != value {
+	pin, err := hex.DecodeString(input.SPKISHA256)
+	if err != nil || len(pin) != sha256.Size || strings.ToLower(input.SPKISHA256) != input.SPKISHA256 {
 		return nil, errorCode(CodeInvalidConfig)
 	}
 
 	return pin, nil
 }
 
-func parseTLSMinimumVersion(value string) (uint16, error) {
-	switch value {
+func (input TLSConfig) validateTrustAndVersion() (uint16, error) {
+	if strings.TrimSpace(input.TrustAnchorFile) == "" && strings.TrimSpace(input.SPKISHA256) == "" {
+		return 0, errorCode(CodeTLSRequired)
+	}
+
+	switch input.MinVersion {
 	case "", "TLSv1.2":
 		return tls.VersionTLS12, nil
 	case "TLSv1.3":
@@ -150,10 +119,8 @@ func (verifier *tlsVerifier) verify(state tls.ConnectionState) error {
 		return errorCode(CodeTLSMismatch)
 	}
 
-	if verifier.anchor != nil {
-		if subtle.ConstantTimeCompare(leaf.Raw, verifier.anchor.Raw) != 1 {
-			return errorCode(CodeTLSMismatch)
-		}
+	if verifier.anchor != nil && subtle.ConstantTimeCompare(leaf.Raw, verifier.anchor.Raw) != 1 {
+		return errorCode(CodeTLSMismatch)
 	}
 
 	if verifier.pin != nil {

@@ -52,71 +52,38 @@ func Int(value int) *int {
 	return &value
 }
 
-func defaultBounds() Bounds {
-	return Bounds{
-		MaxSearchResults:   defaultMaxSearchResults,
-		MaxFolderResults:   defaultMaxFolderResults,
-		MaxBodyBytes:       defaultMaxBodyBytes,
-		MaxHeaderBytes:     defaultMaxHeaderBytes,
-		MaxMimeParts:       defaultMaxMIMEParts,
-		MaxAttachmentCount: defaultMaxAttachmentCount,
-		MaxThreadMessages:  defaultMaxThreadMessages,
-		MaxThreadFetches:   defaultMaxThreadFetches,
-		MaxPreviewChars:    defaultMaxPreviewChars,
-		MaxOutputBytes:     defaultMaxOutputBytes,
-	}
-}
-
 func mergeBounds(patch BoundsPatch) (Bounds, error) {
-	bounds := defaultBounds()
-
-	var err error
-	if bounds.MaxSearchResults, err = clampBound(patch.MaxSearchResults, bounds.MaxSearchResults, hardMaxSearchResults); err != nil {
-		return Bounds{}, err
-	}
-	if bounds.MaxFolderResults, err = clampBound(patch.MaxFolderResults, bounds.MaxFolderResults, hardMaxFolderResults); err != nil {
-		return Bounds{}, err
-	}
-	if bounds.MaxBodyBytes, err = clampBound(patch.MaxBodyBytes, bounds.MaxBodyBytes, hardMaxBodyBytes); err != nil {
-		return Bounds{}, err
-	}
 	if patch.MaxHeaderBytes != nil && *patch.MaxHeaderBytes == 0 {
 		return Bounds{}, errorCode(CodeBoundsExceeded)
 	}
-	if bounds.MaxHeaderBytes, err = clampBound(patch.MaxHeaderBytes, bounds.MaxHeaderBytes, maximumMaxHeaderBytes); err != nil {
-		return Bounds{}, err
-	}
-	if bounds.MaxMimeParts, err = clampBound(patch.MaxMimeParts, bounds.MaxMimeParts, maximumMaxMIMEParts); err != nil {
-		return Bounds{}, err
-	}
-	if bounds.MaxAttachmentCount, err = clampBound(patch.MaxAttachmentCount, bounds.MaxAttachmentCount, maximumMaxAttachmentCount); err != nil {
-		return Bounds{}, err
-	}
-	if bounds.MaxThreadMessages, err = clampBound(patch.MaxThreadMessages, bounds.MaxThreadMessages, hardMaxThreadMessages); err != nil {
-		return Bounds{}, err
-	}
-	if bounds.MaxThreadFetches, err = clampBound(patch.MaxThreadFetches, bounds.MaxThreadFetches, hardMaxThreadFetches); err != nil {
-		return Bounds{}, err
-	}
-	if bounds.MaxPreviewChars, err = clampBound(patch.MaxPreviewChars, bounds.MaxPreviewChars, hardMaxPreviewChars); err != nil {
-		return Bounds{}, err
-	}
-	if bounds.MaxOutputBytes, err = clampBound(patch.MaxOutputBytes, bounds.MaxOutputBytes, hardMaxOutputBytes); err != nil {
-		return Bounds{}, err
+
+	var bounds Bounds
+	for _, field := range [...]struct {
+		input             *int
+		output            *int
+		fallback, ceiling int
+	}{
+		{patch.MaxSearchResults, &bounds.MaxSearchResults, defaultMaxSearchResults, hardMaxSearchResults},
+		{patch.MaxFolderResults, &bounds.MaxFolderResults, defaultMaxFolderResults, hardMaxFolderResults},
+		{patch.MaxBodyBytes, &bounds.MaxBodyBytes, defaultMaxBodyBytes, hardMaxBodyBytes},
+		{patch.MaxHeaderBytes, &bounds.MaxHeaderBytes, defaultMaxHeaderBytes, maximumMaxHeaderBytes},
+		{patch.MaxMimeParts, &bounds.MaxMimeParts, defaultMaxMIMEParts, maximumMaxMIMEParts},
+		{patch.MaxAttachmentCount, &bounds.MaxAttachmentCount, defaultMaxAttachmentCount, maximumMaxAttachmentCount},
+		{patch.MaxThreadMessages, &bounds.MaxThreadMessages, defaultMaxThreadMessages, hardMaxThreadMessages},
+		{patch.MaxThreadFetches, &bounds.MaxThreadFetches, defaultMaxThreadFetches, hardMaxThreadFetches},
+		{patch.MaxPreviewChars, &bounds.MaxPreviewChars, defaultMaxPreviewChars, hardMaxPreviewChars},
+		{patch.MaxOutputBytes, &bounds.MaxOutputBytes, defaultMaxOutputBytes, hardMaxOutputBytes},
+	} {
+		if field.input == nil {
+			*field.output = field.fallback
+			continue
+		}
+		if *field.input < 0 {
+			return Bounds{}, errorCode(CodeBoundsExceeded)
+		}
+
+		*field.output = min(*field.input, field.ceiling)
 	}
 
 	return bounds, nil
-}
-
-func clampBound(value *int, fallback, ceiling int) (int, error) {
-	if value == nil {
-		return fallback, nil
-	}
-	if *value < 0 {
-		return 0, errorCode(CodeBoundsExceeded)
-	}
-	if *value > ceiling {
-		return ceiling, nil
-	}
-	return *value, nil
 }
