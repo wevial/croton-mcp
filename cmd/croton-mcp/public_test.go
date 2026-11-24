@@ -32,6 +32,9 @@ func TestPublicServeInvalidOrigin(t *testing.T) {
 		"https://mail.test/#fragment", "https://mail.test#", "https://owner@mail.test",
 		"https://@mail.test", "https://[mail.test]", "https://::1", "https://mail..test",
 		"https://192.0.2.009", "https://192.0.2.0400",
+		"https://mail%2Ftest", "https://mail%3A443", "https://owner%40mail.test",
+		"https://mail.test:%34%34%33", "https://mail.test/%2E", "https://mail%6",
+		"https://[2001:d%628::1]", "https://mail.\u00ad.test", "https://mail.test..\u00ad",
 	} {
 		t.Run(raw, func(t *testing.T) {
 			args := []string{"serve", "--public-url", raw}
@@ -44,15 +47,17 @@ func TestPublicServeInvalidOrigin(t *testing.T) {
 
 func TestPublicServeOrigin(t *testing.T) {
 	for raw, want := range map[string]string{
-		"https://mail.test":               "https://mail.test",
-		"https://MAIL.test.:443":          "https://mail.test.",
-		"https://mail.test。:443":          "https://mail.test.",
-		"https://192.0.2.1.:443":          "https://192.0.2.1",
-		"https://192.0.2.010.:443":        "https://192.0.2.8",
-		"https://0xc0.0x201":              "https://192.0.2.1",
-		"https://[2001:0DB8:0:0::1]:443/": "https://[2001:db8::1]",
-		"https://[::ffff:192.0.2.1]/":     "https://[::ffff:c000:201]",
-		"https://münchen.test:0443":       "https://xn--mnchen-3ya.test",
+		"https://mail.test":                  "https://mail.test",
+		"https://%6Dail%2dproxy%2Etest:443/": "https://mail-proxy.test",
+		"https://mail.test.\u00ad":           "https://mail.test.",
+		"https://MAIL.test.:443":             "https://mail.test.",
+		"https://mail.test。:443":             "https://mail.test.",
+		"https://192.0.2.1.:443":             "https://192.0.2.1",
+		"https://192.0.2.010.:443":           "https://192.0.2.8",
+		"https://0xc0.0x201":                 "https://192.0.2.1",
+		"https://[2001:0DB8:0:0::1]:443/":    "https://[2001:db8::1]",
+		"https://[::ffff:192.0.2.1]/":        "https://[::ffff:c000:201]",
+		"https://münchen.test:0443":          "https://xn--mnchen-3ya.test",
 	} {
 		if got, err := parsePublicOrigin(raw); err != nil || got != want {
 			t.Errorf("parsePublicOrigin(%q) = %q, %v; want %q", raw, got, err, want)

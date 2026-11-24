@@ -65,9 +65,31 @@ func parseIPv4Host(host string) (netip.Addr, bool) {
 	return netip.AddrFrom4(octets), true
 }
 
+// DNS hostnames can contain unreserved ASCII and Unicode for IDNA mapping.
+var dnsHostCharacters = regexp.MustCompile(`^[A-Za-z0-9._~\x{80}-\x{10FFFF}-]+$`)
+
+// net/url rejects escaped ASCII in a DNS hostname, even unreserved bytes.
+func normalizeHostnameEscapes(raw string) string {
+	scheme, rest, ok := strings.Cut(raw, "://")
+	if !ok || !strings.Contains(rest, "%") || strings.Contains(rest, "@") {
+		return raw
+	}
+
+	end := strings.IndexAny(rest, "[:/?#")
+	if end == -1 {
+		end = len(rest)
+	}
+	host, err := url.PathUnescape(rest[:end])
+	if err != nil || !dnsHostCharacters.MatchString(host) {
+		return raw
+	}
+
+	return scheme + "://" + host + rest[end:]
+}
+
 func parsePublicOrigin(raw string) (string, error) {
 	invalid := errors.New("invalid public HTTPS origin")
-	u, err := url.Parse(raw)
+	u, err := url.Parse(normalizeHostnameEscapes(raw))
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || strings.ContainsAny(raw, "?#") {
 		return "", invalid
 	}
@@ -91,9 +113,13 @@ func parsePublicOrigin(raw string) (string, error) {
 	}
 
 	dns := idna.New(idna.MapForLookup(), idna.BidiRule(), idna.VerifyDNSLength(true))
-	// IDNA length validation expects the name without its root label.
-	host = strings.NewReplacer("\u3002", ".", "\uff0e", ".", "\uff61", ".").Replace(host)
-	name, rooted := strings.CutSuffix(host, ".")
+	// Map the full name before removing the root label for ASCII length checks.
+	mapped, err := dns.ToUnicode(host)
+	if err != nil {
+		return "", invalid
+	}
+
+	name, rooted := strings.CutSuffix(mapped, ".")
 	ascii, err := dns.ToASCII(name)
 	if err != nil || ascii == "" || strings.HasSuffix(ascii, ".") {
 		return "", invalid
